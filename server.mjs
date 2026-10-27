@@ -83,6 +83,11 @@ export async function handleVoiceRequest(req, res, deps) {
     return send(res, 200, { proposal: getProposal(decodeURIComponent(parts[1]), shopId, deps) });
   }
 
+  // Read-only: the caller's own shop chain plus its verification. SELECTs only.
+  if (req.method === "GET" && parts.length === 1 && parts[0] === "ledger") {
+    return send(res, 200, { entries: deps.ledger.list(shopId), verify: deps.ledger.verify(shopId) });
+  }
+
   return send(res, 404, { error: "not found" });
 }
 

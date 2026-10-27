@@ -393,6 +393,46 @@ describe("voice HTTP server", () => {
     });
   });
 
+  it("two simultaneous confirms record one set of entries", async () => {
+    await withServer(async () => PART_PAYMENT, async (base, ctx) => {
+      const created = await post(base, "/propose", SHOP_A, { text: "fake note" });
+      const id = created.json.proposal.id;
+      const [first, second] = await Promise.all([
+        post(base, `/confirm/${id}`, SHOP_A, {}),
+        post(base, `/confirm/${id}`, SHOP_A, {}),
+      ]);
+      assert.equal(first.status, 200);
+      assert.equal(second.status, 200);
+      const flags = [first.json.alreadyConfirmed, second.json.alreadyConfirmed].sort();
+      assert.deepEqual(flags, [false, true]); // exactly one call did the write
+      assert.deepEqual(first.json.recordedIds, second.json.recordedIds);
+      assert.equal(ctx.ledger.list(SHOP_A).length, 2); // one set, not two
+      assert.equal(ctx.ledger.verify(SHOP_A).ok, true);
+    });
+  });
+
+  it("GET /ledger returns the shop's entries and verification, per shop", async () => {
+    await withServer(async () => PART_PAYMENT, async (base) => {
+      const a = await post(base, "/propose", SHOP_A, { text: "fake note" });
+      await post(base, `/confirm/${a.json.proposal.id}`, SHOP_A, {});
+      const b = await post(base, "/propose", SHOP_B, { text: "fake note" });
+      await post(base, `/confirm/${b.json.proposal.id}`, SHOP_B, {});
+
+      const mine = await get(base, "/ledger", SHOP_A);
+      assert.equal(mine.status, 200);
+      assert.equal(mine.json.entries.length, 2);
+      assert.ok(mine.json.entries.every((e) => e.shop_id === SHOP_A));
+      assert.deepEqual(mine.json.verify, { ok: true, count: 2, shopId: SHOP_A });
+
+      const other = await get(base, "/ledger", SHOP_B);
+      assert.equal(other.status, 200);
+      assert.equal(other.json.entries.length, 2);
+      assert.ok(other.json.entries.every((e) => e.shop_id === SHOP_B));
+
+      assert.equal((await get(base, "/ledger", null)).status, 400);
+    });
+  });
+
   it("wrong shop gets 403 and missing shop gets 400", async () => {
     await withServer(async () => PART_PAYMENT, async (base) => {
       const created = await post(base, "/propose", SHOP_A, { text: "fake note" });
