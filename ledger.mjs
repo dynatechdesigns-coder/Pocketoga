@@ -203,8 +203,15 @@ export function verifyChain(entries) {
 }
 
 export class Ledger {
-  constructor(dbPath = ":memory:") {
-    this.db = new DatabaseSync(dbPath);
+  // dbPathOrDb: a path (owned connection) or a shared DatabaseSync.
+  constructor(dbPathOrDb = ":memory:") {
+    if (typeof dbPathOrDb === "string") {
+      this.db = new DatabaseSync(dbPathOrDb);
+      this.ownsDb = true;
+    } else {
+      this.db = dbPathOrDb;
+      this.ownsDb = false;
+    }
     this.db.exec(SCHEMA);
   }
 
@@ -323,6 +330,6 @@ export class Ledger {
   }
 
   close() {
-    this.db.close();
+    if (this.ownsDb) this.db.close();
   }
 }
