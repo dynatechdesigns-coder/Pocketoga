@@ -1,0 +1,7 @@
+{
+  "name": "pocketoga",
+  "type": "module",
+  "scripts": {
+    "test": "node --test ledger.test.mjs"
+  }
+}
