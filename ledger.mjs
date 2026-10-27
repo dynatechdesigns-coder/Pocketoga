@@ -1,9 +1,6 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
-// Placeholder hashed for the genesis entry (stored as NULL in prev_hash).
-const GENESIS_SENTINEL = "GENESIS";
-
 // Exact fields covered by the hash, in fixed canonical order.
 export const HASHED_FIELDS = [
   "shop_id",
@@ -11,6 +8,8 @@ export const HASHED_FIELDS = [
   "type",
   "amount_kobo",
   "customer",
+  "item",
+  "quantity",
   "created_at",
   "corrects_id",
   "prev_hash",
@@ -26,6 +25,8 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
   type TEXT NOT NULL,
   amount_kobo INTEGER NOT NULL CHECK (typeof(amount_kobo) = 'integer' AND amount_kobo >= 0),
   customer TEXT NOT NULL,
+  item TEXT CHECK (item IS NULL OR length(item) > 0),
+  quantity INTEGER CHECK (quantity IS NULL OR (typeof(quantity) = 'integer' AND quantity > 0)),
   corrects_id INTEGER REFERENCES ledger_entries(id),
   created_at TEXT NOT NULL,
   UNIQUE (shop_id, seq)
@@ -43,26 +44,34 @@ BEGIN
 END;
 `;
 
+// Unambiguous canonical encoding: a JSON array of the hashed fields in fixed
+// order. Field boundaries and types are explicit, so a "|" inside one field
+// (e.g. customer) can never collide with another entry the way a "|"-joined
+// string could.
 export function computeEntryHash({
   shopId,
   seq,
   type,
   amountKobo,
   customer,
-  correctsId,
+  item = null,
+  quantity = null,
+  correctsId = null,
   createdAt,
-  prevHash,
+  prevHash = null,
 }) {
-  const material = [
+  const material = JSON.stringify([
     shopId,
-    String(seq),
+    seq,
     type,
-    String(amountKobo),
-    customer ?? "",
+    amountKobo,
+    customer,
+    item ?? null,
+    quantity ?? null,
     createdAt,
-    correctsId ?? "",
-    prevHash ?? GENESIS_SENTINEL,
-  ].join("|");
+    correctsId ?? null,
+    prevHash ?? null,
+  ]);
   return createHash("sha256").update(material, "utf8").digest("hex");
 }
 
@@ -73,6 +82,25 @@ function assertAmountKobo(amountKobo) {
   if (amountKobo < 0) {
     throw new Error("amount_kobo must be >= 0");
   }
+}
+
+function assertItem(item) {
+  if (item === null || item === undefined) return null;
+  if (typeof item !== "string" || item.length === 0) {
+    throw new Error("item must be text");
+  }
+  return item;
+}
+
+function assertQuantity(quantity) {
+  if (quantity === null || quantity === undefined) return null;
+  if (typeof quantity !== "number" || !Number.isInteger(quantity)) {
+    throw new Error("quantity must be an integer");
+  }
+  if (quantity <= 0) {
+    throw new Error("quantity must be > 0");
+  }
+  return quantity;
 }
 
 // Pure chain check over entries of ONE shop ordered by seq ascending.
@@ -139,6 +167,8 @@ export function verifyChain(entries) {
       type: entry.type,
       amountKobo: entry.amount_kobo,
       customer: entry.customer,
+      item: entry.item,
+      quantity: entry.quantity,
       correctsId: entry.corrects_id,
       createdAt: entry.created_at,
       prevHash: entry.prev_hash,
@@ -178,11 +208,22 @@ export class Ledger {
     this.db.exec(SCHEMA);
   }
 
-  append({ shopId, type, amountKobo, customer, correctsId = null, createdAt = null }) {
+  append({
+    shopId,
+    type,
+    amountKobo,
+    customer,
+    item = null,
+    quantity = null,
+    correctsId = null,
+    createdAt = null,
+  }) {
     if (!shopId || typeof shopId !== "string") throw new Error("shopId is required");
     if (!type || typeof type !== "string") throw new Error("type is required");
     assertAmountKobo(amountKobo);
     if (!customer || typeof customer !== "string") throw new Error("customer is required");
+    const cleanItem = assertItem(item);
+    const cleanQuantity = assertQuantity(quantity);
     const stamp = createdAt ?? new Date().toISOString();
 
     if (correctsId !== null) {
@@ -205,6 +246,8 @@ export class Ledger {
       type,
       amountKobo,
       customer,
+      item: cleanItem,
+      quantity: cleanQuantity,
       correctsId,
       createdAt: stamp,
       prevHash,
@@ -213,17 +256,21 @@ export class Ledger {
     const result = this.db
       .prepare(
         `INSERT INTO ledger_entries
-           (shop_id, seq, prev_hash, entry_hash, type, amount_kobo, customer, corrects_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           (shop_id, seq, prev_hash, entry_hash, type, amount_kobo, customer, item, quantity, corrects_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(shopId, seq, prevHash, entryHash, type, amountKobo, customer, correctsId, stamp);
+      .run(shopId, seq, prevHash, entryHash, type, amountKobo, customer, cleanItem, cleanQuantity, correctsId, stamp);
 
     return this.get(Number(result.lastInsertRowid));
   }
 
   // Corrections are new entries that reference the original; never edits.
-  // The correction stays in the original's shop.
-  appendCorrection(originalId, { type = "correction", amountKobo, customer = null, createdAt = null } = {}) {
+  // The correction stays in the original's shop and inherits the original's
+  // customer/item/quantity unless overridden (pass null to clear item/quantity).
+  appendCorrection(
+    originalId,
+    { type = "correction", amountKobo, customer = null, item = undefined, quantity = undefined, createdAt = null } = {}
+  ) {
     const original = this.get(originalId);
     if (!original) throw new Error(`corrects_id ${originalId} does not exist`);
     return this.append({
@@ -231,6 +278,8 @@ export class Ledger {
       type,
       amountKobo,
       customer: customer ?? original.customer,
+      item: item === undefined ? original.item : item,
+      quantity: quantity === undefined ? original.quantity : quantity,
       correctsId: originalId,
       createdAt,
     });

@@ -186,19 +186,22 @@ describe("ledger_entries (append-only hash chain)", () => {
   });
 
   it("hash covers every field: any field change breaks verification", () => {
-    ledger.append(FAKE_SALE_A);
+    ledger.append({ ...FAKE_SALE_A, item: "fake-rice", quantity: 2 });
     ledger.append(FAKE_SALE_B);
     const rows = ledger.list(SHOP_A);
-    const base = computeEntryHash({
-      shopId: rows[0].shop_id,
-      seq: rows[0].seq,
-      type: rows[0].type,
-      amountKobo: rows[0].amount_kobo,
-      customer: rows[0].customer,
-      correctsId: rows[0].corrects_id,
-      createdAt: rows[0].created_at,
-      prevHash: rows[0].prev_hash,
+    const fields = (row) => ({
+      shopId: row.shop_id,
+      seq: row.seq,
+      type: row.type,
+      amountKobo: row.amount_kobo,
+      customer: row.customer,
+      item: row.item,
+      quantity: row.quantity,
+      correctsId: row.corrects_id,
+      createdAt: row.created_at,
+      prevHash: row.prev_hash,
     });
+    const base = computeEntryHash(fields(rows[0]));
     assert.equal(rows[0].entry_hash, base);
     // Each hashed field flips the digest when changed.
     const variants = [
@@ -207,24 +210,127 @@ describe("ledger_entries (append-only hash chain)", () => {
       { type: "refund" },
       { amountKobo: rows[0].amount_kobo + 1 },
       { customer: "Someone Else" },
+      { item: "fake-beans" },
+      { quantity: 3 },
       { createdAt: "2000-01-01T00:00:00.000Z" },
       { correctsId: 999 },
       { prevHash: "0".repeat(64) },
     ];
     for (const patch of variants) {
-      const altered = computeEntryHash({
-        shopId: rows[0].shop_id,
-        seq: rows[0].seq,
-        type: rows[0].type,
-        amountKobo: rows[0].amount_kobo,
-        customer: rows[0].customer,
-        correctsId: rows[0].corrects_id,
-        createdAt: rows[0].created_at,
-        prevHash: rows[0].prev_hash,
-        ...patch,
-      });
+      const altered = computeEntryHash({ ...fields(rows[0]), ...patch });
       assert.notEqual(altered, base, `hash must change when ${Object.keys(patch)[0]} changes`);
     }
+    // NULL vs present also flips the digest.
+    assert.equal(computeEntryHash(fields(rows[1])), rows[1].entry_hash);
+    assert.notEqual(computeEntryHash({ ...fields(rows[1]), item: "fake-rice" }), rows[1].entry_hash);
+    assert.notEqual(computeEntryHash({ ...fields(rows[1]), quantity: 1 }), rows[1].entry_hash);
+  });
+
+  it("hashes unambiguously: '|' placement can never collide", () => {
+    const base = {
+      shopId: SHOP_A,
+      seq: 1,
+      type: "sale",
+      amountKobo: 100,
+      item: null,
+      quantity: null,
+      correctsId: null,
+      prevHash: null,
+    };
+    const stamp = "2024-01-01T00:00:00.000Z";
+    // These two would join to one identical string under the old "|"-separated
+    // encoding (customer "Ada" + createdAt "T|X" vs customer "Ada|T" + createdAt "X").
+    const h1 = computeEntryHash({ ...base, customer: "Ada", createdAt: `${stamp}|X` });
+    const h2 = computeEntryHash({ ...base, customer: `Ada|${stamp}`, createdAt: "X" });
+    assert.notEqual(h1, h2);
+    // Two entries differing only by where "|" sits in the customer name.
+    const h3 = computeEntryHash({ ...base, customer: "A|BC", createdAt: stamp });
+    const h4 = computeEntryHash({ ...base, customer: "AB|C", createdAt: stamp });
+    assert.notEqual(h3, h4);
+  });
+
+  it("stores nullable item and quantity and verifies", () => {
+    const withGoods = ledger.append({ ...FAKE_SALE_A, item: "fake-rice", quantity: 2 });
+    assert.equal(withGoods.item, "fake-rice");
+    assert.equal(withGoods.quantity, 2);
+    const withoutGoods = ledger.append(FAKE_SALE_B);
+    assert.equal(withoutGoods.item, null);
+    assert.equal(withoutGoods.quantity, null);
+    assert.equal(ledger.verify(SHOP_A).ok, true);
+  });
+
+  it("rejects bad item or quantity", () => {
+    for (const bad of [0, -1, 1.5, "2", NaN]) {
+      assert.throws(
+        () => ledger.append({ ...FAKE_SALE_A, item: "fake-rice", quantity: bad }),
+        /quantity/,
+        `quantity=${String(bad)} should be rejected`
+      );
+    }
+    for (const bad of [123, "", true]) {
+      assert.throws(
+        () => ledger.append({ ...FAKE_SALE_A, item: bad, quantity: 1 }),
+        /item must be text/,
+        `item=${String(bad)} should be rejected`
+      );
+    }
+    assert.deepEqual(ledger.list(), []);
+  });
+
+  it("rejects bad item or quantity at the database level", () => {
+    const stamp = new Date().toISOString();
+    const insert = (item, quantity, tag) =>
+      ledger.db
+        .prepare(
+          `INSERT INTO ledger_entries
+             (shop_id, seq, prev_hash, entry_hash, type, amount_kobo, customer, item, quantity, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(SHOP_A, 1, null, tag.padEnd(64, "0"), "sale", 100, "Test Customer Ada", item, quantity, stamp);
+    assert.throws(() => insert("fake-rice", 0, "aa"), /CHECK/);
+    assert.throws(() => insert("fake-rice", -3, "bb"), /CHECK/);
+    assert.throws(() => insert("fake-rice", 1.5, "cc"), /CHECK/);
+    // SQLite TEXT affinity stores numbers as text, so the DB-level item
+    // check enforces non-empty; mistyped values are rejected in JS.
+    assert.throws(() => insert("", 1, "dd"), /CHECK/);
+    assert.equal(ledger.list().length, 0);
+  });
+
+  it("detects tampering with item or quantity", () => {
+    ledger.append({ ...FAKE_SALE_A, item: "fake-rice", quantity: 2 });
+    ledger.append({ ...FAKE_SALE_B, item: "fake-yam", quantity: 5 });
+
+    const badItem = ledger.list(SHOP_A).map((row) => ({ ...row }));
+    badItem[0].item = "fake-beans";
+    const r1 = verifyChain(badItem);
+    assert.equal(r1.ok, false);
+    assert.equal(r1.brokenId, badItem[0].id);
+    assert.match(r1.reason, /entry_hash/);
+
+    const badQty = ledger.list(SHOP_A).map((row) => ({ ...row }));
+    badQty[1].quantity = 6;
+    const r2 = verifyChain(badQty);
+    assert.equal(r2.ok, false);
+    assert.equal(r2.brokenId, badQty[1].id);
+    assert.match(r2.reason, /entry_hash/);
+  });
+
+  it("corrections inherit item and quantity unless overridden", () => {
+    const original = ledger.append({ ...FAKE_SALE_A, item: "fake-rice", quantity: 2 });
+    const inherited = ledger.appendCorrection(original.id, { amountKobo: 300000 });
+    assert.equal(inherited.item, "fake-rice");
+    assert.equal(inherited.quantity, 2);
+    const overridden = ledger.appendCorrection(original.id, {
+      amountKobo: 300000,
+      item: "fake-beans",
+      quantity: 3,
+    });
+    assert.equal(overridden.item, "fake-beans");
+    assert.equal(overridden.quantity, 3);
+    const cleared = ledger.appendCorrection(original.id, { amountKobo: 300000, item: null, quantity: null });
+    assert.equal(cleared.item, null);
+    assert.equal(cleared.quantity, null);
+    assert.equal(ledger.verify(SHOP_A).ok, true);
   });
 
   it("rejects UPDATE and DELETE at the database level", () => {
@@ -253,6 +359,8 @@ describe("ledger_entries (append-only hash chain)", () => {
       type: rows[0].type,
       amountKobo: rows[0].amount_kobo,
       customer: rows[0].customer,
+      item: rows[0].item,
+      quantity: rows[0].quantity,
       correctsId: rows[0].corrects_id,
       createdAt: rows[0].created_at,
       prevHash: rows[0].prev_hash,
