@@ -4,16 +4,33 @@ import { DatabaseSync } from "node:sqlite";
 // Placeholder hashed for the genesis entry (stored as NULL in prev_hash).
 const GENESIS_SENTINEL = "GENESIS";
 
+// Exact fields covered by the hash, in fixed canonical order.
+export const HASHED_FIELDS = [
+  "shop_id",
+  "seq",
+  "type",
+  "amount_kobo",
+  "customer",
+  "created_at",
+  "corrects_id",
+  "prev_hash",
+];
+
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS ledger_entries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  shop_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
   prev_hash TEXT,
   entry_hash TEXT NOT NULL UNIQUE,
   type TEXT NOT NULL,
-  payload TEXT NOT NULL,
+  amount_kobo INTEGER NOT NULL CHECK (typeof(amount_kobo) = 'integer' AND amount_kobo >= 0),
+  customer TEXT NOT NULL,
   corrects_id INTEGER REFERENCES ledger_entries(id),
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  UNIQUE (shop_id, seq)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_shop_seq ON ledger_entries(shop_id, seq);
 CREATE TRIGGER IF NOT EXISTS ledger_entries_no_update
 BEFORE UPDATE ON ledger_entries
 BEGIN
@@ -26,40 +43,70 @@ BEGIN
 END;
 `;
 
-// Deterministic JSON: sorted keys so the hash is stable.
-export function canonicalize(payload) {
-  if (typeof payload === "string") return payload;
-  return JSON.stringify(sortValue(payload));
-}
-
-function sortValue(value) {
-  if (Array.isArray(value)) return value.map(sortValue);
-  if (value !== null && typeof value === "object") {
-    const out = {};
-    for (const key of Object.keys(value).sort()) out[key] = sortValue(value[key]);
-    return out;
-  }
-  return value;
-}
-
-export function computeEntryHash({ prevHash, type, payload, correctsId, createdAt }) {
-  const canonical = canonicalize(payload);
+export function computeEntryHash({
+  shopId,
+  seq,
+  type,
+  amountKobo,
+  customer,
+  correctsId,
+  createdAt,
+  prevHash,
+}) {
   const material = [
-    prevHash ?? GENESIS_SENTINEL,
+    shopId,
+    String(seq),
     type,
-    canonical,
-    correctsId ?? "",
+    String(amountKobo),
+    customer ?? "",
     createdAt,
+    correctsId ?? "",
+    prevHash ?? GENESIS_SENTINEL,
   ].join("|");
   return createHash("sha256").update(material, "utf8").digest("hex");
 }
 
-// Pure chain check over entries ordered by id ascending.
+function assertAmountKobo(amountKobo) {
+  if (typeof amountKobo !== "number" || !Number.isInteger(amountKobo)) {
+    throw new Error("amount_kobo must be an integer (kobo)");
+  }
+  if (amountKobo < 0) {
+    throw new Error("amount_kobo must be >= 0");
+  }
+}
+
+// Pure chain check over entries of ONE shop ordered by seq ascending.
 // Returns { ok: true, count } or { ok: false, brokenId, index, reason, ... }.
 export function verifyChain(entries) {
   const seen = new Set();
+  let shopId = null;
   for (let index = 0; index < entries.length; index++) {
     const entry = entries[index];
+
+    if (index === 0) {
+      shopId = entry.shop_id;
+    } else if (entry.shop_id !== shopId) {
+      return {
+        ok: false,
+        brokenId: entry.id,
+        index,
+        reason: "verifyChain expects entries of a single shop",
+        expected: shopId,
+        actual: entry.shop_id,
+      };
+    }
+
+    const expectedSeq = index + 1;
+    if (entry.seq !== expectedSeq) {
+      return {
+        ok: false,
+        brokenId: entry.id,
+        index,
+        reason: "seq must be consecutive per shop starting at 1",
+        expected: expectedSeq,
+        actual: entry.seq,
+      };
+    }
 
     if (index === 0) {
       if (entry.prev_hash !== null) {
@@ -87,11 +134,14 @@ export function verifyChain(entries) {
     }
 
     const recomputed = computeEntryHash({
-      prevHash: entry.prev_hash,
+      shopId: entry.shop_id,
+      seq: entry.seq,
       type: entry.type,
-      payload: entry.payload,
+      amountKobo: entry.amount_kobo,
+      customer: entry.customer,
       correctsId: entry.corrects_id,
       createdAt: entry.created_at,
+      prevHash: entry.prev_hash,
     });
     if (recomputed !== entry.entry_hash) {
       return {
@@ -128,57 +178,99 @@ export class Ledger {
     this.db.exec(SCHEMA);
   }
 
-  append({ type, payload, correctsId = null, createdAt = null }) {
+  append({ shopId, type, amountKobo, customer, correctsId = null, createdAt = null }) {
+    if (!shopId || typeof shopId !== "string") throw new Error("shopId is required");
     if (!type || typeof type !== "string") throw new Error("type is required");
-    if (payload === undefined) throw new Error("payload is required");
-    const canonical = canonicalize(payload);
+    assertAmountKobo(amountKobo);
+    if (!customer || typeof customer !== "string") throw new Error("customer is required");
     const stamp = createdAt ?? new Date().toISOString();
 
     if (correctsId !== null) {
       const original = this.get(correctsId);
       if (!original) throw new Error(`corrects_id ${correctsId} does not exist`);
+      if (original.shop_id !== shopId) {
+        throw new Error("corrects_id must reference an entry of the same shop");
+      }
     }
 
     const prev = this.db
-      .prepare("SELECT entry_hash FROM ledger_entries ORDER BY id DESC LIMIT 1")
-      .get();
+      .prepare("SELECT seq, entry_hash FROM ledger_entries WHERE shop_id = ? ORDER BY seq DESC LIMIT 1")
+      .get(shopId);
+    const seq = prev ? prev.seq + 1 : 1;
     const prevHash = prev ? prev.entry_hash : null;
 
     const entryHash = computeEntryHash({
-      prevHash,
+      shopId,
+      seq,
       type,
-      payload: canonical,
+      amountKobo,
+      customer,
       correctsId,
       createdAt: stamp,
+      prevHash,
     });
 
     const result = this.db
       .prepare(
         `INSERT INTO ledger_entries
-           (prev_hash, entry_hash, type, payload, corrects_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`
+           (shop_id, seq, prev_hash, entry_hash, type, amount_kobo, customer, corrects_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(prevHash, entryHash, type, canonical, correctsId, stamp);
+      .run(shopId, seq, prevHash, entryHash, type, amountKobo, customer, correctsId, stamp);
 
     return this.get(Number(result.lastInsertRowid));
   }
 
   // Corrections are new entries that reference the original; never edits.
-  appendCorrection(originalId, { type = "correction", payload, createdAt = null } = {}) {
-    return this.append({ type, payload, correctsId: originalId, createdAt });
+  // The correction stays in the original's shop.
+  appendCorrection(originalId, { type = "correction", amountKobo, customer = null, createdAt = null } = {}) {
+    const original = this.get(originalId);
+    if (!original) throw new Error(`corrects_id ${originalId} does not exist`);
+    return this.append({
+      shopId: original.shop_id,
+      type,
+      amountKobo,
+      customer: customer ?? original.customer,
+      correctsId: originalId,
+      createdAt,
+    });
   }
 
   get(id) {
     return this.db.prepare("SELECT * FROM ledger_entries WHERE id = ?").get(id) ?? null;
   }
 
-  list() {
-    return this.db.prepare("SELECT * FROM ledger_entries ORDER BY id ASC").all();
+  list(shopId = null) {
+    if (shopId !== null && shopId !== undefined) {
+      return this.db
+        .prepare("SELECT * FROM ledger_entries WHERE shop_id = ? ORDER BY seq ASC")
+        .all(shopId);
+    }
+    return this.db
+      .prepare("SELECT * FROM ledger_entries ORDER BY shop_id ASC, seq ASC")
+      .all();
   }
 
-  // Verifies the whole chain; reports the first broken entry.
-  verify() {
-    return verifyChain(this.list());
+  shops() {
+    return this.db.prepare("SELECT DISTINCT shop_id FROM ledger_entries ORDER BY shop_id ASC").all().map((r) => r.shop_id);
+  }
+
+  // Verifies one shop's chain when shopId is given, else every shop's chain.
+  verify(shopId = null) {
+    if (shopId !== null && shopId !== undefined) {
+      const result = verifyChain(this.list(shopId));
+      if (result.ok) return { ok: true, count: result.count, shopId };
+      return { ...result, shopId };
+    }
+    const ids = this.shops();
+    if (ids.length === 0) return { ok: true, count: 0 };
+    let total = 0;
+    for (const id of ids) {
+      const result = verifyChain(this.list(id));
+      if (!result.ok) return { ...result, shopId: id };
+      total += result.count;
+    }
+    return { ok: true, count: total };
   }
 
   close() {
