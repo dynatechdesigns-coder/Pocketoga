@@ -1,138 +1,80 @@
-import { useCallback, useEffect, useState } from "react";
-import { friendlyError, getLedger } from "../api.js";
-import { createDemoShop, clearLocalLedger, DEMO_SHOP_NAME, tamperDemoEntry } from "../localLedger.js";
-import { formatKobo, typeLabel } from "../money.js";
+import { getLedger } from "../api.js";
+import { dayLabel, formatKobo, itemText, plural, timeLabel, typeLabel } from "../format.js";
+import { EmptyState, ErrorState, ScreenHeader, Skeleton, useLoad } from "../ui.jsx";
 
-// "Today", "Yesterday", or "Mon 21 Oct".
-function dayLabel(iso) {
-  const d = new Date(iso);
-  const today = new Date();
-  const yesterday = new Date();
-  yesterday.setDate(today.getDate() - 1);
-  if (d.toDateString() === today.toDateString()) return "Today";
-  if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
-  return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+// Saved entries, newest first, under the hash-chain check from GET /ledger.
+export default function LedgerScreen({ shop, onGo }) {
+  const { data, error, loading, reload } = useLoad(getLedger);
+
+  return (
+    <section>
+      <ScreenHeader title="Ledger" sub="Every saved entry. Nothing here can be edited or deleted." />
+      {loading && !data ? (
+        <Skeleton cards={5} height={72} label="Loading ledger" />
+      ) : error ? (
+        <ErrorState message={error} onRetry={reload} />
+      ) : (
+        <LedgerBody entries={data.entries} verify={data.verify} shop={shop} onGo={onGo} />
+      )}
+    </section>
+  );
 }
 
-const timeLabel = (iso) => new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-
-// Saved entries for the shop, newest first, under a chain-check banner.
-export default function LedgerScreen({ shop, onResetDemo }) {
-  const [state, setState] = useState({ loading: true });
-
-  const load = useCallback(async () => {
-    setState({ loading: true });
-    try {
-      setState({ loading: false, ...(await getLedger()) });
-    } catch (err) {
-      setState({ loading: false, error: friendlyError(err) });
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load, shop.id]);
-
-  if (state.loading) {
-    return (
-      <div className="loading" role="status">
-        <div className="spinner" aria-hidden="true" />
-        <p>Loading your ledger…</p>
-      </div>
-    );
-  }
-
-  if (state.error) {
-    return (
-      <div className="alert alert-error" role="alert">
-        {state.error}
-        <button className="btn btn-secondary" onClick={load}>
-          Try again
-        </button>
-      </div>
-    );
-  }
-
-  const { entries, verify } = state;
+function LedgerBody({ entries, verify, shop, onGo }) {
   const newestFirst = [...entries].reverse();
 
   return (
-    <section className="ledger">
+    <>
       {verify.ok ? (
         <div className="banner banner-ok" role="status">
-          <span className="banner-icon" aria-hidden="true">✓</span>
-          <div>
-            <strong>Ledger checked</strong>
-            <div>
-              {verify.count} {verify.count === 1 ? "entry" : "entries"}, none changed or removed.
-            </div>
-          </div>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m5 12 5 5 9-10" />
+          </svg>
+          <span>
+            <strong>Records verified.</strong> {plural(verify.count, "entry", "entries")}, none changed or removed.
+          </span>
         </div>
       ) : (
         <div className="banner banner-bad" role="alert">
-          <span className="banner-icon" aria-hidden="true">!</span>
-          <div>
-            <strong>Warning: ledger was tampered with</strong>
-            <div>
-              Entry #{verify.brokenId}: {verify.reason}.
-            </div>
-          </div>
+          <strong>Warning: records were changed.</strong>
+          <span>
+            Entry #{Number.isInteger(verify.index) ? verify.index + 1 : verify.brokenId} does not match what was saved
+            ({verify.reason}). Do not trust totals until this is checked.
+          </span>
         </div>
       )}
 
-      {state.source === "device" && (
-        <p className="small muted">Showing the copy saved on this phone.</p>
-      )}
-
       {newestFirst.length === 0 ? (
-        <p className="notice">No entries yet. Go to Record and tell PocketOga your first sale.</p>
+        <EmptyState title="No entries yet" action="Record your first sale" onAction={() => onGo("record")}>
+          Tell PocketOga what you sold, and it will appear here after you tap Save.
+        </EmptyState>
       ) : (
-        <ul className="ledger-list">
+        <ul className="list" aria-label="Ledger entries, newest first">
           {newestFirst.map((e, i) => {
             const day = dayLabel(e.created_at);
-            const showDay = i === 0 || dayLabel(newestFirst[i - 1].created_at) !== day;
+            const newDay = i === 0 || dayLabel(newestFirst[i - 1].created_at) !== day;
+            const what = itemText(e);
             return (
               <li key={e.id}>
-                {showDay && <h3 className="day">{day}</h3>}
-                <div className={`ledger-row entry-${e.type}`}>
-                  <div className="ledger-main">
-                    <div className="ledger-who">{e.customer === shop.id ? "Your shop" : e.customer}</div>
-                    <div className="ledger-meta">
+                {newDay && <h2 className="day-label">{day}</h2>}
+                <div className={`card ledger-row kind-${e.type}`}>
+                  <span className="ledger-main">
+                    <span className="ledger-who">{e.customer === shop.id ? "Your shop" : e.customer}</span>
+                    <span className="muted small">
                       {typeLabel(e.type)}
-                      {e.item ? ` · ${e.quantity ? e.quantity + " × " : ""}${e.item}` : ""} · {timeLabel(e.created_at)}
-                    </div>
-                  </div>
-                  <div className="ledger-amount">{formatKobo(e.amount_kobo)}</div>
+                      {what && ` · ${what}`} · {timeLabel(e.created_at)}
+                    </span>
+                  </span>
+                  <span className="ledger-amount">
+                    {formatKobo(e.amount_kobo)}
+                    <span className="seq">#{e.seq}</span>
+                  </span>
                 </div>
               </li>
             );
           })}
         </ul>
       )}
-
-      {shop.demo && (
-        <div className="demo-tools">
-          <p className="small muted">Demo tools</p>
-          <button
-            className="btn btn-ghost"
-            onClick={() => {
-              tamperDemoEntry(shop.id);
-              load();
-            }}
-          >
-            Secretly change an old entry
-          </button>
-          <button
-            className="btn btn-ghost"
-            onClick={() => {
-              clearLocalLedger(shop.id);
-              onResetDemo({ id: createDemoShop(), name: DEMO_SHOP_NAME, demo: true });
-            }}
-          >
-            Reset demo shop
-          </button>
-        </div>
-      )}
-    </section>
+    </>
   );
 }

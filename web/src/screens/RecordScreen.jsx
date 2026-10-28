@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError, friendlyError, getProposal, proposeAudio, proposeText } from "../api.js";
 import { recordingToWavBase64 } from "../wav.js";
+import { plural } from "../format.js";
+import { ScreenHeader } from "../ui.jsx";
 import ConfirmCard from "./ConfirmCard.jsx";
 
 const MAX_SECONDS = 120; // keeps the upload well under the server's 12 MB limit
 
 // Record a voice note (or type one), send it to /propose, then show the
 // confirm card. After Save or Reject, shows the outcome.
-export default function RecordScreen({ shop, onSeeLedger }) {
+export default function RecordScreen({ shop, onGo }) {
   const [proposal, setProposal] = useState(null);
   const [outcome, setOutcome] = useState(null); // { kind: "saved"|"rejected", count? }
   const [busy, setBusy] = useState(null); // loading message, or null
@@ -35,6 +37,7 @@ export default function RecordScreen({ shop, onSeeLedger }) {
   function showProposal(p) {
     sessionStorage.setItem(pendingKey, p.id);
     setProposal(p);
+    window.scrollTo(0, 0);
   }
 
   function finish(result) {
@@ -77,7 +80,7 @@ export default function RecordScreen({ shop, onSeeLedger }) {
       rec.cleanup();
       setRecording(false);
       if (Date.now() - started < 1000) {
-        setError("That was too short. Hold on and talk, then tap Stop.");
+        setError("That was too short. Tap the mic, talk, then tap again to stop.");
         return;
       }
       sendAudio(new Blob(chunks, { type: rec.mimeType }));
@@ -124,31 +127,28 @@ export default function RecordScreen({ shop, onSeeLedger }) {
   // --- What to show ---
 
   if (outcome) {
+    const saved = outcome.kind === "saved";
     return (
-      <section className="outcome">
-        {outcome.kind === "saved" ? (
-          <>
-            <div className="outcome-icon ok" aria-hidden="true">✓</div>
-            <h2>Saved</h2>
-            <p>
-              {outcome.already
-                ? "This note was already saved before. Nothing was added twice."
-                : `${outcome.count} ${outcome.count === 1 ? "entry" : "entries"} added to your ledger.`}
-            </p>
-            <button className="btn btn-secondary" onClick={onSeeLedger}>
-              See ledger
-            </button>
-          </>
-        ) : (
-          <>
-            <div className="outcome-icon no" aria-hidden="true">✕</div>
-            <h2>Not saved</h2>
-            <p>Nothing was written to your ledger.</p>
-          </>
-        )}
+      <section className="outcome" aria-live="polite">
+        <div className={`outcome-mark ${saved ? "ok" : "no"}`} aria-hidden="true">
+          <svg viewBox="0 0 24 24">{saved ? <path d="m5 12 5 5 9-10" /> : <path d="M6 6l12 12M18 6 6 18" />}</svg>
+        </div>
+        <h1>{saved ? "Saved" : "Not saved"}</h1>
+        <p>
+          {!saved
+            ? "Nothing was written to your ledger."
+            : outcome.already
+              ? "This note was already saved. Nothing was added twice."
+              : `${plural(outcome.count, "entry", "entries")} added to your ledger.`}
+        </p>
         <button className="btn btn-primary" onClick={startOver}>
           Record another
         </button>
+        {saved && (
+          <button className="btn btn-secondary" onClick={() => onGo("ledger")}>
+            See ledger
+          </button>
+        )}
       </section>
     );
   }
@@ -159,38 +159,50 @@ export default function RecordScreen({ shop, onSeeLedger }) {
 
   return (
     <section className="record">
-      <h2 className="screen-title">Tell PocketOga what happened</h2>
-      <p className="hint">Example: “Mama Bisi buy 2 bags of rice, 15k, she pay 10k, remain 5k.”</p>
+      <ScreenHeader title="Record" sub="Say what you sold, what was paid, or what is still owed." />
 
-      {busy ? (
-        <div className="loading" role="status">
-          <div className="spinner" aria-hidden="true" />
-          <p>{busy}</p>
-        </div>
-      ) : canRecord ? (
-        <div className="mic-wrap">
-          <button
-            className={recording ? "mic recording" : "mic"}
-            onClick={recording ? stopRecording : startRecording}
-            aria-label={recording ? "Stop recording" : "Start recording"}
-          >
-            <span className="mic-symbol" aria-hidden="true">{recording ? "■" : "🎤"}</span>
-          </button>
-          <p className="mic-label">
-            {recording ? `Recording… ${seconds}s — tap to stop` : "Tap to talk"}
-          </p>
-        </div>
-      ) : (
-        <p className="notice">Voice recording does not work in this browser here. Type your note below.</p>
-      )}
+      <div className="mic-area">
+        {busy ? (
+          <div className="mic-busy" role="status">
+            <div className="spinner" aria-hidden="true" />
+            <p>{busy}</p>
+          </div>
+        ) : canRecord ? (
+          <>
+            <button
+              className={recording ? "mic is-recording" : "mic"}
+              onClick={recording ? stopRecording : startRecording}
+              aria-label={recording ? "Stop recording and send" : "Start recording a voice note"}
+              aria-pressed={recording}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                {recording ? (
+                  <rect x="7" y="7" width="10" height="10" rx="1.5" className="fill" />
+                ) : (
+                  <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Zm-6 9a6 6 0 0 0 12 0M12 18v3" />
+                )}
+              </svg>
+            </button>
+            <p className="mic-label" aria-live="polite">
+              {recording ? `Recording ${seconds}s · tap to stop` : "Tap to talk"}
+            </p>
+          </>
+        ) : (
+          <p className="muted center">Voice recording is not available in this browser here. Type your note below.</p>
+        )}
+      </div>
+
+      <p className="example">
+        For example: “Mama Bisi buy 2 bags of rice, 15k. She pay 10k, remain 5k.”
+      </p>
 
       {error && (
-        <div className="alert alert-error" role="alert">
-          {error}
+        <div className="state state-error" role="alert">
+          <p>{error}</p>
         </div>
       )}
 
-      <form className="type-box" onSubmit={sendText}>
+      <form className="stack type-box" onSubmit={sendText}>
         <label htmlFor="note-text">Or type it</label>
         <textarea
           id="note-text"

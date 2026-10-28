@@ -11,6 +11,7 @@ import { ProposalStore } from "./proposals.mjs";
 import { PromiseStore, refreshPromises } from "./promises.mjs";
 import { customerDebts, chaseForShop } from "./debts.mjs";
 import { moneyLeakReport } from "./leak.mjs";
+import { createModelClient } from "./model.mjs";
 import { propose, confirmProposal, fixProposal, rejectProposal, getProposal } from "./voice.mjs";
 import {
   verifyWhatsAppSignature,
@@ -214,15 +215,25 @@ export function createWebhookServer({ ledger, proposals, promises, model }) {
   });
 }
 
-const invokedAsMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (invokedAsMain) {
-  const db = new DatabaseSync(process.env.LEDGER_DB ?? "pocketoga.db");
-  const deps = {
+// Builds every dependency the HTTP handlers need — real model client,
+// ledger, proposals, promises — without opening any listening socket. The
+// entry point calls this and then listens; tests call it with a fake env
+// so a missing import or undefined dependency fails the suite.
+export function buildDeps(env = process.env) {
+  const db = new DatabaseSync(env.LEDGER_DB ?? "pocketoga.db");
+  return {
+    db,
     ledger: new Ledger(db),
     proposals: new ProposalStore(db),
     promises: new PromiseStore(db),
-    model: createModelClient({}),
+    model: createModelClient({ apiKey: env.META_API_KEY ?? null }),
+    env,
   };
+}
+
+const invokedAsMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invokedAsMain) {
+  const deps = buildDeps(process.env);
   const port = Number(process.env.PORT ?? 3000);
   const webhookPort = Number(process.env.WEBHOOK_PORT ?? 3001);
   createVoiceServer(deps).listen(port, () =>

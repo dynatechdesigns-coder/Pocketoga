@@ -1,27 +1,27 @@
 import { useState } from "react";
 import { confirmProposal, fixProposal, friendlyError, rejectProposal } from "../api.js";
-import { mirrorConfirmed } from "../localLedger.js";
-import { formatKobo, typeLabel } from "../money.js";
+import { formatDueDay, formatKobo, itemText, typeLabel } from "../format.js";
 
 // Server flags are written for developers ("entry 1: missing customer name").
-// Make them read like plain words.
+// Make them read like plain words, and drop repeats.
 function plainFlag(flag) {
   const s = flag
     .replace(/^needs clarification:\s*/i, "")
     .replace(/^entry (\d+):\s*/i, "Line $1: ")
-    .replace(/^(total|paid|remainder):\s*/i, (_, w) => `${w === "remainder" ? "Still owed" : w}: `);
+    .replace(/^remainder:\s*/i, "Still owed: ");
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 // Shows what PocketOga heard and what it wants to save. Nothing is saved
-// until the trader taps Save.
+// until the trader taps Save, and Save stays locked while anything needs
+// checking.
 export default function ConfirmCard({ proposal, shopId, onUpdate, onFinish, onStartOver }) {
   const [busy, setBusy] = useState(null); // "save" | "fix" | "reject" | null
   const [error, setError] = useState(null);
   const [fixing, setFixing] = useState(false);
   const [correction, setCorrection] = useState("");
 
-  const problems = proposal.flags.map(plainFlag);
+  const problems = [...new Set(proposal.flags.map(plainFlag))];
   if (problems.length === 0 && proposal.question) problems.push(proposal.question);
   const canSave = proposal.status === "pending" && problems.length === 0 && proposal.entries.length > 0;
 
@@ -41,7 +41,6 @@ export default function ConfirmCard({ proposal, shopId, onUpdate, onFinish, onSt
   const save = () =>
     run("save", async () => {
       const res = await confirmProposal(proposal.id);
-      if (!res.alreadyConfirmed) mirrorConfirmed(shopId, res.proposal, res.recordedIds);
       onFinish({ kind: "saved", count: res.recordedIds.length, already: res.alreadyConfirmed });
     });
 
@@ -62,44 +61,60 @@ export default function ConfirmCard({ proposal, shopId, onUpdate, onFinish, onSt
   };
 
   const t = proposal.totals;
+  const p = proposal.promise;
 
   return (
     <section className="confirm" aria-busy={!!busy}>
-      <h2 className="screen-title">Check am before you save</h2>
+      <header className="screen-header">
+        <h1>Check before you save</h1>
+      </header>
 
-      <div className="heard">
-        <div className="label">PocketOga heard</div>
+      {problems.length > 0 && (
+        <div className="check-box" role="alert">
+          <p className="check-title">Check this</p>
+          <ul>
+            {problems.map((q, i) => (
+              <li key={i}>{q}</li>
+            ))}
+          </ul>
+          <p className="small">Tap Fix and tell PocketOga the right answer.</p>
+        </div>
+      )}
+
+      <figure className="heard">
+        <figcaption className="card-label">PocketOga heard</figcaption>
         <blockquote>“{proposal.heard}”</blockquote>
-      </div>
+      </figure>
 
       {proposal.entries.length > 0 ? (
-        <ul className="entries">
+        <ul className="list" aria-label="Entries to save">
           {proposal.entries.map((e, i) => (
-            <li key={i} className={`entry entry-${e.type}`}>
+            <li key={i} className={`card entry kind-${e.type}`}>
               <div className="entry-top">
-                <span className="entry-type">{typeLabel(e.type)}</span>
+                <span className="card-label">{typeLabel(e.type)}</span>
                 <span className="entry-who">
                   {e.customer === shopId ? "Your shop" : e.customer ?? <em className="missing">No name</em>}
                 </span>
               </div>
-              <div className="amount">
-                {e.amountKobo === null ? <em className="missing">Amount missing</em> : formatKobo(e.amountKobo)}
-              </div>
-              {(e.item || e.quantity) && (
-                <div className="entry-item">
-                  {e.quantity ? `${e.quantity} × ` : ""}
-                  {e.item ?? "item not named"}
-                </div>
+              <p className="figure">
+                {Number.isInteger(e.amountKobo) ? formatKobo(e.amountKobo) : <em className="missing">Amount missing</em>}
+              </p>
+              {itemText(e) && (
+                <p className="muted">
+                  {itemText(e)}
+                  {e.quantity > 1 && e.priceBasis === "total" && ` · price is for all ${e.quantity}`}
+                  {e.quantity > 1 && e.priceBasis === "each" && " · price is for each one"}
+                </p>
               )}
             </li>
           ))}
         </ul>
       ) : (
-        <p className="notice">No entries yet.</p>
+        <p className="state">Nothing to save yet.</p>
       )}
 
       {t && (
-        <dl className="totals">
+        <dl className="card facts facts-3">
           <div>
             <dt>Total</dt>
             <dd>{formatKobo(t.totalKobo)}</dd>
@@ -115,23 +130,21 @@ export default function ConfirmCard({ proposal, shopId, onUpdate, onFinish, onSt
         </dl>
       )}
 
-      {problems.length > 0 && (
-        <div className="alert alert-warn" role="status">
-          <strong>Please check:</strong>
-          <ul>
-            {problems.map((p, i) => (
-              <li key={i}>{p}</li>
-            ))}
-          </ul>
-          <p className="small">Tap Fix and tell PocketOga the right answer.</p>
+      {p && (
+        <div className="card promise-line">
+          <span className="card-label">Promise</span>
+          <p>
+            {p.customer} will pay {Number.isInteger(p.amountKobo) ? <strong>{formatKobo(p.amountKobo)}</strong> : "the balance"}{" "}
+            by <strong>{formatDueDay(p.dueDate)}</strong>
+          </p>
         </div>
       )}
 
       {error && (
-        <div className="alert alert-error" role="alert">
-          {error}
-          {/expired|too old|record it again/i.test(error) && (
-            <button className="btn-link" onClick={onStartOver}>
+        <div className="state state-error" role="alert">
+          <p>{error}</p>
+          {/30 minutes|record it again/i.test(error) && (
+            <button className="btn btn-secondary" onClick={onStartOver}>
               Record again
             </button>
           )}
@@ -139,7 +152,7 @@ export default function ConfirmCard({ proposal, shopId, onUpdate, onFinish, onSt
       )}
 
       {fixing ? (
-        <form className="fix-box" onSubmit={sendFix}>
+        <form className="card stack" onSubmit={sendFix}>
           <label htmlFor="fix-text">What should change?</label>
           <textarea
             id="fix-text"
@@ -152,7 +165,7 @@ export default function ConfirmCard({ proposal, shopId, onUpdate, onFinish, onSt
             disabled={!!busy}
           />
           <div className="row">
-            <button type="button" className="btn btn-ghost" onClick={() => setFixing(false)} disabled={!!busy}>
+            <button type="button" className="btn btn-quiet" onClick={() => setFixing(false)} disabled={!!busy}>
               Cancel
             </button>
             <button className="btn btn-primary" disabled={!correction.trim() || !!busy}>
@@ -162,15 +175,25 @@ export default function ConfirmCard({ proposal, shopId, onUpdate, onFinish, onSt
         </form>
       ) : (
         <div className="actions">
-          <button className="btn btn-save" onClick={save} disabled={!canSave || !!busy}>
-            {busy === "save" ? "Saving…" : "✓ Save"}
+          <button
+            className="btn btn-primary btn-lg"
+            onClick={save}
+            disabled={!canSave || !!busy}
+            aria-describedby={canSave ? undefined : "save-why"}
+          >
+            {busy === "save" ? "Saving…" : "Save"}
           </button>
+          {!canSave && (
+            <p id="save-why" className="save-why">
+              {problems.length > 0 ? "Save is locked until the check above is answered." : "Nothing to save."}
+            </p>
+          )}
           <div className="row">
-            <button className="btn btn-fix" onClick={() => setFixing(true)} disabled={!!busy}>
-              ✎ Fix
+            <button className="btn btn-check" onClick={() => setFixing(true)} disabled={!!busy}>
+              Fix
             </button>
-            <button className="btn btn-reject" onClick={reject} disabled={!!busy}>
-              {busy === "reject" ? "…" : "✕ Reject"}
+            <button className="btn btn-quiet" onClick={reject} disabled={!!busy} aria-label="Reject, do not save">
+              {busy === "reject" ? "Rejecting…" : "Reject"}
             </button>
           </div>
         </div>

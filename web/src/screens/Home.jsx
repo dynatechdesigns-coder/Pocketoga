@@ -1,13 +1,9 @@
 import { useState } from "react";
-import { createDemoShop, DEMO_SHOP_NAME } from "../localLedger.js";
+import { DEMO_SHOP_ID } from "../api.js";
 
-// Landing screen: one big button into a demo shop full of fake entries.
+// Landing screen: one clear way in — the demo shop, no signup or password.
 export default function Home({ onOpen }) {
   const [name, setName] = useState("");
-
-  function openDemo() {
-    onOpen({ id: createDemoShop(), name: DEMO_SHOP_NAME, demo: true });
-  }
 
   // Testing only: opens a shop by name. No password yet — real auth comes later.
   function openNamed(e) {
@@ -18,18 +14,27 @@ export default function Home({ onOpen }) {
 
   return (
     <main className="home">
-      <img src="/icon.svg" alt="" className="home-logo" />
-      <h1>PocketOga</h1>
-      <p className="tagline">Talk your sales. Check am. Save am.</p>
+      <img src="/icon.svg" alt="" className="home-logo" width="72" height="72" />
+      <h1 className="home-title">PocketOga</h1>
+      <p className="home-lead">Finds and protects the money your shop is losing.</p>
 
-      <button className="btn btn-primary btn-xl" onClick={openDemo}>
+      <ul className="home-points">
+        <li>Talk your sales. PocketOga writes them down.</li>
+        <li>Nothing saves until you tap Save.</li>
+        <li>See who owes you, and what is leaking.</li>
+      </ul>
+
+      <button
+        className="btn btn-primary btn-lg"
+        onClick={() => onOpen({ id: DEMO_SHOP_ID, name: "Mama Nkechi Provisions", demo: true })}
+      >
         Try the demo shop
       </button>
-      <p className="hint">No signup. No password. Fake data only.</p>
+      <p className="muted small center">No signup. No password. Fake data only.</p>
 
       <details className="home-more">
         <summary>Open a test shop by name</summary>
-        <form onSubmit={openNamed}>
+        <form onSubmit={openNamed} className="stack">
           <label htmlFor="shop-name">Shop name</label>
           <input
             id="shop-name"

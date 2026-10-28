@@ -2,6 +2,6 @@
   "name": "pocketoga",
   "type": "module",
   "scripts": {
-    "test": "node --test ledger.test.mjs money.test.mjs voice.test.mjs whatsapp.test.mjs messages.test.mjs debts.test.mjs"
+    "test": "node --test ledger.test.mjs money.test.mjs voice.test.mjs whatsapp.test.mjs messages.test.mjs debts.test.mjs server.test.mjs"
   }
 }

@@ -1,10 +1,13 @@
 // Every call to the PocketOga backend lives in this file. To move the backend
 // or add real auth later, change API_BASE and authHeaders() — nothing else.
-import { readLocalLedger, verifyLocalLedger } from "./localLedger.js";
+// Response shapes are documented next to each call (see server.mjs).
 
 // Dev: "/api" is forwarded to http://localhost:3000 by vite.config.js.
 // Production: set VITE_API_BASE at build time (e.g. https://api.example.com).
 const API_BASE = (import.meta.env.VITE_API_BASE ?? "/api").replace(/\/$/, "");
+
+// Must match DEMO_SHOP_ID in scripts/seed-demo.mjs.
+export const DEMO_SHOP_ID = "demo-shop";
 
 let shopId = null;
 
@@ -44,9 +47,10 @@ async function request(method, path, body) {
   return data;
 }
 
-// --- Voice-to-confirm loop (shapes match server.mjs) -----------------------
+// --- Voice-to-confirm loop ---------------------------------------------------
 
 // POST /propose { text } -> { proposal }
+// proposal: { id, status, heard, question, entries[], totals, flags[], promise }
 export async function proposeText(text) {
   return (await request("POST", "/propose", { text })).proposal;
 }
@@ -76,21 +80,31 @@ export async function getProposal(id) {
   return (await request("GET", `/proposals/${encodeURIComponent(id)}`)).proposal;
 }
 
-// --- Ledger ------------------------------------------------------------------
+// --- Read-only views ---------------------------------------------------------
 
-// server.mjs has no ledger route yet. When one is added it should be
-// GET /ledger -> { entries: ledger.list(shopId), verify: ledger.verify(shopId) }
-// and this function will use it automatically. Until then we show the copy
-// kept on this device (demo entries + entries saved from this phone), with
-// the same SHA-256 chain check run in the browser.
-export async function getLedger() {
-  try {
-    const data = await request("GET", "/ledger");
-    return { source: "server", entries: data.entries, verify: data.verify };
-  } catch (err) {
-    const entries = readLocalLedger(shopId);
-    return { source: "device", entries, verify: verifyLocalLedger(entries), serverStatus: err.status };
-  }
+// GET /ledger -> { entries: rows ordered by seq, verify }
+// verify: { ok: true, count } or { ok: false, brokenId, index, reason }
+export function getLedger() {
+  return request("GET", "/ledger");
+}
+
+// GET /debts -> { debts, chase }
+// debts[]: { customer, owedKobo, salesKobo, paidKobo, oldestUnpaidAgeDays, lastPaymentAt }
+// chase[]: { customer, owedKobo, ageDays, broken, score } — ranked, debtors only
+export function getDebts() {
+  return request("GET", "/debts");
+}
+
+// GET /promises -> { promises[]: { id, customer, amount_kobo, due_date,
+//   status: open|kept|broken|cancelled, created_at, resolved_at, paid_kobo } }
+export async function getPromises() {
+  return (await request("GET", "/promises")).promises;
+}
+
+// GET /report -> { report: { owed: { totalKobo, customers }, overdue: { amountKobo },
+//   broken: { count, amountKobo }, shortfalls[], noStockRecord, belowCost: { items[], skippedItems } } }
+export async function getReport() {
+  return (await request("GET", "/report")).report;
 }
 
 // Turns any error into one plain sentence for the trader.
@@ -98,21 +112,23 @@ export function friendlyError(err) {
   if (!(err instanceof ApiError)) return "Something went wrong. Please try again.";
   switch (err.status) {
     case 0:
-      return "Cannot reach PocketOga. Check your internet and try again.";
+      return "Cannot reach PocketOga. Check your connection and try again.";
     case 403:
       return "This note belongs to another shop.";
     case 404:
-      return "We could not find that note. Please record it again.";
+      return "We could not find that. Please try again.";
     case 409:
       return err.message.includes("confirmed")
         ? "This note is already saved. To change it, record a new note."
         : "This note was rejected. Please record it again.";
     case 410:
-      return "This note is too old (30 minutes). Please record it again.";
+      return "This note is more than 30 minutes old. Please record it again.";
     case 413:
       return "That recording is too long. Keep it under 2 minutes.";
+    case 500:
     case 502:
-      return "PocketOga could not understand the note right now. Please try again in a moment.";
+    case 503:
+      return "PocketOga is not answering right now. Please try again in a moment.";
     default:
       return err.message.charAt(0).toUpperCase() + err.message.slice(1);
   }
