@@ -384,8 +384,9 @@ describe("whatsapp webhook (mocked fetch, no network)", () => {
       assert.equal(ctx.ledger.list(shop).length, 2);
       const reply = sends(ctx).at(-1).body;
       assert.equal(reply.type, "text");
-      assert.match(reply.text.body, /Saved:/);
+      assert.match(reply.text.body, /✅ \*Saved\*/);
       assert.match(reply.text.body, /₦15,000/);
+      assert.match(reply.text.body, /owes \*₦5,000\*/);
     } finally {
       await teardown(ctx);
     }
@@ -416,7 +417,7 @@ describe("whatsapp webhook (mocked fetch, no network)", () => {
       await postWebhook(ctx, wrap([waButton(FROM_A, mid(), `reject:${id}`)]));
       assert.equal(ctx.proposals.get(id).status, "rejected");
       assert.deepEqual(ctx.ledger.list(shop), []);
-      assert.match(sends(ctx).at(-1).body.text.body, /Discarded/);
+      assert.match(sends(ctx).at(-1).body.text.body, /Not saved/);
     } finally {
       await teardown(ctx);
     }
@@ -477,8 +478,9 @@ describe("whatsapp webhook (mocked fetch, no network)", () => {
       assert.equal(ctx.ledger.list(shop).length, 2);
       const reply = sends(ctx).at(-1).body;
       assert.equal(reply.type, "text");
-      assert.match(reply.text.body, /Saved:/);
+      assert.match(reply.text.body, /✅ \*Saved\*/);
       assert.match(reply.text.body, /₦15,000/);
+      assert.match(reply.text.body, /owes \*₦5,000\*/);
     } finally {
       await teardown(ctx);
     }

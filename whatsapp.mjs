@@ -11,17 +11,31 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { propose, confirmProposal, fixProposal, rejectProposal } from "./voice.mjs";
-import { formatKobo } from "./money.mjs";
+import {
+  NOT_REGISTERED,
+  FFMPEG_MISSING,
+  AUDIO_FAILED,
+  FIX_ASK,
+  ALREADY_SAVED,
+  UNSUPPORTED,
+  GENERIC_ERROR,
+  UNKNOWN_BUTTON,
+  PROPOSAL_NOT_FOUND,
+  OTHER_SHOP,
+  HEAR_FAILED,
+  BAD_AUDIO_JSON,
+  CORRECTION_AS_TEXT,
+  REJECTED,
+  alreadyConfirmedFix,
+  friendlyErrorText,
+  renderProposalCard,
+  renderSavedReply,
+} from "./messages.mjs";
 
 export const GRAPH_VERSION = "v25.0";
 const graphUrl = (path) => `https://graph.facebook.com/${GRAPH_VERSION}/${path}`;
 
 const defaultExecFile = promisify(cpExecFile);
-
-const NOT_REGISTERED = "Sorry, this number is not registered on PocketOga. Ask your shop owner to register it first.";
-const FFMPEG_MISSING = "Sorry, I can't listen to voice notes right now. Please send it as text.";
-const AUDIO_FAILED = "Sorry, I couldn't process that voice note. Please send it as text.";
-const FIX_ASK = "What should I change? Send the correction as text or a voice note.";
 
 export const WHATSAPP_SCHEMA = `
 CREATE TABLE IF NOT EXISTS processed_messages (
@@ -181,66 +195,14 @@ async function sendText(ctx, to, body) {
   return graphSend(ctx, { to, type: "text", text: { body: String(body).slice(0, 4000) } });
 }
 
-function waButton(id, title) {
-  return { type: "reply", reply: { id, title } };
-}
-
-function renderEntryLine(index, e) {
-  const parts = [`${index + 1}. ${e.type}`, e.customer ?? "?"];
-  if (e.item) parts.push(e.quantity ? `${e.item} x${e.quantity}${e.unit ? ` ${e.unit}` : ""}` : e.item);
-  else if (e.quantity) parts.push(`x${e.quantity}`);
-  parts.push(e.amountKobo == null ? "amount unknown" : formatKobo(e.amountKobo));
-  const line = parts.filter(Boolean).join(" — ");
-  return e.eachKobo != null ? `${line} (${formatKobo(e.eachKobo)} each)` : line;
-}
-
-function renderTotalsLine(totals) {
-  if (!totals) return null;
-  const legs = [];
-  if (totals.totalKobo != null) legs.push(`Total ${formatKobo(totals.totalKobo)}`);
-  if (totals.paidKobo != null) legs.push(`paid ${formatKobo(totals.paidKobo)}`);
-  if (totals.remainderKobo != null) legs.push(`remainder ${formatKobo(totals.remainderKobo)}`);
-  return legs.length ? legs.join(", ") : null;
-}
-
-// Card for a proposal: what was heard, entries with naira amounts, flags or
-// the clarifying question. A pending question/flag means no Save button.
-export function renderProposalCard(proposal) {
-  const lines = [`Heard: ${proposal.heard}`];
-  proposal.entries.forEach((e, i) => lines.push(renderEntryLine(i, e)));
-  const totals = renderTotalsLine(proposal.totals);
-  if (totals) lines.push(totals);
-  if (proposal.flags.length) lines.push(`⚠ ${proposal.flags.join("; ")}`);
-  if (proposal.question) lines.push(`❓ ${proposal.question}`);
-  let text = lines.join("\n");
-  if (text.length > 900) text = `${text.slice(0, 897)}...`;
-  const blocked = proposal.flags.length > 0 || !!proposal.question;
-  const buttons = blocked
-    ? [waButton(`fix:${proposal.id}`, "Fix"), waButton(`reject:${proposal.id}`, "Reject")]
-    : [
-        waButton(`confirm:${proposal.id}`, "Save"),
-        waButton(`fix:${proposal.id}`, "Fix"),
-        waButton(`reject:${proposal.id}`, "Reject"),
-      ];
-  return { text, buttons };
-}
-
-async function sendCard(ctx, to, proposal) {
-  const { text, buttons } = renderProposalCard(proposal);
+async function sendCard(ctx, to, proposal, shopId) {
+  const existing = ctx.ledger && shopId ? ctx.ledger.list(shopId) : [];
+  const { text, buttons } = renderProposalCard(proposal, { existing, shopId });
   return graphSend(ctx, {
     to,
     type: "interactive",
     interactive: { type: "button", body: { text }, action: { buttons } },
   });
-}
-
-function summarizeRecorded(ctx, recordedIds) {
-  return recordedIds
-    .map((id) => {
-      const row = ctx.ledger.get(id);
-      return `${row.type} ${formatKobo(row.amount_kobo)} (${row.customer})`;
-    })
-    .join(" + ");
 }
 
 // --- Media -----------------------------------------------------------------
@@ -292,12 +254,8 @@ async function replyFriendly(ctx, to, fn) {
   try {
     await fn();
   } catch (err) {
-    if (err && typeof err.status === "number") {
-      await sendText(ctx, to, err.message);
-      return;
-    }
-    ctx.log(`request failed: ${err?.message ?? err}`);
-    await sendText(ctx, to, "Sorry, something went wrong. Please try again.");
+    if (!(err && typeof err.status === "number")) ctx.log(`request failed: ${err?.message ?? err}`);
+    await sendText(ctx, to, friendlyErrorText(err));
   }
 }
 
@@ -305,22 +263,22 @@ async function handleButtonReply(ctx, sender, shopId, reply) {
   const match = /^(\w+):(\d+)$/.exec(reply?.id ?? "");
   const action = match?.[1];
   if (!match || !["confirm", "fix", "reject"].includes(action)) {
-    await sendText(ctx, sender, "I didn't understand that button. Send your note again.");
+    await sendText(ctx, sender, UNKNOWN_BUTTON);
     return;
   }
   const proposalId = Number(match[2]);
   const row = ctx.proposals.get(proposalId);
   if (!row) {
-    await sendText(ctx, sender, "I can't find that proposal. Send your note again.");
+    await sendText(ctx, sender, PROPOSAL_NOT_FOUND);
     return;
   }
   if (row.shop_id !== shopId) {
-    await sendText(ctx, sender, "That proposal belongs to another shop.");
+    await sendText(ctx, sender, OTHER_SHOP);
     return;
   }
   if (action === "fix") {
     if (row.status === "confirmed") {
-      await sendText(ctx, sender, `Proposal ${proposalId} is already confirmed; send a new note to correct it.`);
+      await sendText(ctx, sender, alreadyConfirmedFix(proposalId));
       return;
     }
     ctx.store.setFixState(sender, proposalId);
@@ -332,14 +290,15 @@ async function handleButtonReply(ctx, sender, shopId, reply) {
       const out = confirmProposal(proposalId, shopId, { proposals: ctx.proposals, ledger: ctx.ledger });
       ctx.store.clearFixState(sender);
       if (out.alreadyConfirmed) {
-        await sendText(ctx, sender, "Already saved — recorded once.");
+        await sendText(ctx, sender, ALREADY_SAVED);
         return;
       }
-      await sendText(ctx, sender, `Saved: ${summarizeRecorded(ctx, out.recordedIds)}.`);
+      const recorded = out.recordedIds.map((id) => ctx.ledger.get(id));
+      await sendText(ctx, sender, renderSavedReply({ recorded, existing: ctx.ledger.list(shopId) }));
     } else {
       rejectProposal(proposalId, shopId, { proposals: ctx.proposals });
       ctx.store.clearFixState(sender);
-      await sendText(ctx, sender, "Discarded — nothing was saved.");
+      await sendText(ctx, sender, REJECTED);
     }
   });
 }
@@ -348,12 +307,8 @@ async function handleFixError(ctx, sender, err) {
   // Terminal proposal states clear the pending fix; anything else keeps it
   // so the trader can send the correction again.
   if (err && [404, 409, 410].includes(err.status)) ctx.store.clearFixState(sender);
-  if (err && typeof err.status === "number") {
-    await sendText(ctx, sender, err.message);
-    return;
-  }
-  ctx.log(`fix failed: ${err?.message ?? err}`);
-  await sendText(ctx, sender, "Sorry, something went wrong. Please try again.");
+  if (!(err && typeof err.status === "number")) ctx.log(`fix failed: ${err?.message ?? err}`);
+  await sendText(ctx, sender, friendlyErrorText(err));
 }
 
 async function handleCorrection(ctx, sender, shopId, fixProposalId, message) {
@@ -364,7 +319,7 @@ async function handleCorrection(ctx, sender, shopId, fixProposalId, message) {
         model: ctx.model,
       });
       ctx.store.clearFixState(sender);
-      await sendCard(ctx, sender, revised);
+      await sendCard(ctx, sender, revised, shopId);
     } catch (err) {
       await handleFixError(ctx, sender, err);
     }
@@ -394,28 +349,28 @@ async function handleCorrection(ctx, sender, shopId, fixProposalId, message) {
       const raw = await ctx.model.complete({ audio: { data, format: "wav" } });
       heard = typeof raw?.heard === "string" && raw.heard.trim() ? raw.heard.trim() : null;
       if (!heard) {
-        await sendText(ctx, sender, "I couldn't hear that — please send the correction again.");
+        await sendText(ctx, sender, HEAR_FAILED);
         return;
       }
     } catch (err) {
       if (err && err.code === "MODEL_BAD_JSON") {
-        await sendText(ctx, sender, "I no hear am well — abeg talk am again.");
+        await sendText(ctx, sender, BAD_AUDIO_JSON);
         return;
       }
       ctx.log(`voice correction failed: ${err?.message ?? err}`);
-      await sendText(ctx, sender, "Sorry, something went wrong. Please try again.");
+      await sendText(ctx, sender, GENERIC_ERROR);
       return;
     }
     try {
       const revised = await fixProposal(fixProposalId, shopId, heard, { proposals: ctx.proposals, model: ctx.model });
       ctx.store.clearFixState(sender);
-      await sendCard(ctx, sender, revised);
+      await sendCard(ctx, sender, revised, shopId);
     } catch (err) {
       await handleFixError(ctx, sender, err);
     }
     return;
   }
-  await sendText(ctx, sender, "Please send the correction as text or a voice note.");
+  await sendText(ctx, sender, CORRECTION_AS_TEXT);
 }
 
 async function handleIncomingMessage(message, ctx) {
@@ -454,7 +409,7 @@ async function handleIncomingMessage(message, ctx) {
         proposals: ctx.proposals,
         model: ctx.model,
       });
-      await sendCard(ctx, sender, proposal);
+      await sendCard(ctx, sender, proposal, shopId);
     } else if (message?.type === "audio") {
       const mediaId = message.audio?.id;
       if (!mediaId) {
@@ -475,9 +430,9 @@ async function handleIncomingMessage(message, ctx) {
         await sendText(ctx, sender, FFMPEG_MISSING);
         return;
       }
-      await sendCard(ctx, sender, got.result);
+      await sendCard(ctx, sender, got.result, shopId);
     } else {
-      await sendText(ctx, sender, "I can only read text and voice notes for now.");
+      await sendText(ctx, sender, UNSUPPORTED);
     }
   });
 }
