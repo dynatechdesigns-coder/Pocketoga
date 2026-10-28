@@ -59,6 +59,22 @@ export function dayLabel(iso) {
   return new Date(iso).toLocaleDateString("en-GB", { timeZone: LAGOS, weekday: "short", day: "numeric", month: "short" });
 }
 
+// Today's Lagos day as "YYYY-MM-DD", n days from now.
+export const lagosToday = (n = 0) => dayKey(Date.now() + n * 86400000);
+
+// "Due today", "Due tomorrow" or "Due Fri 30 Oct" for an open promise.
+export function dueText(day) {
+  if (day === lagosToday()) return "Due today";
+  if (day === lagosToday(1)) return "Due tomorrow";
+  return `Due ${formatDueDay(day)}`;
+}
+
+// "Good morning" / "Good afternoon" / "Good evening", by Lagos time.
+export function greeting() {
+  const h = Number(new Date().toLocaleTimeString("en-GB", { timeZone: LAGOS, hour: "2-digit", hour12: false }));
+  return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+}
+
 export const timeLabel = (iso) =>
   new Date(iso).toLocaleTimeString("en-GB", { timeZone: LAGOS, hour: "2-digit", minute: "2-digit" });
 

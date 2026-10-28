@@ -1,10 +1,15 @@
 import { useState } from "react";
+import { FileText, Mic, ScrollText, Users, Wallet } from "lucide-react";
 import { setShop } from "./api.js";
+import { greeting } from "./format.js";
+import { Avatar } from "./ui.jsx";
 import Home from "./screens/Home.jsx";
 import RecordScreen from "./screens/RecordScreen.jsx";
 import MoneyScreen from "./screens/MoneyScreen.jsx";
 import DebtsScreen from "./screens/DebtsScreen.jsx";
 import LedgerScreen from "./screens/LedgerScreen.jsx";
+import ReportScreen from "./screens/ReportScreen.jsx";
+import AccountSheet from "./screens/AccountSheet.jsx";
 
 // The open shop ({ id, name, demo }) is remembered on this device.
 const SHOP_KEY = "pocketoga.shop";
@@ -17,34 +22,21 @@ function loadShop() {
   }
 }
 
-// Simple line icons for the tab bar; they label navigation, not decoration.
-const ICONS = {
-  record: <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Zm-6 9a6 6 0 0 0 12 0M12 18v3" />,
-  money: (
-    <>
-      <rect x="3" y="6" width="18" height="12" rx="2" />
-      <circle cx="12" cy="12" r="2.5" />
-    </>
-  ),
-  debts: (
-    <>
-      <circle cx="9" cy="8" r="3" />
-      <path d="M3 20a6 6 0 0 1 12 0M16 9h5M16 13h5M18 17h3" />
-    </>
-  ),
-  ledger: <path d="M5 4h11l3 3v13H5zM9 9h6M9 13h6M9 17h4" />,
-};
-
-const TABS = [
-  { key: "record", label: "Record" },
-  { key: "money", label: "Money" },
-  { key: "debts", label: "Debts" },
-  { key: "ledger", label: "Ledger" },
+// Two tabs either side of the raised mic, so the mic sits in the centre.
+const LEFT = [
+  { key: "money", label: "Money", icon: Wallet },
+  { key: "debts", label: "Debts", icon: Users },
+];
+const RIGHT = [
+  { key: "ledger", label: "Ledger", icon: ScrollText },
+  { key: "report", label: "Report", icon: FileText },
 ];
 
 export default function App() {
   const [shop, setShopState] = useState(loadShop);
-  const [tab, setTab] = useState(shop?.demo ? "money" : "record");
+  const [tab, setTab] = useState("money");
+  const [intent, setIntent] = useState(null); // e.g. "chase": open the top debtor
+  const [account, setAccount] = useState(false);
 
   // Tell the API layer which shop we are, before any screen makes a call.
   if (shop) setShop(shop.id);
@@ -52,54 +44,94 @@ export default function App() {
   function openShop(next) {
     localStorage.setItem(SHOP_KEY, JSON.stringify(next));
     setShopState(next);
-    setTab(next.demo ? "money" : "record");
+    setTab("money");
   }
 
   function exitShop() {
+    setAccount(false);
     localStorage.removeItem(SHOP_KEY);
     setShopState(null);
   }
 
+  // Screens move between tabs with go("debts") or go("debts", "chase").
+  function go(next, nextIntent = null) {
+    setIntent(nextIntent);
+    setTab(next);
+    window.scrollTo(0, 0);
+  }
+
+  // The centre mic opens Record; on Record it starts or stops recording.
+  function pressMic() {
+    if (tab === "record") window.dispatchEvent(new Event("pocketoga:mic"));
+    else go("record");
+  }
+
   if (!shop) return <Home onOpen={openShop} />;
 
+  const tabButton = (t) => {
+    const Icon = t.icon;
+    const active = tab === t.key;
+    return (
+      <button
+        key={t.key}
+        data-part="tab"
+        aria-current={active ? "page" : undefined}
+        onClick={() => go(t.key)}
+        className="flex min-h-[68px] flex-col items-center justify-center gap-0.5 text-xs font-semibold text-muted transition-colors aria-[current=page]:font-extrabold aria-[current=page]:text-link [&_svg]:size-6"
+      >
+        <Icon aria-hidden="true" strokeWidth={active ? 2.2 : 1.75} />
+        <span>{t.label}</span>
+      </button>
+    );
+  };
+
   return (
-    <div className="app">
-      <header className="topbar">
-        <div className="topbar-inner">
-          <div className="shop-name">
-            <span className="shop-name-text">{shop.name}</span>
-            {shop.demo && <span className="badge badge-quiet">Demo</span>}
-          </div>
-          <button className="btn-text" onClick={exitShop} aria-label={`Leave ${shop.name}`}>
-            Exit
-          </button>
+    <div className="min-h-dvh">
+      <header data-part="topbar" className="mx-auto flex max-w-[680px] items-center justify-between gap-4 px-5 pt-[calc(16px+env(safe-area-inset-top))]">
+        <div className="grid min-w-0">
+          <span className="text-sm font-medium text-muted">{greeting()},</span>
+          <span className="truncate text-lg font-extrabold tracking-tight">{shop.name}</span>
         </div>
+        <button
+          data-part="avatar-btn"
+          onClick={() => setAccount(true)}
+          aria-label={`Account for ${shop.name}`}
+          className="rounded-full shadow-soft transition-transform duration-150 active:scale-96"
+        >
+          <Avatar name={shop.name} size="btn" />
+        </button>
       </header>
 
-      <main className="content" id="main">
-        {tab === "record" && <RecordScreen shop={shop} onGo={setTab} />}
-        {tab === "money" && <MoneyScreen onGo={setTab} />}
-        {tab === "debts" && <DebtsScreen onGo={setTab} />}
-        {tab === "ledger" && <LedgerScreen shop={shop} onGo={setTab} />}
+      <main id="main" className="mx-auto max-w-[680px] px-5 pt-6 pb-[calc(120px+env(safe-area-inset-bottom))]">
+        {tab === "money" && <MoneyScreen shop={shop} onGo={go} />}
+        {tab === "debts" && <DebtsScreen intent={intent} onGo={go} />}
+        {tab === "record" && <RecordScreen shop={shop} onGo={go} />}
+        {tab === "ledger" && <LedgerScreen shop={shop} onGo={go} />}
+        {tab === "report" && <ReportScreen shop={shop} />}
       </main>
 
-      <nav className="tabbar" aria-label="Main">
-        <div className="tabbar-inner">
-          {TABS.map((t) => (
+      <nav
+        aria-label="Main"
+        className="fixed inset-x-0 bottom-0 z-20 mx-auto max-w-[600px] rounded-t-3xl bg-card pb-[env(safe-area-inset-bottom)] shadow-bar md:bottom-3 md:rounded-3xl"
+      >
+        <div className="grid grid-cols-[1fr_1fr_92px_1fr_1fr] items-end px-2">
+          {LEFT.map(tabButton)}
+          <div className="grid h-[68px] place-items-center">
             <button
-              key={t.key}
-              className="tab"
-              aria-current={tab === t.key ? "page" : undefined}
-              onClick={() => setTab(t.key)}
+              data-part="tab-mic"
+              onClick={pressMic}
+              aria-label={tab === "record" ? "Record a voice note" : "Open Record"}
+              aria-current={tab === "record" ? "page" : undefined}
+              className="-mt-[34px] grid size-[66px] place-items-center rounded-full border-[5px] border-page bg-hero text-white shadow-lift transition-transform duration-150 active:scale-96 [&_svg]:size-[26px]"
             >
-              <svg viewBox="0 0 24 24" aria-hidden="true" className="tab-icon">
-                {ICONS[t.key]}
-              </svg>
-              <span>{t.label}</span>
+              <Mic aria-hidden="true" strokeWidth={2} />
             </button>
-          ))}
+          </div>
+          {RIGHT.map(tabButton)}
         </div>
       </nav>
+
+      <AccountSheet open={account} shop={shop} onClose={() => setAccount(false)} onExit={exitShop} />
     </div>
   );
 }

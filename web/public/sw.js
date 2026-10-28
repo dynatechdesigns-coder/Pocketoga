@@ -1,7 +1,7 @@
 // Minimal service worker: makes the app installable and lets the shell open
 // with a bad network. API calls (/api/...) are never cached — money data must
 // always come fresh from the server.
-const CACHE = "pocketoga-shell-v2";
+const CACHE = "pocketoga-shell-v4";
 const SHELL = ["/", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {

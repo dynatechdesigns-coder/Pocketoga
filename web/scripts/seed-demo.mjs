@@ -1,97 +1,213 @@
-// Fills the "demo-shop" with fake entries and promises so every screen of
-// the web app has something to show. Fake data only — invented names,
-// items and amounts. Uses the backend's own Ledger and PromiseStore, so the
-// hash chain is real, and writes ONLY to the database file given:
+// Fills the "demo" shop with fake data through the backend's real path:
+// POST /propose with a fake note, check the proposal, then POST /confirm.
+// It never writes the database directly, so the hash chain, the plain-code
+// checks and promise handling are exactly what a trader gets.
 //
-//   node scripts/seed-demo.mjs                 -> web/demo.db
-//   node scripts/seed-demo.mjs --db path.db    -> any other file
+//   1. start the backend:   node --env-file=.env.local server.mjs
+//   2. from web/:           npm run seed:demo
 //
-// Then start the backend with LEDGER_DB pointing at the same file. Dates are
-// relative to today, so re-seed a fresh file before each demo. Refuses to
-// add to a demo shop that already has entries (delete the file to reset).
-import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath } from "node:url";
-import { Ledger } from "../../ledger.mjs";
-import { PromiseStore } from "../../promises.mjs";
-import { lagosDay, addDays } from "../../debts.mjs";
+// Options: BACKEND_URL (default http://localhost:3000), --shop <id>
+// (default "demo"). Fake names, items and amounts only.
+//
+// Safe to run twice: each note is skipped when its entries are already in
+// the shop's ledger, so a second run adds nothing and an interrupted run
+// carries on where it stopped.
+//
+// Dates: confirm stamps entries with today's date and promise days resolve
+// forward ("today", "tomorrow"), so nothing can start out late. Seed the day
+// BEFORE a demo and, on demo day, Aunty Ngozi's promise is broken, Tunde's is
+// due today and Ada's is kept. Seeded the same day, both are simply open.
 
-export const DEMO_SHOP_ID = "demo-shop";
+const BASE = (process.env.BACKEND_URL ?? "http://localhost:3000").replace(/\/$/, "");
+const shopFlag = process.argv.indexOf("--shop");
+const SHOP = shopFlag !== -1 ? process.argv[shopFlag + 1] : "demo";
+const MAX_TRIES = 3; // proposals per note before giving up
 
-const dbFlag = process.argv.indexOf("--db");
-const dbPath = dbFlag !== -1 ? process.argv[dbFlag + 1] : fileURLToPath(new URL("../demo.db", import.meta.url));
-
-const today = lagosDay(Date.now());
-// "d days ago at hh:00 Lagos time" as an ISO string (Lagos is UTC+1, no DST).
-const at = (d, hh) => new Date(`${addDays(today, -d)}T${String(hh).padStart(2, "0")}:00:00+01:00`).toISOString();
-const due = (d) => addDays(today, d); // promise due day, d days from today
-
-// Oldest first, so the chain's order matches the dates. Amounts in naira.
-const ENTRIES = [
-  { d: 45, h: 8, type: "restock", customer: "Alaba Wholesalers", item: "rice", unit: "bag", quantity: 10, naira: 520000 },
-  { d: 45, h: 9, type: "restock", customer: "Oyingbo Depot", item: "indomie", unit: "carton", quantity: 20, naira: 180000 },
-  { d: 42, h: 8, type: "restock", customer: "Oyingbo Depot", item: "groundnut oil", unit: "tin", quantity: 4, naira: 168000 },
-  { d: 40, h: 11, type: "sale", customer: "Alhaji Musa", item: "groundnut oil", unit: "tin", quantity: 2, naira: 90000 },
-  { d: 36, h: 9, type: "sale", customer: "Mama Bisi", item: "rice", unit: "bag", quantity: 2, naira: 118000 },
-  { d: 35, h: 10, type: "payment", customer: "Mama Bisi", naira: 100000 },
-  { d: 25, h: 14, type: "sale", customer: "Chinedu", item: "indomie", unit: "carton", quantity: 3, naira: 27000 },
-  { d: 25, h: 14, type: "payment", customer: "Chinedu", naira: 27000 },
-  { d: 22, h: 8, type: "restock", customer: "Alaba Wholesalers", item: "beans", unit: "bag", quantity: 5, naira: 300000 },
-  { d: 21, h: 10, type: "sale", customer: "Aunty Ngozi", item: "beans", unit: "bag", quantity: 1, naira: 65000 },
-  { d: 19, h: 11, type: "payment", customer: "Aunty Ngozi", naira: 15000 },
-  { d: 12, h: 15, type: "sale", customer: "Mama Bisi", item: "rice", unit: "bag", quantity: 1, naira: 48000 }, // below cost
-  { d: 10, h: 9, type: "sale", customer: "Ada", item: "beans", unit: "bag", quantity: 2, naira: 120000 },
-  { d: 8, h: 16, type: "payment", customer: "Ada", naira: 50000 },
-  { d: 6, h: 13, type: "sale", customer: "Kemi", item: "rice", unit: "bag", quantity: 9, naira: 468000 }, // 12 bags sold, 10 bought
-  { d: 6, h: 13, type: "payment", customer: "Kemi", naira: 468000 },
-  { d: 4, h: 10, type: "sale", customer: "Tunde", item: "eggs", unit: "crate", quantity: 2, naira: 15000 }, // never restocked
-  { d: 2, h: 11, type: "sale", customer: "Chinedu", item: "indomie", unit: "carton", quantity: 2, naira: 16000 }, // below cost
-  { d: 2, h: 11, type: "payment", customer: "Chinedu", naira: 16000 },
+// Each fake note and exactly what must come back before we press confirm.
+// Amounts in naira; promise "day" is 0 for today, 1 for tomorrow.
+const NOTES = [
+  {
+    text: "I buy 10 bags of rice from Alaba Wholesalers, 520k total.",
+    expect: [{ type: "restock", customer: "Alaba Wholesalers", naira: 520000 }],
+  },
+  {
+    text: "I buy 5 bags of beans from Alaba Wholesalers, 300k total.",
+    expect: [{ type: "restock", customer: "Alaba Wholesalers", naira: 300000 }],
+  },
+  {
+    text: "I buy 2 cartons of indomie from Oyingbo Depot, 18k total.",
+    expect: [{ type: "restock", customer: "Oyingbo Depot", naira: 18000 }],
+  },
+  {
+    text: "Mama Bisi buy 2 bags of rice, 118k total. She pay 100k, remain 18k.",
+    expect: [
+      { type: "sale", customer: "Mama Bisi", naira: 118000 },
+      { type: "payment", customer: "Mama Bisi", naira: 100000 },
+    ],
+  },
+  {
+    text: "Chinedu buy 3 cartons of indomie, 27k total. He pay 27k.",
+    expect: [
+      { type: "sale", customer: "Chinedu", naira: 27000 },
+      { type: "payment", customer: "Chinedu", naira: 27000 },
+    ],
+  },
+  {
+    text: "Aunty Ngozi buy 1 bag of beans for 65k. She pay 15k, remain 50k. She go pay the 50k today.",
+    expect: [
+      { type: "sale", customer: "Aunty Ngozi", naira: 65000 },
+      { type: "payment", customer: "Aunty Ngozi", naira: 15000 },
+    ],
+    promise: { customer: "Aunty Ngozi", naira: 50000, day: 0 }, // broken from tomorrow
+  },
+  {
+    text: "Ada buy 2 bags of beans, 120k total. She pay 50k, remain 70k. She go pay 20k today.",
+    expect: [
+      { type: "sale", customer: "Ada", naira: 120000 },
+      { type: "payment", customer: "Ada", naira: 50000 },
+    ],
+    promise: { customer: "Ada", naira: 20000, day: 0 }, // kept by the next note
+  },
+  {
+    text: "Ada pay 20k.",
+    expect: [{ type: "payment", customer: "Ada", naira: 20000 }],
+  },
+  {
+    text: "Tunde buy 1 bag of rice for 45k. He never pay. He say he go pay the 45k tomorrow.",
+    expect: [{ type: "sale", customer: "Tunde", naira: 45000 }], // below the ₦52,000 cost
+    promise: { customer: "Tunde", naira: 45000, day: 1 },
+  },
+  {
+    text: "Alhaji Musa buy 2 tins of groundnut oil, 90k total. He pay 40k, remain 50k.",
+    expect: [
+      { type: "sale", customer: "Alhaji Musa", naira: 90000 },
+      { type: "payment", customer: "Alhaji Musa", naira: 40000 },
+    ],
+  },
 ];
 
-// All created "open"; the server marks them kept or broken from the ledger
-// the first time a screen asks (refreshPromises).
-const PROMISES = [
-  { customer: "Mama Bisi", naira: 100000, created: 36, dueIn: -34 }, // kept
-  { customer: "Alhaji Musa", naira: 90000, created: 38, dueIn: -10 }, // broken
-  { customer: "Aunty Ngozi", naira: 15000, created: 21, dueIn: -18 }, // kept
-  { customer: "Aunty Ngozi", naira: 50000, created: 2, dueIn: 2 }, // open
-  { customer: "Ada", naira: 50000, created: 10, dueIn: -8 }, // kept
-  { customer: "Ada", naira: 70000, created: 3, dueIn: 2 }, // open
-  { customer: "Tunde", naira: 15000, created: 4, dueIn: -1 }, // broken
-];
+async function api(method, path, body) {
+  let res;
+  try {
+    res = await fetch(BASE + path, {
+      method,
+      headers: { "x-shop-id": SHOP, ...(body ? { "Content-Type": "application/json" } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    throw new Error(`cannot reach the backend at ${BASE} — is server.mjs running?`);
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`${method} ${path} -> ${res.status}: ${data.error ?? "no detail"}`);
+  return data;
+}
 
-const db = new DatabaseSync(dbPath);
-const ledger = new Ledger(db);
-const promises = new PromiseStore(db);
+const norm = (s) => String(s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 
-if (ledger.list(DEMO_SHOP_ID).length > 0) {
-  console.error(`${DEMO_SHOP_ID} already has entries in ${dbPath}. Delete that file to start fresh.`);
+// Does a row ({ type, customer, kobo }) match an expected entry? A restock
+// may come back with the supplier's name or, when the model leaves the
+// supplier out, recorded for the shop itself — both are fine.
+function fits(want, row) {
+  if (row.type !== want.type || row.kobo !== want.naira * 100) return false;
+  if (norm(row.customer) === norm(want.customer)) return true;
+  return want.type === "restock" && row.customer === SHOP;
+}
+
+// Takes one matching row out of `pool` for every expected entry. Returns the
+// pool without them, or null when any expected entry has no match.
+function consume(pool, wants) {
+  const left = [...pool];
+  for (const w of wants) {
+    const i = left.findIndex((r) => fits(w, r));
+    if (i === -1) return null;
+    left.splice(i, 1);
+  }
+  return left;
+}
+
+const describe = (rows) => rows.map((r) => `${r.type} ${r.customer} ₦${r.kobo / 100}`).join(", ");
+
+// "YYYY-MM-DD" in Lagos (UTC+1, no daylight saving), n days after the given
+// time. We use the proposal's own timestamp so "today" is the server's today.
+const lagosDay = (n, fromIso) => new Date(Date.parse(fromIso) + 3600000 + n * 86400000).toISOString().slice(0, 10);
+
+// Why a proposal must not be confirmed, or null when it matches the note.
+function mismatch(proposal, note) {
+  if (proposal.flags.length > 0) return `it has checks: ${proposal.flags.join("; ")}`;
+  const got = proposal.entries.map((e) => ({ type: e.type, customer: e.customer, kobo: e.amountKobo }));
+  const left = consume(got, note.expect);
+  if (!left || left.length > 0) {
+    const want = note.expect.map((e) => ({ type: e.type, customer: e.customer, kobo: e.naira * 100 }));
+    return `entries [${describe(got)}] instead of [${describe(want)}]`;
+  }
+  const p = proposal.promise;
+  if (note.promise) {
+    const w = note.promise;
+    if (!p) return "the promise was not picked up";
+    if (norm(p.customer) !== norm(w.customer) || p.amountKobo !== w.naira * 100 || p.dueDate !== lagosDay(w.day, proposal.created_at)) {
+      return `promise ${JSON.stringify(p)} instead of ${w.customer} ₦${w.naira} on ${lagosDay(w.day, proposal.created_at)}`;
+    }
+  } else if (p) {
+    return `an unexpected promise ${JSON.stringify(p)}`;
+  }
+  return null;
+}
+
+async function main() {
+  console.log(`Seeding shop "${SHOP}" through ${BASE} (fake data only)`);
+
+  // Ledger rows already saved, consumed note by note. A note whose entries
+  // are all present was confirmed on an earlier run.
+  const { entries } = await api("GET", "/ledger");
+  let have = entries.map((r) => ({ type: r.type, customer: r.customer, kobo: r.amount_kobo }));
+
+  let added = 0;
+  let skipped = 0;
+  for (const [i, note] of NOTES.entries()) {
+    const label = `${i + 1}/${NOTES.length}`;
+    const left = consume(have, note.expect);
+    if (left) {
+      have = left;
+      skipped++;
+      console.log(`  ${label} already saved, skipped: ${note.text}`);
+      continue;
+    }
+
+    // The model can read a note differently from one try to the next, so a
+    // proposal that does not match is rejected and the note sent again.
+    let proposal;
+    for (let attempt = 1; ; attempt++) {
+      ({ proposal } = await api("POST", "/propose", { text: note.text }));
+      // The model sometimes adds an empty promise to a note that has none,
+      // which the backend flags. Answer it the way a trader would, with Fix.
+      const onlyPromiseChecks = proposal.flags.length > 0 && proposal.flags.every((f) => f.startsWith("promise"));
+      if (!note.promise && onlyPromiseChecks) {
+        ({ proposal } = await api("POST", `/fix/${proposal.id}`, { correctionText: "There is no promise in this note. Nobody promised to pay." }));
+      }
+      const why = mismatch(proposal, note);
+      if (!why) break;
+      await api("POST", `/reject/${proposal.id}`);
+      console.error(`  ${label} try ${attempt} rejected: ${why}`);
+      if (attempt === MAX_TRIES) {
+        console.error(`  Stopped. Nothing wrong was saved; run the command again to retry from this note.`);
+        process.exit(1);
+      }
+    }
+    const res = await api("POST", `/confirm/${proposal.id}`);
+    added++;
+    console.log(`  ${label} saved as entries ${res.recordedIds.join(", ")}: ${note.text}`);
+  }
+
+  const { verify } = await api("GET", "/ledger");
+  const { report } = await api("GET", "/report");
+  const { promises } = await api("GET", "/promises");
+  console.log(`Done: ${added} notes saved, ${skipped} already there.`);
+  console.log(`Chain verified: ${verify.ok} (${verify.count ?? 0} entries)`);
+  console.log(`Owed: ₦${(report.owed.totalKobo / 100).toLocaleString("en-US")} by ${report.owed.customers} customers`);
+  console.log(`Promises: ${promises.map((p) => `${p.customer} ${p.status} (due ${p.due_date})`).join(", ")}`);
+}
+
+main().catch((err) => {
+  console.error(`Seed failed: ${err.message}`);
   process.exit(1);
-}
-
-for (const e of ENTRIES) {
-  ledger.append({
-    shopId: DEMO_SHOP_ID,
-    type: e.type,
-    amountKobo: e.naira * 100,
-    customer: e.customer,
-    item: e.item ?? null,
-    unit: e.unit ?? null,
-    quantity: e.quantity ?? null,
-    createdAt: at(e.d, e.h),
-  });
-}
-for (const p of PROMISES) {
-  promises.create({
-    shopId: DEMO_SHOP_ID,
-    customer: p.customer,
-    amountKobo: p.naira * 100,
-    dueDate: due(p.dueIn),
-    createdAt: at(p.created, 17),
-  });
-}
-
-const check = ledger.verify(DEMO_SHOP_ID);
-console.log(`Seeded ${DEMO_SHOP_ID}: ${ENTRIES.length} entries, ${PROMISES.length} promises -> ${dbPath}`);
-console.log(`Chain verified: ${check.ok}`);
-db.close();
+});

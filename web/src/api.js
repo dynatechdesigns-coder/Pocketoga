@@ -6,8 +6,8 @@
 // Production: set VITE_API_BASE at build time (e.g. https://api.example.com).
 const API_BASE = (import.meta.env.VITE_API_BASE ?? "/api").replace(/\/$/, "");
 
-// Must match DEMO_SHOP_ID in scripts/seed-demo.mjs.
-export const DEMO_SHOP_ID = "demo-shop";
+// The shop scripts/seed-demo.mjs fills with fake data.
+export const DEMO_SHOP_ID = "demo";
 
 let shopId = null;
 

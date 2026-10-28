@@ -1,6 +1,14 @@
 import { useState } from "react";
+import { ArrowDownLeft, CalendarClock, Check, PackagePlus, Pencil, ShoppingBag, TriangleAlert, X } from "lucide-react";
 import { confirmProposal, fixProposal, friendlyError, rejectProposal } from "../api.js";
 import { formatDueDay, formatKobo, itemText, typeLabel } from "../format.js";
+import { Button, Card, IconCircle, cx, figure } from "../ui.jsx";
+
+const TYPE_ICON = { sale: ShoppingBag, payment: ArrowDownLeft, restock: PackagePlus };
+
+// Text boxes on the Record screen and in the Fix form.
+export const inputClass =
+  "block min-h-12 w-full resize-y rounded-2xl border-[1.5px] border-line bg-field px-4 py-3 text-base transition placeholder:text-muted focus:border-accent focus:ring-4 focus:ring-blue-soft focus:outline-none disabled:bg-slate";
 
 // Server flags are written for developers ("entry 1: missing customer name").
 // Make them read like plain words, and drop repeats.
@@ -8,13 +16,13 @@ function plainFlag(flag) {
   const s = flag
     .replace(/^needs clarification:\s*/i, "")
     .replace(/^entry (\d+):\s*/i, "Line $1: ")
-    .replace(/^remainder:\s*/i, "Still owed: ");
+    .replace(/^remainder:\s*/i, "Still owed: ")
+    .replace(/\*/g, "");
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-// Shows what PocketOga heard and what it wants to save. Nothing is saved
-// until the trader taps Save, and Save stays locked while anything needs
-// checking.
+// What PocketOga heard and wants to save, shown inside the bottom sheet.
+// Save stays locked while anything needs checking.
 export default function ConfirmCard({ proposal, shopId, onUpdate, onFinish, onStartOver }) {
   const [busy, setBusy] = useState(null); // "save" | "fix" | "reject" | null
   const [error, setError] = useState(null);
@@ -64,140 +72,139 @@ export default function ConfirmCard({ proposal, shopId, onUpdate, onFinish, onSt
   const p = proposal.promise;
 
   return (
-    <section className="confirm" aria-busy={!!busy}>
-      <header className="screen-header">
-        <h1>Check before you save</h1>
-      </header>
-
+    <div data-part="confirm" className="grid gap-3" aria-busy={!!busy}>
       {problems.length > 0 && (
-        <div className="check-box" role="alert">
-          <p className="check-title">Check this</p>
-          <ul>
+        <div data-part="check-box" role="alert" className="rounded-card border-2 border-amber bg-amber-soft px-[18px] py-4">
+          <p className="flex items-center gap-1.5 text-[0.8125rem] font-extrabold tracking-[0.05em] text-amber-ink uppercase [&_svg]:size-[18px]">
+            <TriangleAlert aria-hidden="true" /> Check this
+          </p>
+          <ul className="my-2 grid list-disc gap-1 pl-5 text-[1.0625rem] font-bold">
             {problems.map((q, i) => (
               <li key={i}>{q}</li>
             ))}
           </ul>
-          <p className="small">Tap Fix and tell PocketOga the right answer.</p>
+          <p className="text-sm">Tap Fix and tell PocketOga the right answer.</p>
         </div>
       )}
 
-      <figure className="heard">
-        <figcaption className="card-label">PocketOga heard</figcaption>
-        <blockquote>“{proposal.heard}”</blockquote>
+      <figure className="border-l-[3px] border-lavender py-1 pl-3.5">
+        <figcaption className="text-sm font-semibold text-muted">PocketOga heard</figcaption>
+        <blockquote className="mt-0.5 whitespace-pre-line">“{proposal.heard}”</blockquote>
       </figure>
 
       {proposal.entries.length > 0 ? (
-        <ul className="list" aria-label="Entries to save">
+        <ul className="grid gap-2" aria-label="Entries to save">
           {proposal.entries.map((e, i) => (
-            <li key={i} className={`card entry kind-${e.type}`}>
-              <div className="entry-top">
-                <span className="card-label">{typeLabel(e.type)}</span>
-                <span className="entry-who">
-                  {e.customer === shopId ? "Your shop" : e.customer ?? <em className="missing">No name</em>}
-                </span>
-              </div>
-              <p className="figure">
-                {Number.isInteger(e.amountKobo) ? formatKobo(e.amountKobo) : <em className="missing">Amount missing</em>}
-              </p>
-              {itemText(e) && (
-                <p className="muted">
-                  {itemText(e)}
-                  {e.quantity > 1 && e.priceBasis === "total" && ` · price is for all ${e.quantity}`}
-                  {e.quantity > 1 && e.priceBasis === "each" && " · price is for each one"}
+            <Card as="li" key={i} className="flex items-start gap-3.5">
+              <IconCircle icon={TYPE_ICON[e.type] ?? ShoppingBag} tone={e.type === "restock" ? "slate" : e.type === "payment" ? "blue" : "lavender"} />
+              <div className="grid min-w-0 flex-1 gap-0.5">
+                <p className="flex flex-wrap justify-between gap-x-2 gap-y-0.5">
+                  <span className="text-sm font-semibold text-muted">{typeLabel(e.type)}</span>
+                  <span className="font-bold">{e.customer === shopId ? "Your shop" : e.customer ?? <em className="text-lg text-amber-ink not-italic">No name</em>}</span>
                 </p>
-              )}
-            </li>
+                <p data-part="entry-amount" className={cx(figure, "text-4xl")}>
+                  {Number.isInteger(e.amountKobo) ? formatKobo(e.amountKobo) : <em className="text-lg text-amber-ink not-italic">Amount missing</em>}
+                </p>
+                {itemText(e) && (
+                  <p className="text-sm text-muted">
+                    {itemText(e)}
+                    {e.quantity > 1 && e.priceBasis === "total" && ` · price is for all ${e.quantity}`}
+                    {e.quantity > 1 && e.priceBasis === "each" && " · price is for each one"}
+                  </p>
+                )}
+              </div>
+            </Card>
           ))}
         </ul>
       ) : (
-        <p className="state">Nothing to save yet.</p>
+        <p className="text-muted">Nothing to save yet.</p>
       )}
 
       {t && (
-        <dl className="card facts facts-3">
-          <div>
-            <dt>Total</dt>
-            <dd>{formatKobo(t.totalKobo)}</dd>
-          </div>
-          <div>
-            <dt>Paid</dt>
-            <dd>{formatKobo(t.paidKobo)}</dd>
-          </div>
-          <div>
-            <dt>Still owed</dt>
-            <dd>{formatKobo(t.remainderKobo)}</dd>
-          </div>
+        <dl className="grid grid-cols-3 gap-2">
+          {[
+            ["Total", t.totalKobo],
+            ["Paid", t.paidKobo],
+            ["Still owed", t.remainderKobo],
+          ].map(([label, kobo]) => (
+            <div key={label} className="rounded-2xl bg-card px-3.5 py-3 shadow-soft">
+              <dt className="text-[0.8125rem] font-semibold text-muted">{label}</dt>
+              <dd className="font-extrabold tabular-nums [overflow-wrap:anywhere]">{formatKobo(kobo)}</dd>
+            </div>
+          ))}
         </dl>
       )}
 
       {p && (
-        <div className="card promise-line">
-          <span className="card-label">Promise</span>
+        <Card className="flex items-center gap-3 px-4 py-3">
+          <IconCircle icon={CalendarClock} tone="amber" size="sm" />
           <p>
             {p.customer} will pay {Number.isInteger(p.amountKobo) ? <strong>{formatKobo(p.amountKobo)}</strong> : "the balance"}{" "}
             by <strong>{formatDueDay(p.dueDate)}</strong>
           </p>
-        </div>
+        </Card>
       )}
 
       {error && (
-        <div className="state state-error" role="alert">
+        <div role="alert" className="grid gap-2 rounded-2xl bg-slate px-4 py-3">
           <p>{error}</p>
           {/30 minutes|record it again/i.test(error) && (
-            <button className="btn btn-secondary" onClick={onStartOver}>
+            <Button variant="quiet" size="sm" onClick={onStartOver}>
               Record again
-            </button>
+            </Button>
           )}
         </div>
       )}
 
       {fixing ? (
-        <form className="card stack" onSubmit={sendFix}>
-          <label htmlFor="fix-text">What should change?</label>
+        <form className="grid gap-2.5" onSubmit={sendFix}>
+          <label htmlFor="fix-text" className="font-bold">
+            What should change?
+          </label>
           <textarea
             id="fix-text"
-            className="input"
             rows={3}
             autoFocus
             value={correction}
             onChange={(e) => setCorrection(e.target.value)}
             placeholder="e.g. Na 3 bags, not 2"
             disabled={!!busy}
+            className={inputClass}
           />
-          <div className="row">
-            <button type="button" className="btn btn-quiet" onClick={() => setFixing(false)} disabled={!!busy}>
+          <div className="flex gap-2 *:flex-1">
+            <Button type="button" variant="quiet" onClick={() => setFixing(false)} disabled={!!busy}>
               Cancel
-            </button>
-            <button className="btn btn-primary" disabled={!correction.trim() || !!busy}>
-              {busy === "fix" ? "Sending…" : "Send fix"}
-            </button>
+            </Button>
+            <Button disabled={!correction.trim() || !!busy}>{busy === "fix" ? "Sending…" : "Send fix"}</Button>
           </div>
         </form>
       ) : (
-        <div className="actions">
-          <button
-            className="btn btn-primary btn-lg"
+        <div className="mt-1 grid gap-2">
+          <Button
+            data-part="save"
+            size="lg"
+            className="text-lg"
             onClick={save}
             disabled={!canSave || !!busy}
             aria-describedby={canSave ? undefined : "save-why"}
           >
-            {busy === "save" ? "Saving…" : "Save"}
-          </button>
+            <Check aria-hidden="true" strokeWidth={2.6} /> {busy === "save" ? "Saving…" : "Save"}
+          </Button>
           {!canSave && (
-            <p id="save-why" className="save-why">
+            <p id="save-why" className="text-center text-sm text-muted">
               {problems.length > 0 ? "Save is locked until the check above is answered." : "Nothing to save."}
             </p>
           )}
-          <div className="row">
-            <button className="btn btn-check" onClick={() => setFixing(true)} disabled={!!busy}>
-              Fix
-            </button>
-            <button className="btn btn-quiet" onClick={reject} disabled={!!busy} aria-label="Reject, do not save">
-              {busy === "reject" ? "Rejecting…" : "Reject"}
-            </button>
+          <div className="flex gap-2 *:flex-1">
+            <Button variant="amber" onClick={() => setFixing(true)} disabled={!!busy}>
+              <Pencil aria-hidden="true" /> Fix
+            </Button>
+            <Button variant="quiet" onClick={reject} disabled={!!busy} aria-label="Reject, do not save">
+              <X aria-hidden="true" /> {busy === "reject" ? "Rejecting…" : "Reject"}
+            </Button>
           </div>
         </div>
       )}
-    </section>
+    </div>
   );
 }

@@ -1,23 +1,27 @@
 import { useEffect, useRef, useState } from "react";
+import { Check, Mic, Send, Square, X } from "lucide-react";
 import { ApiError, friendlyError, getProposal, proposeAudio, proposeText } from "../api.js";
 import { recordingToWavBase64 } from "../wav.js";
 import { plural } from "../format.js";
-import { ScreenHeader } from "../ui.jsx";
-import ConfirmCard from "./ConfirmCard.jsx";
+import { Button, Card, Pill, ScreenHeader, Sheet, cx, rise } from "../ui.jsx";
+import ConfirmCard, { inputClass } from "./ConfirmCard.jsx";
 
 const MAX_SECONDS = 120; // keeps the upload well under the server's 12 MB limit
 
-// Record a voice note (or type one), send it to /propose, then show the
-// confirm card. After Save or Reject, shows the outcome.
+// Record a voice note (or type one), send it to /propose, then check it in
+// a bottom sheet. Closing the sheet keeps the note waiting; nothing saves
+// without Save.
 export default function RecordScreen({ shop, onGo }) {
   const [proposal, setProposal] = useState(null);
-  const [outcome, setOutcome] = useState(null); // { kind: "saved"|"rejected", count? }
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [outcome, setOutcome] = useState(null); // { kind: "saved"|"rejected", count?, already? }
   const [busy, setBusy] = useState(null); // loading message, or null
   const [error, setError] = useState(null);
   const [text, setText] = useState("");
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const recorderRef = useRef(null);
+  const toggleRef = useRef(null);
 
   // Remember the open note for this browser tab, so a reload does not lose it.
   const pendingKey = `pocketoga.pending.${shop.id}`;
@@ -34,10 +38,22 @@ export default function RecordScreen({ shop, onGo }) {
   // Stop the microphone if the trader leaves this screen mid-recording.
   useEffect(() => () => recorderRef.current?.cleanup(), []);
 
+  // The centre mic in the tab bar toggles recording while on this screen.
+  toggleRef.current = () => {
+    if (busy || sheetOpen || !canRecord) return;
+    recording ? stopRecording() : startRecording();
+  };
+  useEffect(() => {
+    const onMic = () => toggleRef.current();
+    window.addEventListener("pocketoga:mic", onMic);
+    return () => window.removeEventListener("pocketoga:mic", onMic);
+  }, []);
+
   function showProposal(p) {
     sessionStorage.setItem(pendingKey, p.id);
     setProposal(p);
-    window.scrollTo(0, 0);
+    setOutcome(null);
+    setSheetOpen(true);
   }
 
   function finish(result) {
@@ -46,12 +62,9 @@ export default function RecordScreen({ shop, onGo }) {
     setOutcome(result);
   }
 
-  function startOver() {
-    sessionStorage.removeItem(pendingKey);
-    setProposal(null);
-    setOutcome(null);
-    setError(null);
-    setText("");
+  function closeSheet() {
+    setSheetOpen(false);
+    if (outcome) setOutcome(null);
   }
 
   async function startRecording() {
@@ -124,99 +137,125 @@ export default function RecordScreen({ shop, onGo }) {
     }
   }
 
-  // --- What to show ---
-
-  if (outcome) {
-    const saved = outcome.kind === "saved";
-    return (
-      <section className="outcome" aria-live="polite">
-        <div className={`outcome-mark ${saved ? "ok" : "no"}`} aria-hidden="true">
-          <svg viewBox="0 0 24 24">{saved ? <path d="m5 12 5 5 9-10" /> : <path d="M6 6l12 12M18 6 6 18" />}</svg>
-        </div>
-        <h1>{saved ? "Saved" : "Not saved"}</h1>
-        <p>
-          {!saved
-            ? "Nothing was written to your ledger."
-            : outcome.already
-              ? "This note was already saved. Nothing was added twice."
-              : `${plural(outcome.count, "entry", "entries")} added to your ledger.`}
-        </p>
-        <button className="btn btn-primary" onClick={startOver}>
-          Record another
-        </button>
-        {saved && (
-          <button className="btn btn-secondary" onClick={() => onGo("ledger")}>
-            See ledger
-          </button>
-        )}
-      </section>
-    );
-  }
-
-  if (proposal) {
-    return <ConfirmCard proposal={proposal} shopId={shop.id} onUpdate={showProposal} onFinish={finish} onStartOver={startOver} />;
-  }
+  const mmss = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 
   return (
-    <section className="record">
-      <ScreenHeader title="Record" sub="Say what you sold, what was paid, or what is still owed." />
+    <section>
+      <ScreenHeader title="Record" sub="Talk am, check am, save am" />
 
-      <div className="mic-area">
+      {proposal && !sheetOpen && (
+        <Card
+          as="button"
+          onClick={() => setSheetOpen(true)}
+          className="mb-4 flex w-full animate-rise items-center justify-between gap-4 border-[1.5px] border-amber text-left"
+        >
+          <span>
+            <strong>A note is waiting for you</strong>
+            <span className="block text-sm text-muted">Nothing is saved yet. Tap to check it.</span>
+          </span>
+          <Pill tone="amber">Open</Pill>
+        </Card>
+      )}
+
+      {/* Same height idle, recording and busy, so nothing below jumps. */}
+      <div {...rise(0, "grid min-h-[300px] content-center justify-items-center gap-4 py-4")}>
         {busy ? (
-          <div className="mic-busy" role="status">
-            <div className="spinner" aria-hidden="true" />
+          <div className="grid justify-items-center gap-4 font-bold" role="status">
+            <div className="size-11 animate-spin rounded-full border-4 border-lavender border-t-accent" aria-hidden="true" />
             <p>{busy}</p>
           </div>
         ) : canRecord ? (
           <>
             <button
-              className={recording ? "mic is-recording" : "mic"}
+              data-part="mic"
+              data-recording={recording}
               onClick={recording ? stopRecording : startRecording}
               aria-label={recording ? "Stop recording and send" : "Start recording a voice note"}
               aria-pressed={recording}
+              className="relative grid size-[152px] place-items-center rounded-full bg-hero text-white shadow-lift transition-transform duration-150 active:scale-96"
             >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                {recording ? (
-                  <rect x="7" y="7" width="10" height="10" rx="1.5" className="fill" />
-                ) : (
-                  <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Zm-6 9a6 6 0 0 0 12 0M12 18v3" />
-                )}
-              </svg>
+              {/* Soft pulse rings, only while recording. */}
+              <span data-part="mic-ring" aria-hidden="true" className={cx("absolute inset-0 rounded-full bg-accent opacity-0", recording && "animate-ring")} />
+              <span aria-hidden="true" className={cx("absolute inset-0 rounded-full bg-accent opacity-0", recording && "animate-ring [animation-delay:0.9s]")} />
+              {recording ? <Square aria-hidden="true" fill="currentColor" className="relative size-10" /> : <Mic aria-hidden="true" strokeWidth={2} className="relative size-14" />}
             </button>
-            <p className="mic-label" aria-live="polite">
-              {recording ? `Recording ${seconds}s · tap to stop` : "Tap to talk"}
+            <p className="inline-flex items-center gap-2 text-lg font-bold tabular-nums" aria-live="polite">
+              {recording ? (
+                <>
+                  <span className="size-2.5 animate-pulse-soft rounded-full bg-coral" aria-hidden="true" /> Recording {mmss} · tap to stop
+                </>
+              ) : (
+                "Tap and talk"
+              )}
             </p>
+            <p className="text-center text-sm text-muted">“Mama Bisi buy 2 bags of rice, 15k. She pay 10k, remain 5k.”</p>
           </>
         ) : (
-          <p className="muted center">Voice recording is not available in this browser here. Type your note below.</p>
+          <p className="text-center text-muted">Voice recording is not available in this browser here. Type your note below.</p>
         )}
       </div>
 
-      <p className="example">
-        For example: “Mama Bisi buy 2 bags of rice, 15k. She pay 10k, remain 5k.”
-      </p>
-
       {error && (
-        <div className="state state-error" role="alert">
+        <Card className="mb-4 border-[1.5px] border-line" role="alert">
           <p>{error}</p>
-        </div>
+        </Card>
       )}
 
-      <form className="stack type-box" onSubmit={sendText}>
-        <label htmlFor="note-text">Or type it</label>
+      <Card as="form" onSubmit={sendText} {...rise(1, "grid gap-3")}>
+        <label htmlFor="note-text" className="font-bold">
+          Or type it
+        </label>
         <textarea
           id="note-text"
-          className="input"
           rows={3}
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder="Chinedu buy 3 cartons Indomie, 27k, he don pay"
           disabled={!!busy || recording}
+          className={inputClass}
         />
-        <button className="btn btn-secondary" disabled={!text.trim() || !!busy || recording}>
-          Send
-        </button>
-      </form>
+        <Button calm disabled={!text.trim() || !!busy || recording}>
+          <Send aria-hidden="true" /> Send
+        </Button>
+      </Card>
+
+      <Sheet open={sheetOpen} onClose={closeSheet} title={outcome ? (outcome.kind === "saved" ? "Saved" : "Not saved") : "Check before you save"}>
+        {outcome ? (
+          <Outcome outcome={outcome} onAgain={closeSheet} onLedger={() => onGo("ledger")} />
+        ) : proposal ? (
+          <ConfirmCard proposal={proposal} shopId={shop.id} onUpdate={showProposal} onFinish={finish} onStartOver={() => finish({ kind: "rejected" })} />
+        ) : null}
+      </Sheet>
     </section>
+  );
+}
+
+// Fills the (never-shrinking) sheet and sits in its middle.
+function Outcome({ outcome, onAgain, onLedger }) {
+  const saved = outcome.kind === "saved";
+  return (
+    <div className="grid flex-1 content-center justify-items-center gap-4 py-2 text-center" aria-live="polite">
+      <span
+        aria-hidden="true"
+        className={cx("grid size-[72px] animate-rise place-items-center rounded-full [&_svg]:size-9", saved ? "bg-hero text-white" : "bg-slate text-muted")}
+      >
+        {saved ? <Check strokeWidth={3} /> : <X strokeWidth={3} />}
+      </span>
+      <p className="text-lg font-semibold">
+        {!saved
+          ? "Nothing was written to your ledger."
+          : outcome.already
+            ? "This note was already saved. Nothing was added twice."
+            : `${plural(outcome.count, "entry", "entries")} added to your ledger.`}
+      </p>
+      <Button size="lg" onClick={onAgain}>
+        Record another
+      </Button>
+      {saved && (
+        <Button variant="quiet" onClick={onLedger}>
+          See ledger
+        </Button>
+      )}
+    </div>
   );
 }
