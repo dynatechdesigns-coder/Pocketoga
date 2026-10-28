@@ -7,6 +7,10 @@ import { parseNaira, formatKobo } from "./money.mjs";
 
 export const PROPOSAL_TTL_MS = 30 * 60 * 1000;
 export const ENTRY_TYPES = ["sale", "payment", "restock"];
+export const PRICE_BASES = ["each", "total", "unclear"];
+// Words that mean a price is per item. Checked against the note when the
+// model claims the amount is a total.
+const EACH_WORDS = /\b(each|per|every|apiece|one-one|one one|a piece)\b/i;
 const AUDIO_FORMATS = { ".wav": "wav", ".mp3": "mp3", ".mpeg": "mp3" };
 
 export function voiceError(status, message) {
@@ -69,7 +73,7 @@ function checkLeg(naira, phrase, label, flags, notes, required = false) {
   return { naira, kobo, phrase: cleanPhrase };
 }
 
-function checkEntry(rawEntry, index, shopId, flags, notes) {
+function checkEntry(rawEntry, index, shopId, flags, notes, heard) {
   const label = `entry ${index + 1}`;
   const e = rawEntry && typeof rawEntry === "object" ? rawEntry : {};
   if (!ENTRY_TYPES.includes(e.type)) {
@@ -77,6 +81,12 @@ function checkEntry(rawEntry, index, shopId, flags, notes) {
     return null;
   }
   const { naira, kobo, phrase } = checkLeg(e.amountNaira, e.amountPhrase, label, flags, notes, true);
+
+  let basis = e.priceBasis;
+  if (!PRICE_BASES.includes(basis)) {
+    flags.push(`${label}: price basis must be each, total or unclear, got ${String(e.priceBasis)}`);
+    basis = "unclear";
+  }
 
   let customer = cleanText(e.customer);
   if (!customer) {
@@ -105,6 +115,30 @@ function checkEntry(rawEntry, index, shopId, flags, notes) {
       quantity = e.quantity;
     }
   }
+
+  let unit = null;
+  if (e.unit !== null && e.unit !== undefined && e.unit !== "") {
+    if (typeof e.unit !== "string" || !e.unit.trim()) {
+      flags.push(`${label}: unit must be text`);
+    } else {
+      unit = e.unit.trim();
+    }
+  }
+
+  // Payments store money only: no item, quantity or unit reaches the ledger.
+  if (e.type === "payment") {
+    if (basis === "each") {
+      flags.push(`${label}: a payment is a total, not an each-price`);
+      basis = "total";
+    }
+    if (item !== null || quantity !== null || unit !== null) {
+      notes.push(`${label}: payment item and quantity are not stored`);
+      item = null;
+      quantity = null;
+      unit = null;
+    }
+  }
+
   if (e.type === "restock") {
     if (item === null) flags.push(`${label}: restock needs an item`);
     if (e.quantity === null || e.quantity === undefined) flags.push(`${label}: restock needs a quantity`);
@@ -113,7 +147,49 @@ function checkEntry(rawEntry, index, shopId, flags, notes) {
     flags.push(`${label}: how many ${item}? quantity is missing`);
   }
 
-  return { type: e.type, customer, item, quantity, amountNaira: naira, amountKobo: kobo, amountPhrase: phrase };
+  // The note says per-item but the model read a total: do not trust it.
+  if (basis === "total" && e.type !== "payment") {
+    const match = `${heard ?? ""} ${phrase ?? ""}`.match(EACH_WORDS);
+    if (match) {
+      flags.push(`${label}: note says "${match[0].toLowerCase()}" but the amount was read as a total`);
+    }
+  }
+
+  // Plain code does the each-price math. amountNaira/amountKobo are always the
+  // entry total; eachNaira/eachKobo keep the per-item figure for the card.
+  let totalNaira = naira;
+  let totalKobo = kobo;
+  let eachNaira = null;
+  let eachKobo = null;
+  if (basis === "each") {
+    if (quantity === null) {
+      flags.push(`${label}: an each-price needs a quantity`);
+      totalNaira = null;
+      totalKobo = null;
+    } else if (naira !== null) {
+      totalNaira = naira * quantity;
+      totalKobo = kobo * quantity;
+      eachNaira = naira;
+      eachKobo = kobo;
+    }
+  } else if (basis === "unclear" && quantity !== null && quantity > 1) {
+    const figure = phrase ? `"${phrase}"` : kobo !== null ? formatKobo(kobo) : "the amount";
+    flags.push(`${label}: is ${figure} for each one or for all ${quantity}?`);
+  }
+
+  return {
+    type: e.type,
+    customer,
+    item,
+    quantity,
+    unit,
+    priceBasis: basis,
+    amountNaira: totalNaira,
+    amountKobo: totalKobo,
+    amountPhrase: phrase,
+    eachNaira,
+    eachKobo,
+  };
 }
 
 function checkTotals(rawTotals, flags, notes) {
@@ -152,7 +228,7 @@ export function checkModelOutput(raw, shopId) {
   if (!Array.isArray(raw.entries)) {
     flags.push("model returned no entries list");
   } else {
-    entries = raw.entries.map((e, i) => checkEntry(e, i, shopId, flags, notes)).filter(Boolean);
+    entries = raw.entries.map((e, i) => checkEntry(e, i, shopId, flags, notes, heard)).filter(Boolean);
   }
   const totals = checkTotals(raw.totals, flags, notes);
   if (entries.length === 0 && flags.length === 0) {
@@ -278,6 +354,7 @@ export function confirmProposal(proposalId, shopId, { proposals, ledger }) {
         customer: e.customer,
         item: e.item,
         quantity: e.quantity,
+        unit: e.unit,
       })
     );
     ledger.db.exec("COMMIT");

@@ -1,6 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { Ledger, verifyChain, computeEntryHash } from "./ledger.mjs";
+import { DatabaseSync } from "node:sqlite";
+import { Ledger, verifyChain, computeEntryHash, HASHED_FIELDS } from "./ledger.mjs";
 
 // All fixtures below are fake test data. No real customers, items, or amounts.
 // Money is integer kobo (1 naira = 100 kobo).
@@ -185,8 +186,24 @@ describe("ledger_entries (append-only hash chain)", () => {
     );
   });
 
+  it("HASHED_FIELDS lists every covered field in canonical order", () => {
+    assert.deepEqual(HASHED_FIELDS, [
+      "shop_id",
+      "seq",
+      "type",
+      "amount_kobo",
+      "customer",
+      "item",
+      "quantity",
+      "unit",
+      "created_at",
+      "corrects_id",
+      "prev_hash",
+    ]);
+  });
+
   it("hash covers every field: any field change breaks verification", () => {
-    ledger.append({ ...FAKE_SALE_A, item: "fake-rice", quantity: 2 });
+    ledger.append({ ...FAKE_SALE_A, item: "fake-rice", quantity: 2, unit: "bag" });
     ledger.append(FAKE_SALE_B);
     const rows = ledger.list(SHOP_A);
     const fields = (row) => ({
@@ -197,6 +214,7 @@ describe("ledger_entries (append-only hash chain)", () => {
       customer: row.customer,
       item: row.item,
       quantity: row.quantity,
+      unit: row.unit,
       correctsId: row.corrects_id,
       createdAt: row.created_at,
       prevHash: row.prev_hash,
@@ -212,6 +230,7 @@ describe("ledger_entries (append-only hash chain)", () => {
       { customer: "Someone Else" },
       { item: "fake-beans" },
       { quantity: 3 },
+      { unit: "crate" },
       { createdAt: "2000-01-01T00:00:00.000Z" },
       { correctsId: 999 },
       { prevHash: "0".repeat(64) },
@@ -224,6 +243,8 @@ describe("ledger_entries (append-only hash chain)", () => {
     assert.equal(computeEntryHash(fields(rows[1])), rows[1].entry_hash);
     assert.notEqual(computeEntryHash({ ...fields(rows[1]), item: "fake-rice" }), rows[1].entry_hash);
     assert.notEqual(computeEntryHash({ ...fields(rows[1]), quantity: 1 }), rows[1].entry_hash);
+    assert.notEqual(computeEntryHash({ ...fields(rows[1]), unit: "bag" }), rows[1].entry_hash);
+    assert.notEqual(computeEntryHash({ ...fields(rows[0]), unit: null }), rows[0].entry_hash);
   });
 
   it("hashes unambiguously: '|' placement can never collide", () => {
@@ -249,17 +270,19 @@ describe("ledger_entries (append-only hash chain)", () => {
     assert.notEqual(h3, h4);
   });
 
-  it("stores nullable item and quantity and verifies", () => {
-    const withGoods = ledger.append({ ...FAKE_SALE_A, item: "fake-rice", quantity: 2 });
+  it("stores nullable item, quantity and unit and verifies", () => {
+    const withGoods = ledger.append({ ...FAKE_SALE_A, item: "fake-rice", quantity: 2, unit: "bag" });
     assert.equal(withGoods.item, "fake-rice");
     assert.equal(withGoods.quantity, 2);
+    assert.equal(withGoods.unit, "bag");
     const withoutGoods = ledger.append(FAKE_SALE_B);
     assert.equal(withoutGoods.item, null);
     assert.equal(withoutGoods.quantity, null);
+    assert.equal(withoutGoods.unit, null);
     assert.equal(ledger.verify(SHOP_A).ok, true);
   });
 
-  it("rejects bad item or quantity", () => {
+  it("rejects bad item, quantity or unit", () => {
     for (const bad of [0, -1, 1.5, "2", NaN]) {
       assert.throws(
         () => ledger.append({ ...FAKE_SALE_A, item: "fake-rice", quantity: bad }),
@@ -274,31 +297,39 @@ describe("ledger_entries (append-only hash chain)", () => {
         `item=${String(bad)} should be rejected`
       );
     }
+    for (const bad of [123, "", "   ", true]) {
+      assert.throws(
+        () => ledger.append({ ...FAKE_SALE_A, unit: bad }),
+        /unit must be text/,
+        `unit=${String(bad)} should be rejected`
+      );
+    }
     assert.deepEqual(ledger.list(), []);
   });
 
-  it("rejects bad item or quantity at the database level", () => {
+  it("rejects bad item, quantity or unit at the database level", () => {
     const stamp = new Date().toISOString();
-    const insert = (item, quantity, tag) =>
+    const insert = (item, quantity, unit, tag) =>
       ledger.db
         .prepare(
           `INSERT INTO ledger_entries
-             (shop_id, seq, prev_hash, entry_hash, type, amount_kobo, customer, item, quantity, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             (shop_id, seq, prev_hash, entry_hash, type, amount_kobo, customer, item, quantity, unit, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
-        .run(SHOP_A, 1, null, tag.padEnd(64, "0"), "sale", 100, "Test Customer Ada", item, quantity, stamp);
-    assert.throws(() => insert("fake-rice", 0, "aa"), /CHECK/);
-    assert.throws(() => insert("fake-rice", -3, "bb"), /CHECK/);
-    assert.throws(() => insert("fake-rice", 1.5, "cc"), /CHECK/);
+        .run(SHOP_A, 1, null, tag.padEnd(64, "0"), "sale", 100, "Test Customer Ada", item, quantity, unit, stamp);
+    assert.throws(() => insert("fake-rice", 0, null, "aa"), /CHECK/);
+    assert.throws(() => insert("fake-rice", -3, null, "bb"), /CHECK/);
+    assert.throws(() => insert("fake-rice", 1.5, null, "cc"), /CHECK/);
     // SQLite TEXT affinity stores numbers as text, so the DB-level item
     // check enforces non-empty; mistyped values are rejected in JS.
-    assert.throws(() => insert("", 1, "dd"), /CHECK/);
+    assert.throws(() => insert("", 1, null, "dd"), /CHECK/);
+    assert.throws(() => insert("fake-rice", 1, "", "ee"), /CHECK/);
     assert.equal(ledger.list().length, 0);
   });
 
-  it("detects tampering with item or quantity", () => {
-    ledger.append({ ...FAKE_SALE_A, item: "fake-rice", quantity: 2 });
-    ledger.append({ ...FAKE_SALE_B, item: "fake-yam", quantity: 5 });
+  it("detects tampering with item, quantity or unit", () => {
+    ledger.append({ ...FAKE_SALE_A, item: "fake-rice", quantity: 2, unit: "bag" });
+    ledger.append({ ...FAKE_SALE_B, item: "fake-yam", quantity: 5, unit: "tuber" });
 
     const badItem = ledger.list(SHOP_A).map((row) => ({ ...row }));
     badItem[0].item = "fake-beans";
@@ -313,23 +344,109 @@ describe("ledger_entries (append-only hash chain)", () => {
     assert.equal(r2.ok, false);
     assert.equal(r2.brokenId, badQty[1].id);
     assert.match(r2.reason, /entry_hash/);
+
+    const badUnit = ledger.list(SHOP_A).map((row) => ({ ...row }));
+    badUnit[0].unit = "crate";
+    const r3 = verifyChain(badUnit);
+    assert.equal(r3.ok, false);
+    assert.equal(r3.brokenId, badUnit[0].id);
+    assert.match(r3.reason, /entry_hash/);
+
+    const nulledUnit = ledger.list(SHOP_A).map((row) => ({ ...row }));
+    nulledUnit[1].unit = null;
+    assert.equal(verifyChain(nulledUnit).ok, false);
   });
 
-  it("corrections inherit item and quantity unless overridden", () => {
-    const original = ledger.append({ ...FAKE_SALE_A, item: "fake-rice", quantity: 2 });
+  it("payments store no item, quantity or unit", () => {
+    for (const extra of [{ item: "fake-rice" }, { quantity: 2 }, { unit: "bag" }]) {
+      assert.throws(
+        () => ledger.append({ shopId: SHOP_A, type: "payment", amountKobo: 1000, customer: "Test Customer Ada", ...extra }),
+        /payment entries must have/,
+        `payment with ${JSON.stringify(extra)} should be rejected`
+      );
+    }
+    const payment = ledger.append({ shopId: SHOP_A, type: "payment", amountKobo: 1000, customer: "Test Customer Ada" });
+    assert.equal(payment.item, null);
+    assert.equal(payment.quantity, null);
+    assert.equal(payment.unit, null);
+    assert.equal(ledger.verify(SHOP_A).ok, true);
+  });
+
+  it("migrates pre-unit databases and old rows still verify", () => {
+    // Schema as it was before the unit column (no "unit", no migration).
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec(`CREATE TABLE ledger_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        shop_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        prev_hash TEXT,
+        entry_hash TEXT NOT NULL UNIQUE,
+        type TEXT NOT NULL,
+        amount_kobo INTEGER NOT NULL CHECK (typeof(amount_kobo) = 'integer' AND amount_kobo >= 0),
+        customer TEXT NOT NULL,
+        item TEXT CHECK (item IS NULL OR length(item) > 0),
+        quantity INTEGER CHECK (quantity IS NULL OR (typeof(quantity) = 'integer' AND quantity > 0)),
+        corrects_id INTEGER REFERENCES ledger_entries(id),
+        created_at TEXT NOT NULL,
+        UNIQUE (shop_id, seq)
+      )`);
+      const stamp = "2026-10-27T00:00:00.000Z";
+      const oldHash = computeEntryHash({
+        shopId: SHOP_A,
+        seq: 1,
+        type: "sale",
+        amountKobo: 500000,
+        customer: "Test Customer Ada",
+        item: "fake-rice",
+        quantity: 2,
+        createdAt: stamp,
+        prevHash: null,
+      });
+      db.prepare(
+        `INSERT INTO ledger_entries
+           (shop_id, seq, prev_hash, entry_hash, type, amount_kobo, customer, item, quantity, corrects_id, created_at)
+         VALUES (?, 1, NULL, ?, 'sale', 500000, 'Test Customer Ada', 'fake-rice', 2, NULL, ?)`
+      ).run(SHOP_A, oldHash, stamp);
+
+      const migrated = new Ledger(db);
+      const columns = db.prepare("PRAGMA table_info(ledger_entries)").all().map((c) => c.name);
+      assert.ok(columns.includes("unit"));
+      assert.deepEqual(migrated.verify(SHOP_A), { ok: true, count: 1, shopId: SHOP_A });
+      // New rows with units chain on top of migrated ones.
+      const next = migrated.append({
+        shopId: SHOP_A,
+        type: "sale",
+        amountKobo: 100,
+        customer: "Test Customer Bola",
+        unit: "bag",
+      });
+      assert.equal(next.seq, 2);
+      assert.equal(migrated.verify(SHOP_A).ok, true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("corrections inherit item, quantity and unit unless overridden", () => {
+    const original = ledger.append({ ...FAKE_SALE_A, item: "fake-rice", quantity: 2, unit: "bag" });
     const inherited = ledger.appendCorrection(original.id, { amountKobo: 300000 });
     assert.equal(inherited.item, "fake-rice");
     assert.equal(inherited.quantity, 2);
+    assert.equal(inherited.unit, "bag");
     const overridden = ledger.appendCorrection(original.id, {
       amountKobo: 300000,
       item: "fake-beans",
       quantity: 3,
+      unit: "crate",
     });
     assert.equal(overridden.item, "fake-beans");
     assert.equal(overridden.quantity, 3);
-    const cleared = ledger.appendCorrection(original.id, { amountKobo: 300000, item: null, quantity: null });
+    assert.equal(overridden.unit, "crate");
+    const cleared = ledger.appendCorrection(original.id, { amountKobo: 300000, item: null, quantity: null, unit: null });
     assert.equal(cleared.item, null);
     assert.equal(cleared.quantity, null);
+    assert.equal(cleared.unit, null);
     assert.equal(ledger.verify(SHOP_A).ok, true);
   });
 

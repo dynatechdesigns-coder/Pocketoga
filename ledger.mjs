@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
-// Exact fields covered by the hash, in fixed canonical order.
+// Exact fields covered by the hash, in fixed canonical order. "unit" is
+// covered whenever it is non-null; a null unit is omitted from the material
+// so rows written before the unit column existed verify byte-identically.
 export const HASHED_FIELDS = [
   "shop_id",
   "seq",
@@ -10,6 +12,7 @@ export const HASHED_FIELDS = [
   "customer",
   "item",
   "quantity",
+  "unit",
   "created_at",
   "corrects_id",
   "prev_hash",
@@ -27,6 +30,7 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
   customer TEXT NOT NULL,
   item TEXT CHECK (item IS NULL OR length(item) > 0),
   quantity INTEGER CHECK (quantity IS NULL OR (typeof(quantity) = 'integer' AND quantity > 0)),
+  unit TEXT CHECK (unit IS NULL OR length(unit) > 0),
   corrects_id INTEGER REFERENCES ledger_entries(id),
   created_at TEXT NOT NULL,
   UNIQUE (shop_id, seq)
@@ -56,6 +60,7 @@ export function computeEntryHash({
   customer,
   item = null,
   quantity = null,
+  unit = null,
   correctsId = null,
   createdAt,
   prevHash = null,
@@ -68,6 +73,7 @@ export function computeEntryHash({
     customer,
     item ?? null,
     quantity ?? null,
+    ...(unit ?? null) === null ? [] : [unit],
     createdAt,
     correctsId ?? null,
     prevHash ?? null,
@@ -101,6 +107,14 @@ function assertQuantity(quantity) {
     throw new Error("quantity must be > 0");
   }
   return quantity;
+}
+
+function assertUnit(unit) {
+  if (unit === null || unit === undefined) return null;
+  if (typeof unit !== "string" || unit.trim().length === 0) {
+    throw new Error("unit must be text");
+  }
+  return unit.trim();
 }
 
 // Pure chain check over entries of ONE shop ordered by seq ascending.
@@ -169,6 +183,7 @@ export function verifyChain(entries) {
       customer: entry.customer,
       item: entry.item,
       quantity: entry.quantity,
+      unit: entry.unit,
       correctsId: entry.corrects_id,
       createdAt: entry.created_at,
       prevHash: entry.prev_hash,
@@ -213,6 +228,15 @@ export class Ledger {
       this.ownsDb = false;
     }
     this.db.exec(SCHEMA);
+    // Databases created before the unit column get it now; old rows keep
+    // unit NULL and verify exactly as before.
+    const columns = this.db
+      .prepare("PRAGMA table_info(ledger_entries)")
+      .all()
+      .map((c) => c.name);
+    if (!columns.includes("unit")) {
+      this.db.exec("ALTER TABLE ledger_entries ADD COLUMN unit TEXT CHECK (unit IS NULL OR length(unit) > 0)");
+    }
   }
 
   append({
@@ -222,6 +246,7 @@ export class Ledger {
     customer,
     item = null,
     quantity = null,
+    unit = null,
     correctsId = null,
     createdAt = null,
   }) {
@@ -231,6 +256,10 @@ export class Ledger {
     if (!customer || typeof customer !== "string") throw new Error("customer is required");
     const cleanItem = assertItem(item);
     const cleanQuantity = assertQuantity(quantity);
+    const cleanUnit = assertUnit(unit);
+    if (type === "payment" && (cleanItem !== null || cleanQuantity !== null || cleanUnit !== null)) {
+      throw new Error("payment entries must have item, quantity and unit null");
+    }
     const stamp = createdAt ?? new Date().toISOString();
 
     if (correctsId !== null) {
@@ -255,6 +284,7 @@ export class Ledger {
       customer,
       item: cleanItem,
       quantity: cleanQuantity,
+      unit: cleanUnit,
       correctsId,
       createdAt: stamp,
       prevHash,
@@ -263,20 +293,20 @@ export class Ledger {
     const result = this.db
       .prepare(
         `INSERT INTO ledger_entries
-           (shop_id, seq, prev_hash, entry_hash, type, amount_kobo, customer, item, quantity, corrects_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           (shop_id, seq, prev_hash, entry_hash, type, amount_kobo, customer, item, quantity, unit, corrects_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(shopId, seq, prevHash, entryHash, type, amountKobo, customer, cleanItem, cleanQuantity, correctsId, stamp);
+      .run(shopId, seq, prevHash, entryHash, type, amountKobo, customer, cleanItem, cleanQuantity, cleanUnit, correctsId, stamp);
 
     return this.get(Number(result.lastInsertRowid));
   }
 
   // Corrections are new entries that reference the original; never edits.
   // The correction stays in the original's shop and inherits the original's
-  // customer/item/quantity unless overridden (pass null to clear item/quantity).
+  // customer/item/quantity/unit unless overridden (pass null to clear one).
   appendCorrection(
     originalId,
-    { type = "correction", amountKobo, customer = null, item = undefined, quantity = undefined, createdAt = null } = {}
+    { type = "correction", amountKobo, customer = null, item = undefined, quantity = undefined, unit = undefined, createdAt = null } = {}
   ) {
     const original = this.get(originalId);
     if (!original) throw new Error(`corrects_id ${originalId} does not exist`);
@@ -287,6 +317,7 @@ export class Ledger {
       customer: customer ?? original.customer,
       item: item === undefined ? original.item : item,
       quantity: quantity === undefined ? original.quantity : quantity,
+      unit: unit === undefined ? original.unit : unit,
       correctsId: originalId,
       createdAt,
     });

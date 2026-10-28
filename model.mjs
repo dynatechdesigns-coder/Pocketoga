@@ -16,7 +16,7 @@ Reply with JSON only, exactly this shape:
 {
   "heard": "what the trader said, in their own words",
   "entries": [
-    {"type": "sale", "customer": "name or null", "item": "item or null", "quantity": 2, "amountNaira": 15000, "amountPhrase": "15k"}
+    {"type": "sale", "customer": "name or null", "item": "rice or null", "unit": "bag or null", "quantity": 2, "amountNaira": 15000, "amountPhrase": "15k", "priceBasis": "total"}
   ],
   "totals": {"totalNaira": 15000, "totalPhrase": "15k", "paidNaira": 10000, "paidPhrase": "10k", "remainderNaira": 5000, "remainderPhrase": "remain 5k"},
   "question": "a short clarifying question, or null"
@@ -25,7 +25,9 @@ Rules:
 - Entry types are only: sale (goods sold), payment (money received), restock (stock bought). A sale with part payment is TWO entries: a sale for the full total and a payment for what was paid.
 - "k" means thousand naira ("15k" = 15000). "remain 3k" means a 3000 naira remainder is still owed.
 - amountNaira and every totals leg are whole naira integers, never negative. amountPhrase is the trader's exact words for that amount. Fill totals only when the note states total, paid and remainder figures.
+- priceBasis says whether amountNaira is per item ("each"), for the whole lot ("total"), or "unclear" when the note does not say. "15k each" is each; a payment is always a total. Never guess: use "unclear".
 - quantity is a positive integer count of items, or null when the note has none.
+- unit is the container or count word in singular form, separate from item: "2 bags of rice" is item "rice", unit "bag", quantity 2; "3 tins of milk" is item "milk", unit "tin", quantity 3. Null when the note names none.
 - Never invent names, items, or amounts. If anything essential is missing or unclear, put it in question and leave the field null.
 - If the note has no bookkeeping content, return "entries": [] with a question.`;
 

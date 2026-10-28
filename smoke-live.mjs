@@ -1,5 +1,5 @@
 // Manual smoke test against the real Meta Model API. Fake data only.
-// Run:  META_API_KEY=... node smoke-live.mjs
+// Run:  META_API_KEY=... node smoke-live.mjs ["note text"] [audio-file]
 // Proposes only — it never confirms, so the ledger is untouched.
 import { propose } from "./voice.mjs";
 import { ProposalStore } from "./proposals.mjs";
@@ -11,11 +11,15 @@ if (!process.env.META_API_KEY) {
 }
 
 // Fake Pidgin note. No real customers, items, or amounts.
-const NOTE = "Ada buy rice 2 bags, na 15k. She pay 10k, remain 5k.";
+const DEFAULT_NOTE = "Ada buy rice 2 bags, na 15k. She pay 10k, remain 5k.";
+
+// First arg: note text. Second arg (optional): audio file path, wins when given.
+const audioPath = process.argv[3] ?? null;
+const input = audioPath ? { audioPath } : (process.argv[2] ?? DEFAULT_NOTE);
 
 const proposals = new ProposalStore(":memory:");
 const model = createModelClient({});
-const proposal = await propose("smoke-shop", NOTE, { proposals, model });
+const proposal = await propose("smoke-shop", input, { proposals, model });
 console.log(
   JSON.stringify(
     {

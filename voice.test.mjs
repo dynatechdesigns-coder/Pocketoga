@@ -15,8 +15,8 @@ const SHOP_B = "shop-b";
 const PART_PAYMENT = {
   heard: "Ada buy rice 2 bags, na 15k. She pay 10k, remain 5k.",
   entries: [
-    { type: "sale", customer: "Test Customer Ada", item: "fake-rice", quantity: 2, amountNaira: 15000, amountPhrase: "15k" },
-    { type: "payment", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: 10000, amountPhrase: "10k" },
+    { type: "sale", customer: "Test Customer Ada", item: "fake-rice", unit: "bag", quantity: 2, amountNaira: 15000, amountPhrase: "15k", priceBasis: "total" },
+    { type: "payment", customer: "Test Customer Ada", item: null, quantity: null, unit: null, amountNaira: 10000, amountPhrase: "10k", priceBasis: "total" },
   ],
   totals: {
     totalNaira: 15000,
@@ -32,8 +32,8 @@ const PART_PAYMENT = {
 const MISMATCH = {
   heard: "Ada buy rice 2 bags, na 15k. She pay 10k, remain 4k.",
   entries: [
-    { type: "sale", customer: "Test Customer Ada", item: "fake-rice", quantity: 2, amountNaira: 15000, amountPhrase: "15k" },
-    { type: "payment", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: 10000, amountPhrase: "10k" },
+    { type: "sale", customer: "Test Customer Ada", item: "fake-rice", unit: "bag", quantity: 2, amountNaira: 15000, amountPhrase: "15k", priceBasis: "total" },
+    { type: "payment", customer: "Test Customer Ada", item: null, quantity: null, unit: null, amountNaira: 10000, amountPhrase: "10k", priceBasis: "total" },
   ],
   totals: {
     totalNaira: 15000,
@@ -42,6 +42,23 @@ const MISMATCH = {
     paidPhrase: "10k",
     remainderNaira: 4000,
     remainderPhrase: "remain 4k",
+  },
+  question: null,
+};
+
+const EACH_PART_PAYMENT = {
+  heard: "2 bags, 15k each, she pay 10k.",
+  entries: [
+    { type: "sale", customer: "Test Customer Ada", item: "fake-rice", unit: "bag", quantity: 2, amountNaira: 15000, amountPhrase: "15k", priceBasis: "each" },
+    { type: "payment", customer: "Test Customer Ada", item: null, quantity: null, unit: null, amountNaira: 10000, amountPhrase: "10k", priceBasis: "total" },
+  ],
+  totals: {
+    totalNaira: 30000,
+    totalPhrase: null,
+    paidNaira: 10000,
+    paidPhrase: "10k",
+    remainderNaira: 20000,
+    remainderPhrase: null,
   },
   question: null,
 };
@@ -78,6 +95,7 @@ describe("voice loop (mock model, no API calls)", () => {
       assert.equal(rows[0].customer, "Test Customer Ada");
       assert.equal(rows[0].item, "fake-rice");
       assert.equal(rows[0].quantity, 2);
+      assert.equal(rows[0].unit, "bag");
       assert.equal(rows[1].type, "payment");
       assert.equal(rows[1].amount_kobo, 1000000);
       assert.equal(ctx.ledger.verify(SHOP_A).ok, true);
@@ -125,7 +143,7 @@ describe("voice loop (mock model, no API calls)", () => {
     const ctx = setup(async () => ({
       heard: "fake",
       entries: [
-        { type: "sale", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: 15000, amountPhrase: "10k" },
+        { type: "sale", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: 15000, amountPhrase: "10k", priceBasis: "total" },
       ],
       totals: null,
       question: null,
@@ -142,7 +160,7 @@ describe("voice loop (mock model, no API calls)", () => {
   it("asks instead of guessing when details are missing", async () => {
     const ctx = setup(async () => ({
       heard: "fake",
-      entries: [{ type: "sale", customer: null, item: null, quantity: null, amountNaira: 5000, amountPhrase: "5k" }],
+      entries: [{ type: "sale", customer: null, item: null, quantity: null, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" }],
       totals: null,
       question: null,
     }));
@@ -158,10 +176,10 @@ describe("voice loop (mock model, no API calls)", () => {
 
   it("rejects bad quantities and amounts from the model", async () => {
     const cases = [
-      [{ type: "sale", customer: "Test Customer Ada", item: "fake-rice", quantity: 0, amountNaira: 5000, amountPhrase: "5k" }, /quantity/],
-      [{ type: "sale", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: 15.5, amountPhrase: "15k" }, /whole naira/],
-      [{ type: "sale", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: -5, amountPhrase: "5k" }, /negative/],
-      [{ type: "debt", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: 5, amountPhrase: "5" }, /unknown type/],
+      [{ type: "sale", customer: "Test Customer Ada", item: "fake-rice", quantity: 0, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" }, /quantity/],
+      [{ type: "sale", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: 15.5, amountPhrase: "15k", priceBasis: "total" }, /whole naira/],
+      [{ type: "sale", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: -5, amountPhrase: "5k", priceBasis: "total" }, /negative/],
+      [{ type: "debt", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: 5, amountPhrase: "5", priceBasis: "total" }, /unknown type/],
     ];
     for (const [entry, want] of cases) {
       const one = setup(async () => ({ heard: "fake", entries: [entry], totals: null, question: null }));
@@ -171,6 +189,136 @@ describe("voice loop (mock model, no API calls)", () => {
       } finally {
         teardown(one);
       }
+    }
+  });
+
+  it("multiplies each-prices by quantity: 2 bags at 15k each is 30k", async () => {
+    const ctx = setup(async () => EACH_PART_PAYMENT);
+    try {
+      const p = await propose(SHOP_A, "fake note", ctx.deps);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.entries[0].priceBasis, "each");
+      assert.equal(p.entries[0].amountNaira, 30000);
+      assert.equal(p.entries[0].amountKobo, 3000000);
+      assert.equal(p.entries[0].eachNaira, 15000);
+      assert.equal(p.entries[0].eachKobo, 1500000);
+      assert.equal(p.entries[0].item, "fake-rice");
+      assert.equal(p.entries[0].unit, "bag");
+      assert.equal(p.totals.remainderNaira, 20000); // 20,000 owed
+
+      const out = confirmProposal(p.id, SHOP_A, ctx.deps);
+      assert.equal(out.recordedIds.length, 2);
+      const rows = ctx.ledger.list(SHOP_A);
+      assert.equal(rows[0].amount_kobo, 3000000);
+      assert.equal(rows[0].unit, "bag");
+      assert.equal(rows[1].amount_kobo, 1000000);
+      assert.equal(ctx.ledger.verify(SHOP_A).ok, true);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("each-price with number words: 2 crates at 8 thousand 5 hundred each is 17k", async () => {
+    const ctx = setup(async () => ({
+      heard: "2 crates egg, 8 thousand 5 hundred each.",
+      entries: [
+        { type: "sale", customer: "Test Customer Bola", item: "fake-egg", unit: "crate", quantity: 2, amountNaira: 8500, amountPhrase: "8 thousand 5 hundred", priceBasis: "each" },
+      ],
+      totals: null,
+      question: null,
+    }));
+    try {
+      const p = await propose(SHOP_A, "fake note", ctx.deps);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.entries[0].amountNaira, 17000);
+      assert.equal(p.entries[0].amountKobo, 1700000);
+      const out = confirmProposal(p.id, SHOP_A, ctx.deps);
+      assert.equal(ctx.ledger.list(SHOP_A)[0].amount_kobo, 1700000);
+      assert.equal(out.recordedIds.length, 1);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("flags a total-basis reading when the note says each", async () => {
+    const ctx = setup(async () => ({
+      heard: "2 bags rice, 15k each.",
+      entries: [
+        { type: "sale", customer: "Test Customer Ada", item: "fake-rice", unit: "bag", quantity: 2, amountNaira: 15000, amountPhrase: "15k", priceBasis: "total" },
+      ],
+      totals: null,
+      question: null,
+    }));
+    try {
+      const p = await propose(SHOP_A, "fake note", ctx.deps);
+      assert.match(p.flags.join(";"), /read as a total/);
+      assert.ok(p.question);
+      assert.throws(() => confirmProposal(p.id, SHOP_A, ctx.deps), /cannot confirm/);
+      assert.deepEqual(ctx.ledger.list(SHOP_A), []);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("asks instead of guessing when the basis is unclear for many items", async () => {
+    const many = setup(async () => ({
+      heard: "2 bags rice, 15k.",
+      entries: [
+        { type: "sale", customer: "Test Customer Ada", item: "fake-rice", unit: "bag", quantity: 2, amountNaira: 15000, amountPhrase: "15k", priceBasis: "unclear" },
+      ],
+      totals: null,
+      question: null,
+    }));
+    try {
+      const p = await propose(SHOP_A, "fake note", many.deps);
+      assert.match(p.flags.join(";"), /each one or for all 2/);
+      assert.ok(p.question);
+      assert.throws(() => confirmProposal(p.id, SHOP_A, many.deps), /cannot confirm/);
+    } finally {
+      teardown(many);
+    }
+    // One item: each and total are the same, so unclear needs no question.
+    const one = setup(async () => ({
+      heard: "1 bag rice, 15k.",
+      entries: [
+        { type: "sale", customer: "Test Customer Ada", item: "fake-rice", unit: "bag", quantity: 1, amountNaira: 15000, amountPhrase: "15k", priceBasis: "unclear" },
+      ],
+      totals: null,
+      question: null,
+    }));
+    try {
+      const p = await propose(SHOP_A, "fake note", one.deps);
+      assert.deepEqual(p.flags, []);
+      assert.equal(confirmProposal(p.id, SHOP_A, one.deps).recordedIds.length, 1);
+    } finally {
+      teardown(one);
+    }
+  });
+
+  it("payments store no item, quantity or unit", async () => {
+    const ctx = setup(async () => ({
+      heard: "fake",
+      entries: [
+        { type: "sale", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" },
+        { type: "payment", customer: "Test Customer Ada", item: "fake-garri", unit: "bag", quantity: 1, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" },
+      ],
+      totals: null,
+      question: null,
+    }));
+    try {
+      const p = await propose(SHOP_A, "fake note", ctx.deps);
+      assert.deepEqual(p.flags, []);
+      assert.match(p.notes.join(";"), /not stored/);
+      assert.equal(p.entries[1].item, null);
+      assert.equal(p.entries[1].quantity, null);
+      assert.equal(p.entries[1].unit, null);
+      confirmProposal(p.id, SHOP_A, ctx.deps);
+      const payment = ctx.ledger.list(SHOP_A)[1];
+      assert.equal(payment.item, null);
+      assert.equal(payment.quantity, null);
+      assert.equal(payment.unit, null);
+    } finally {
+      teardown(ctx);
     }
   });
 
@@ -191,7 +339,7 @@ describe("voice loop (mock model, no API calls)", () => {
     const ctx = setup(async () => ({
       heard: "fake",
       entries: [
-        { type: "restock", customer: null, item: "fake-rice", quantity: 10, amountNaira: 50000, amountPhrase: "50k" },
+        { type: "restock", customer: null, item: "fake-rice", unit: "bag", quantity: 10, amountNaira: 50000, amountPhrase: "50k", priceBasis: "total" },
       ],
       totals: null,
       question: null,
@@ -202,6 +350,7 @@ describe("voice loop (mock model, no API calls)", () => {
       const out = confirmProposal(p.id, SHOP_A, ctx.deps);
       assert.equal(out.recordedIds.length, 1);
       assert.equal(ctx.ledger.list(SHOP_A)[0].customer, SHOP_A);
+      assert.equal(ctx.ledger.list(SHOP_A)[0].unit, "bag");
     } finally {
       teardown(ctx);
     }
