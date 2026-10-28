@@ -537,6 +537,117 @@ describe("stated-remainder safety check (fake data)", () => {
   });
 });
 
+describe("similar-name check (fake data)", () => {
+  const nameFixture = (customer) => async () => ({
+    heard: `${customer} buy rice 1 bag na 8k.`,
+    entries: [
+      { type: "sale", customer, item: "fake-rice", unit: "bag", quantity: 1, amountNaira: 8000, amountPhrase: "8k", priceBasis: "total" },
+    ],
+    totals: null,
+    question: null,
+  });
+  function seedCustomer(ctx, shopId, customer) {
+    ctx.ledger.append({ shopId, type: "sale", amountKobo: 800000, customer, item: "fake-rice", quantity: 1, unit: "bag" });
+  }
+
+  it("Adaboy vs existing Ada is flagged", async () => {
+    const ctx = setup(nameFixture("Adaboy"));
+    try {
+      seedCustomer(ctx, SHOP_A, "Ada");
+      const p = await propose(SHOP_A, "fake note", ctx.deps);
+      assert.equal(p.status, "pending");
+      assert.equal(p.flags.length, 1);
+      assert.equal(p.flags[0], "Is *Adaboy* the same person as *Ada*? Send the right name, or say new customer.");
+      assert.deepEqual(p.name_checked, ["adaboy"]);
+      assert.ok(p.question);
+      assert.throws(() => confirmProposal(p.id, SHOP_A, ctx.deps), /cannot confirm/);
+      const card = renderProposalCard(p);
+      assert.deepEqual(
+        card.buttons.map((b) => b.reply.title),
+        ["Fix", "Reject"]
+      );
+      assert.equal(card.text.split(p.flags[0]).length - 1, 1, "question shows once");
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("ada vs Ada is clean", async () => {
+    const ctx = setup(nameFixture("ada"));
+    try {
+      seedCustomer(ctx, SHOP_A, "Ada");
+      const p = await propose(SHOP_A, "fake note", ctx.deps);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("Chinedu vs existing Mama Chinedu is flagged", async () => {
+    const ctx = setup(nameFixture("Chinedu"));
+    try {
+      seedCustomer(ctx, SHOP_A, "Mama Chinedu");
+      const p = await propose(SHOP_A, "fake note", ctx.deps);
+      assert.equal(p.flags.length, 1);
+      assert.equal(p.flags[0], "Is *Chinedu* the same person as *Mama Chinedu*? Send the right name, or say new customer.");
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("Tunde vs existing Ada is clean", async () => {
+    const ctx = setup(nameFixture("Tunde"));
+    try {
+      seedCustomer(ctx, SHOP_A, "Ada");
+      const p = await propose(SHOP_A, "fake note", ctx.deps);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("first customer in an empty shop is clean", async () => {
+    const ctx = setup(nameFixture("Adaboy"));
+    try {
+      const p = await propose(SHOP_A, "fake note", ctx.deps);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("after a Fix the same name is not flagged again", async () => {
+    const ctx = setup(nameFixture("Adaboy"));
+    try {
+      seedCustomer(ctx, SHOP_A, "Ada");
+      const p = await propose(SHOP_A, "fake note", ctx.deps);
+      assert.equal(p.flags.length, 1);
+      const fixed = await fixProposal(p.id, SHOP_A, "na new customer", ctx.deps);
+      assert.deepEqual(fixed.flags, []);
+      assert.equal(fixed.question, null);
+      assert.deepEqual(fixed.name_checked, ["adaboy"]);
+      assert.equal(confirmProposal(fixed.id, SHOP_A, ctx.deps).recordedIds.length, 1);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("another shop's customers never trigger a flag", async () => {
+    const ctx = setup(nameFixture("Adaboy"));
+    try {
+      seedCustomer(ctx, SHOP_B, "Ada");
+      const p = await propose(SHOP_A, "fake note", ctx.deps);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+    } finally {
+      teardown(ctx);
+    }
+  });
+});
+
 describe("voice HTTP server", () => {
   // In-process dispatch: exercises routing, methods, status codes and the
   // per-shop check without opening sockets (works sandboxed too).
