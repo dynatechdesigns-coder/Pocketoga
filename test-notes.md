@@ -94,3 +94,9 @@ Setup:
 Setup problems found and fixed: expired temporary token, and the WhatsApp account was not subscribed to the app (fixed with a subscribed_apps call).
 
 Voice note verdict: Daniel did say "remain 5k", so the transcription was correct and the contradiction was in the note itself. PocketOga flagged it and withheld Save. Pass. Known issue: the question shows twice (a warning line and a question line with the same words).
+
+### Session 3 findings: 28 Oct 2026
+
+| Said | Card showed | Verdict |
+|---|---|---|
+| Voice: "Ada buy 2 bag of rice 15k each, she pay 10k, remain 5k" | Heard "Adaboy". Sale N30,000, payment N10,000, owes N20,000, Save offered, the stated "remain 5k" ignored | **Fail** twice: wrong customer name, and a stated remainder that contradicts the note's arithmetic was not flagged. Fixes: stated-remainder check and similar-name check, 28 Oct |
