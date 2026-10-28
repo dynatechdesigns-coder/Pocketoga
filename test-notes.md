@@ -92,3 +92,5 @@ Setup:
 | Tapped Save | One sale and one payment in the ledger | Pass (fixed first: button taps hit the "text and voice only" fallback because the handler read the wrong payload shape; fixed with real button_reply parsing) |
 
 Setup problems found and fixed: expired temporary token, and the WhatsApp account was not subscribed to the app (fixed with a subscribed_apps call).
+
+Voice note verdict: Daniel did say "remain 5k", so the transcription was correct and the contradiction was in the note itself. PocketOga flagged it and withheld Save. Pass. Known issue: the question shows twice (a warning line and a question line with the same words).
