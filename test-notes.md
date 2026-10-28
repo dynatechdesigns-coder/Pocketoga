@@ -100,3 +100,12 @@ Voice note verdict: Daniel did say "remain 5k", so the transcription was correct
 | Said | Card showed | Verdict |
 |---|---|---|
 | Voice: "Ada buy 2 bag of rice 15k each, she pay 10k, remain 5k" | Heard "Adaboy". Sale N30,000, payment N10,000, owes N20,000, Save offered, the stated "remain 5k" ignored | **Fail** twice: wrong customer name, and a stated remainder that contradicts the note's arithmetic was not flagged. Fixes: stated-remainder check and similar-name check, 28 Oct |
+
+### Session 3 retest: 28 Oct 2026 (WhatsApp, live)
+
+| Said | Card showed | Verdict |
+|---|---|---|
+| Typed: "Ada buy rice 2 bags, na 15k each, she pay 10k" (saved) | Sale N30,000, paid N10,000, Ada owes N20,000 | Pass |
+| Voice: "Ada buy 2 bags of rice, 15k each, she pay 10k, remain 5k" | Check this one: N30,000 minus N10,000 is N20,000, not the stated N5,000. No Save button | Pass (fixes the earlier Fail). Explanation shown twice in slightly different words, to tidy |
+| Typed: "Adaboy buy rice 1 bag, na 15k" with no Ada saved | Clean card, new customer | Expected: the name check only compares saved customers |
+| Same note after Ada was saved | Check this one: "Is Adaboy the same person as Ada?" No Save button | Pass |
