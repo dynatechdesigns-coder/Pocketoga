@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { propose, confirmProposal, fixProposal, rejectProposal } from "./voice.mjs";
 import { customerDebts, chaseForShop, lagosDay } from "./debts.mjs";
 import { PromiseStore, refreshPromises, keptRate } from "./promises.mjs";
+import { moneyLeakReport } from "./leak.mjs";
 import {
   NOT_REGISTERED,
   FFMPEG_MISSING,
@@ -38,6 +39,7 @@ import {
   renderBalance,
   unknownCustomer,
   dueTodayLines,
+  renderReport,
 } from "./messages.mjs";
 
 export const GRAPH_VERSION = "v25.0";
@@ -196,15 +198,16 @@ function normCustomerName(name) {
   return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-// Exact debt commands, matched before any model call: "who owes", "chase"
-// and "balance <name>" (case-insensitive, trailing punctuation ignored).
-// Anything else returns null and flows to the model as a note.
+// Exact debt commands, matched before any model call: "who owes", "chase",
+// "report" and "balance <name>" (case-insensitive, trailing punctuation
+// ignored). Anything else returns null and flows to the model as a note.
 export function parseCommand(text) {
   const clean = String(text ?? "").trim().replace(/\s+/g, " ").replace(/[?!.\s]+$/, "");
   if (!clean) return null;
   const lower = clean.toLowerCase();
   if (lower === "who owes") return { name: "whoowes" };
   if (lower === "chase") return { name: "chase" };
+  if (lower === "report") return { name: "report" };
   const m = /^balance\s+(.+)$/i.exec(clean);
   if (m && m[1].trim()) return { name: "balance", arg: m[1].trim() };
   return null;
@@ -274,6 +277,10 @@ async function handleDebtCommand(ctx, sender, shopId, cmd) {
   const promises = ctx.promises ? ctx.promises.listByShop(shopId) : [];
   if (cmd.name === "chase") {
     await sendText(ctx, sender, renderChase(chaseForShop(rows, promises, { now: ctx.nowMs })));
+    return;
+  }
+  if (cmd.name === "report") {
+    await sendText(ctx, sender, renderReport(moneyLeakReport(rows, promises, { now: ctx.nowMs })));
     return;
   }
   const want = normCustomerName(cmd.arg);

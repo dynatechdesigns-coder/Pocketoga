@@ -759,6 +759,50 @@ describe("debt commands (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", () =
     }
   });
 
+  it("report answers without calling the model", async () => {
+    const calls = [];
+    const ctx = setup(
+      async (req) => {
+        calls.push(req);
+        return WA_PART;
+      },
+      { nowMs: NOW }
+    );
+    try {
+      const shop = shopOf(ctx);
+      seedSale(ctx, shop, "Ada", 2000000, 40);
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "report")]));
+      assert.equal(calls.length, 0);
+      const reply = sends(ctx).at(-1).body;
+      assert.equal(reply.type, "text");
+      assert.match(reply.text.body, /Money check/);
+      assert.match(reply.text.body, /Owed \*₦20,000\* \(1 customer\), \*₦20,000\* over 30 days/);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("GET /report serves the shop only, never on the webhook port", async () => {
+    const ctx = setup(async () => WA_PART, { nowMs: NOW });
+    try {
+      const shop = shopOf(ctx);
+      seedSale(ctx, shop, "Ada", 2000000, 40);
+      seedSale(ctx, "other-shop", "Zed", 9000000, 9);
+      const res = await dispatch(ctx.deps, { method: "GET", url: "/report", headers: { "x-shop-id": shop } });
+      assert.equal(res.status, 200);
+      const report = JSON.parse(res.text).report;
+      assert.deepEqual(report.owed, { totalKobo: 2000000, customers: 1 });
+      assert.deepEqual(report.overdue, { amountKobo: 2000000 });
+      assert.deepEqual(report.broken, { count: 0, amountKobo: 0 });
+      assert.deepEqual(report.shortfalls, []);
+      assert.deepEqual(report.belowCost, { items: [], skippedItems: 0 });
+      assert.ok(!("total" in report));
+      assert.equal((await dispatchOnly(ctx.deps, { method: "GET", url: "/report", headers: { "x-shop-id": shop } })).status, 404);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
   it("GET /debts and /promises serve the shop only, never on the webhook port", async () => {
     const ctx = setup(async () => WA_PART, { nowMs: NOW });
     try {

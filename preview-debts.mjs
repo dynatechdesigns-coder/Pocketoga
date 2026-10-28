@@ -5,6 +5,7 @@ import { Ledger } from "./ledger.mjs";
 import { checkModelOutput } from "./voice.mjs";
 import { PromiseStore, refreshPromises, keptRate } from "./promises.mjs";
 import { customerDebts, chaseForShop, lagosDay } from "./debts.mjs";
+import { moneyLeakReport } from "./leak.mjs";
 import {
   MAX_BODY_CHARS,
   renderProposalCard,
@@ -13,6 +14,7 @@ import {
   renderBalance,
   unknownCustomer,
   dueTodayLines,
+  renderReport,
 } from "./messages.mjs";
 
 // Fixed clock so the preview never shifts: Wed 28 Oct 2026, 12:00 UTC.
@@ -28,6 +30,7 @@ function show(title, text) {
 }
 
 const ledger = new Ledger(":memory:");
+ledger.append({ shopId: SHOP, type: "restock", amountKobo: 20000000, customer: SHOP, item: "rice", quantity: 10, unit: "bag", createdAt: daysAgo(20) });
 ledger.append({ shopId: SHOP, type: "sale", amountKobo: 3000000, customer: "Ada", item: "rice", quantity: 2, unit: "bag", createdAt: daysAgo(12) });
 ledger.append({ shopId: SHOP, type: "payment", amountKobo: 1000000, customer: "Ada", createdAt: daysAgo(2) });
 ledger.append({ shopId: SHOP, type: "sale", amountKobo: 500000, customer: "Bola", item: "beans", quantity: 1, unit: "bag", createdAt: daysAgo(3) });
@@ -77,6 +80,9 @@ show("balance Nobody", unknownCustomer("Nobody"));
 // 5. Due-today lines appended to replies.
 const due = allPromises.filter((p) => p.status === "open" && p.due_date === lagosDay(NOW));
 show("due today", dueTodayLines(due).join("\n"));
+
+// 6. Money check report.
+show("report", renderReport(moneyLeakReport(rows, allPromises, { now: NOW })));
 
 ledger.close();
 promises.close();

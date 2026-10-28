@@ -459,6 +459,40 @@ export function unknownCustomer(name) {
   return fitBody(`Sorry, I have no record for "${escapeMd(clean || "?")}". Check the spelling and try again.`);
 }
 
+// Money check: one block per non-zero leak category, top 3 per list with
+// "+N more". Categories stay separate; they are never totalled.
+export function renderReport(report) {
+  const lines = [];
+  const owed = report?.owed;
+  if (owed && owed.totalKobo > 0) {
+    let line = `${EMOJI.balance} Owed *${formatKobo(owed.totalKobo)}* (${owed.customers} customer${owed.customers === 1 ? "" : "s"})`;
+    if (report?.overdue && report.overdue.amountKobo > 0) {
+      line += `, *${formatKobo(report.overdue.amountKobo)}* over 30 days`;
+    }
+    lines.push(line);
+  }
+  const broken = report?.broken;
+  if (broken && broken.count > 0) {
+    let line = `${EMOJI.promise} ${broken.count} broken promise${broken.count === 1 ? "" : "s"}`;
+    if (broken.amountKobo > 0) line += ` (*${formatKobo(broken.amountKobo)}* at risk)`;
+    lines.push(line);
+  }
+  const shortfalls = report?.shortfalls ?? [];
+  if (shortfalls.length > 0) {
+    lines.push(`${EMOJI.restock} Sold more than bought:`);
+    for (const s of shortfalls.slice(0, 3)) lines.push(`${escapeMd(s.display)}: short ${s.shortfallQty}`);
+    if (shortfalls.length > 3) lines.push(`+${shortfalls.length - 3} more`);
+  }
+  const below = report?.belowCost?.items ?? [];
+  if (below.length > 0) {
+    lines.push(`${EMOJI.check} Margin lost on below-cost sales:`);
+    for (const f of below.slice(0, 3)) lines.push(`${escapeMd(f.display)}: *${formatKobo(f.marginKobo)}*`);
+    if (below.length > 3) lines.push(`+${below.length - 3} more`);
+  }
+  if (lines.length === 0) return `${EMOJI.check} *Money check*\n\nNothing alarming yet.`;
+  return fitBody(`${EMOJI.check} *Money check*\n${lines.join("\n")}`);
+}
+
 // One line per promise due today, capped at five plus an overflow line.
 export function dueTodayLines(promises) {
   const rows = promises ?? [];

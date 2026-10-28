@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { Ledger } from "./ledger.mjs";
 import { ProposalStore } from "./proposals.mjs";
 import { createMockModelClient } from "./model.mjs";
@@ -14,7 +15,8 @@ import {
   chaseScore,
   rankChase,
 } from "./debts.mjs";
-import { PromiseStore, resolvePromiseDate, promiseStatus, refreshPromises, keptRate } from "./promises.mjs";
+import { PromiseStore, resolvePromiseDate, promiseStatus, promisePaidKobo, refreshPromises, keptRate } from "./promises.mjs";
+import { moneyLeakReport } from "./leak.mjs";
 import {
   MAX_BODY_CHARS,
   renderProposalCard,
@@ -26,6 +28,7 @@ import {
   renderBalance,
   unknownCustomer,
   dueTodayLines,
+  renderReport,
 } from "./messages.mjs";
 
 // Fake fixtures only. Fixed clock: Wed 28 Oct 2026, 12:00 UTC (13:00 Lagos).
@@ -183,6 +186,32 @@ describe("promises (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", () => {
     }
   });
 
+  it("migrates pre-paid_kobo databases", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec(`CREATE TABLE promises (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        shop_id TEXT NOT NULL,
+        customer TEXT NOT NULL,
+        amount_kobo INTEGER,
+        due_date TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        resolved_at TEXT
+      )`);
+      db.prepare(
+        "INSERT INTO promises (shop_id, customer, amount_kobo, due_date, status, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run("shop-a", "Ada", 2000000, "2026-10-30", "open", "2026-10-28T00:00:00.000Z");
+      const store = new PromiseStore(db);
+      const columns = db.prepare("PRAGMA table_info(promises)").all().map((c) => c.name);
+      assert.ok(columns.includes("paid_kobo"));
+      assert.equal(store.listByShop("shop-a")[0].paid_kobo, null);
+      store.close();
+    } finally {
+      db.close();
+    }
+  });
+
   it("resolves confident day-phrases in Lagos time", () => {
     assert.equal(resolvePromiseDate("today", NOW), "2026-10-28");
     assert.equal(resolvePromiseDate("Tomorrow", NOW), "2026-10-29");
@@ -220,11 +249,18 @@ describe("promises (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", () => {
       );
       // No amount promised: any payment before the due date keeps it.
       assert.equal(promiseStatus({ customer: "Bola", amount_kobo: null, due_date: "2026-10-25" }, rows, today), "kept");
-      // Part-payment only: still open past the due date.
+      // Part-payment only with the date still ahead: still open.
       assert.equal(
-        promiseStatus({ customer: "Bola", amount_kobo: 2000000, due_date: "2026-10-25" }, rows, today),
+        promiseStatus({ customer: "Bola", amount_kobo: 2000000, due_date: "2026-11-05" }, rows, today),
         "open"
       );
+      // Part-payment only with the date passed: broken, and the paid part recorded.
+      assert.equal(
+        promiseStatus({ customer: "Bola", amount_kobo: 2000000, due_date: "2026-10-25" }, rows, today),
+        "broken"
+      );
+      assert.equal(promisePaidKobo({ customer: "Bola", due_date: "2026-10-25" }, rows), 500000);
+      assert.equal(promisePaidKobo({ customer: "Nobody", due_date: "2026-10-25" }, rows), 0);
       // Nothing paid and the date has passed: broken.
       assert.equal(
         promiseStatus({ customer: "Chidi", amount_kobo: 1000000, due_date: "2026-10-20" }, rows, today),
@@ -236,19 +272,26 @@ describe("promises (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", () => {
         "open"
       );
 
-      // refreshPromises persists the transitions with resolved_at.
+      // refreshPromises persists the transitions with resolved_at and the paid part.
       const keep = store.create({ shopId: "shop-a", customer: "Ada", amountKobo: 2000000, dueDate: "2026-10-25" });
       const broke = store.create({ shopId: "shop-a", customer: "Chidi", amountKobo: 1000000, dueDate: "2026-10-20" });
+      const partial = store.create({ shopId: "shop-a", customer: "Bola", amountKobo: 2000000, dueDate: "2026-10-25" });
       const open = store.create({ shopId: "shop-a", customer: "Chidi", amountKobo: 1000000, dueDate: "2026-11-05" });
       const done = refreshPromises(store, ledger, "shop-a", { now: NOW });
       assert.deepEqual(done, [
         { id: keep.id, to: "kept" },
         { id: broke.id, to: "broken" },
+        { id: partial.id, to: "broken" },
       ]);
       assert.equal(store.get(keep.id).status, "kept");
       assert.equal(store.get(keep.id).resolved_at, new Date(NOW).toISOString());
+      assert.equal(store.get(keep.id).paid_kobo, 2000000);
       assert.equal(store.get(broke.id).status, "broken");
+      assert.equal(store.get(broke.id).paid_kobo, 0);
+      assert.equal(store.get(partial.id).status, "broken");
+      assert.equal(store.get(partial.id).paid_kobo, 500000);
       assert.equal(store.get(open.id).status, "open");
+      assert.equal(store.get(open.id).paid_kobo, null);
       // Second refresh changes nothing: resolved promises are never reprocessed.
       assert.deepEqual(refreshPromises(store, ledger, "shop-a", { now: NOW }), []);
     } finally {
@@ -269,6 +312,165 @@ describe("promises (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", () => {
     assert.deepEqual(keptRate(promises, "Ada"), { kept: 2, total: 3, rate: 2 / 3 });
     assert.deepEqual(keptRate(promises, "Bola"), { kept: 0, total: 1, rate: 0 });
     assert.equal(keptRate(promises, "Nobody"), null);
+  });
+});
+
+describe("money leak report (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", () => {
+  function reportOf(rows, promises = []) {
+    const ledger = seed(rows);
+    try {
+      return moneyLeakReport(ledger.list("shop-a"), promises, { now: NOW });
+    } finally {
+      ledger.close();
+    }
+  }
+
+  it("totals owed and isolates the 30+ day overdue part via oldest-first allocation", () => {
+    const report = reportOf([
+      // Old sale fully covered by the payment: nothing overdue here.
+      { shopId: "shop-a", type: "sale", amountKobo: 1000000, customer: "Ada", createdAt: daysAgo(40) },
+      { shopId: "shop-a", type: "sale", amountKobo: 1000000, customer: "Ada", createdAt: daysAgo(5) },
+      { shopId: "shop-a", type: "payment", amountKobo: 1200000, customer: "Ada", createdAt: daysAgo(1) },
+      // Old sale untouched: overdue.
+      { shopId: "shop-a", type: "sale", amountKobo: 1000000, customer: "Bola", createdAt: daysAgo(40) },
+      // Exactly 30 days is not overdue.
+      { shopId: "shop-a", type: "sale", amountKobo: 1000000, customer: "Chidi", createdAt: daysAgo(30) },
+    ]);
+    assert.deepEqual(report.owed, { totalKobo: 2800000, customers: 3 });
+    assert.deepEqual(report.overdue, { amountKobo: 1000000 });
+  });
+
+  it("counts broken promises with the outstanding amount", () => {
+    const report = reportOf([], [
+      { customer: "Ada", status: "broken", amount_kobo: 2000000, paid_kobo: 500000 },
+      { customer: "Bola", status: "broken", amount_kobo: null, paid_kobo: 0 },
+      { customer: "Chidi", status: "broken", amount_kobo: 1000000, paid_kobo: 1500000 },
+      { customer: "Ada", status: "kept", amount_kobo: 500000, paid_kobo: 500000 },
+      { customer: "Ada", status: "open", amount_kobo: 9000000, paid_kobo: null },
+    ]);
+    assert.deepEqual(report.broken, { count: 3, amountKobo: 1500000 });
+  });
+
+  it("lists items sold more than bought, grouped by lowercased item and unit", () => {
+    const report = reportOf([
+      { shopId: "shop-a", type: "restock", amountKobo: 1000000, customer: "shop-a", item: "Rice", unit: "Bag", quantity: 10, createdAt: daysAgo(9) },
+      { shopId: "shop-a", type: "sale", amountKobo: 1200000, customer: "Ada", item: "rice", unit: "bag", quantity: 12, createdAt: daysAgo(8) },
+      { shopId: "shop-a", type: "restock", amountKobo: 500000, customer: "shop-a", item: "Garri", quantity: 5, createdAt: daysAgo(9) },
+      { shopId: "shop-a", type: "sale", amountKobo: 800000, customer: "Ada", item: "garri", quantity: 8, createdAt: daysAgo(8) },
+      { shopId: "shop-a", type: "restock", amountKobo: 500000, customer: "shop-a", item: "oil", unit: "tin", quantity: 5, createdAt: daysAgo(9) },
+      { shopId: "shop-a", type: "sale", amountKobo: 200000, customer: "Ada", item: "oil", unit: "bottle", quantity: 2, createdAt: daysAgo(8) },
+      { shopId: "shop-a", type: "sale", amountKobo: 300000, customer: "Ada", createdAt: daysAgo(8) },
+    ]);
+    assert.deepEqual(report.shortfalls, [
+      { display: "garri", item: "garri", unit: null, soldQty: 8, stockedQty: 5, shortfallQty: 3 },
+      { display: "oil (bottle)", item: "oil", unit: "bottle", soldQty: 2, stockedQty: 0, shortfallQty: 2 },
+      { display: "rice (bag)", item: "rice", unit: "bag", soldQty: 12, stockedQty: 10, shortfallQty: 2 },
+    ]);
+  });
+
+  it("flags below-cost sales with margin lost and counts items without history", () => {
+    const report = reportOf([
+      { shopId: "shop-a", type: "restock", amountKobo: 2000000, customer: "shop-a", item: "beans", unit: "tin", quantity: 10, createdAt: daysAgo(20) },
+      { shopId: "shop-a", type: "restock", amountKobo: 3000000, customer: "shop-a", item: "beans", unit: "tin", quantity: 10, createdAt: daysAgo(10) },
+      { shopId: "shop-a", type: "sale", amountKobo: 600000, customer: "Ada", item: "beans", unit: "tin", quantity: 4, createdAt: daysAgo(5) },
+      { shopId: "shop-a", type: "sale", amountKobo: 600000, customer: "Ada", item: "beans", unit: "tin", quantity: 2, createdAt: daysAgo(4) },
+      { shopId: "shop-a", type: "sale", amountKobo: 300000, customer: "Ada", item: "pepper", unit: "tin", quantity: 3, createdAt: daysAgo(5) },
+      { shopId: "shop-a", type: "restock", amountKobo: 400000, customer: "shop-a", item: "salt", unit: "tin", quantity: 5, createdAt: daysAgo(5) },
+    ]);
+    // Weighted average cost is (2M + 3M) / 20 = 250k per tin; the 4-tin sale
+    // at 150k each loses (250k - 150k) x 4 = 400k. Pepper has no restocks.
+    assert.deepEqual(report.belowCost, {
+      items: [{ display: "beans (tin)", item: "beans", unit: "tin", marginKobo: 400000 }],
+      skippedItems: 1,
+    });
+  });
+
+  it("corrections flow through the whole report", () => {
+    const ledger = new Ledger(":memory:");
+    try {
+      const restock = ledger.append({ shopId: "shop-a", type: "restock", amountKobo: 500000, customer: "shop-a", item: "rice", unit: "bag", quantity: 5, createdAt: daysAgo(9) });
+      ledger.appendCorrection(restock.id, { amountKobo: 1000000, quantity: 10 });
+      ledger.append({ shopId: "shop-a", type: "sale", amountKobo: 800000, customer: "Ada", item: "rice", unit: "bag", quantity: 8, createdAt: daysAgo(8) });
+      const sale = ledger.append({ shopId: "shop-a", type: "sale", amountKobo: 2000000, customer: "Ada", createdAt: daysAgo(8) });
+      ledger.appendCorrection(sale.id, { amountKobo: 1200000 });
+      ledger.append({ shopId: "shop-a", type: "payment", amountKobo: 1000000, customer: "Ada", createdAt: daysAgo(1) });
+      const report = moneyLeakReport(ledger.list("shop-a"), [], { now: NOW });
+      assert.deepEqual(report.shortfalls, []);
+      assert.equal(report.owed.totalKobo, 1000000);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  it("renders the full report with top 3 lists", () => {
+    const text = renderReport({
+      owed: { totalKobo: 5000000, customers: 3 },
+      overdue: { amountKobo: 1200000 },
+      broken: { count: 2, amountKobo: 800000 },
+      shortfalls: [
+        { display: "rice (bag)", shortfallQty: 5 },
+        { display: "yam (tuber)", shortfallQty: 3 },
+        { display: "beans (tin)", shortfallQty: 2 },
+        { display: "garri", shortfallQty: 1 },
+      ],
+      belowCost: { items: [{ display: "beans (tin)", marginKobo: 120000 }], skippedItems: 1 },
+    });
+    assert.equal(
+      text,
+      `⚠️ *Money check*\n⚖️ Owed *₦50,000* (3 customers), *₦12,000* over 30 days\n🤝 2 broken promises (*₦8,000* at risk)\n📦 Sold more than bought:\nrice (bag): short 5\nyam (tuber): short 3\nbeans (tin): short 2\n+1 more\n⚠️ Margin lost on below-cost sales:\nbeans (tin): *₦1,200*`
+    );
+  });
+
+  it("renders partial lines and the all-clear", () => {
+    assert.equal(
+      renderReport({
+        owed: { totalKobo: 100000, customers: 1 },
+        overdue: { amountKobo: 0 },
+        broken: { count: 1, amountKobo: 0 },
+        shortfalls: [],
+        belowCost: { items: [], skippedItems: 0 },
+      }),
+      `⚠️ *Money check*\n⚖️ Owed *₦1,000* (1 customer)\n🤝 1 broken promise`
+    );
+    assert.equal(
+      renderReport({
+        owed: { totalKobo: 0, customers: 0 },
+        overdue: { amountKobo: 0 },
+        broken: { count: 0, amountKobo: 0 },
+        shortfalls: [],
+        belowCost: { items: [], skippedItems: 4 },
+      }),
+      `⚠️ *Money check*\n\nNothing alarming yet.`
+    );
+  });
+
+  it("report message never exceeds 1024 characters", () => {
+    const long = "item-" + "x".repeat(120);
+    const shortfalls = Array.from({ length: 30 }, (_, i) => ({ display: `${long}-${i} (bag)`, shortfallQty: i + 1 }));
+    const items = Array.from({ length: 30 }, (_, i) => ({ display: `${long}-${i} (tin)`, marginKobo: (i + 1) * 100000 }));
+    const text = renderReport({
+      owed: { totalKobo: 999999900, customers: 99 },
+      overdue: { amountKobo: 888888800 },
+      broken: { count: 99, amountKobo: 777777700 },
+      shortfalls,
+      belowCost: { items, skippedItems: 9 },
+    });
+    assert.ok(text.length <= MAX_BODY_CHARS, `report is ${text.length} chars`);
+    assert.ok(text.startsWith("⚠️ *Money check*"));
+  });
+
+  it("separates shops and keeps categories uncombined", () => {
+    const ledger = new Ledger(":memory:");
+    try {
+      ledger.append({ shopId: "shop-a", type: "sale", amountKobo: 1000000, customer: "Ada", createdAt: daysAgo(40) });
+      ledger.append({ shopId: "shop-b", type: "sale", amountKobo: 9000000, customer: "Zed", createdAt: daysAgo(40) });
+      const report = moneyLeakReport(ledger.list("shop-a"), [], { now: NOW });
+      assert.deepEqual(report.owed, { totalKobo: 1000000, customers: 1 });
+      assert.deepEqual(report.overdue, { amountKobo: 1000000 });
+      assert.ok(!("total" in report), "categories are never added into one number");
+    } finally {
+      ledger.close();
+    }
   });
 });
 

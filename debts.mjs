@@ -118,6 +118,60 @@ export function customerDebts(rows, { now = Date.now() } = {}) {
   return out;
 }
 
+// Per-sale oldest-first allocation: every effective sale with its unpaid
+// remainder and age in days. Same pool rules as customerDebts.
+export function allocatedSales(rows, { now = Date.now() } = {}) {
+  const today = lagosDay(now);
+  const live = effectiveEntries(rows);
+  const byId = new Map((rows ?? []).map((r) => [r.id, r]));
+  const groups = new Map();
+  for (const r of live) {
+    if (typeof r.customer !== "string") continue;
+    const norm = normCustomer(r.customer);
+    if (!norm) continue;
+    if (!groups.has(norm)) groups.set(norm, { customer: r.customer.trim(), sales: [], paidKobo: 0 });
+    const g = groups.get(norm);
+    const sign = entrySign(r, byId);
+    if (sign > 0) g.sales.push(r);
+    else if (sign < 0) g.paidKobo += r.amount_kobo;
+  }
+  const out = [];
+  for (const g of groups.values()) {
+    g.sales.sort((a, b) => a.seq - b.seq || a.id - b.id);
+    let pool = g.paidKobo;
+    for (const s of g.sales) {
+      const applied = Math.min(s.amount_kobo, pool);
+      pool -= applied;
+      out.push({
+        customer: g.customer,
+        amountKobo: s.amount_kobo,
+        paidKobo: applied,
+        remainingKobo: s.amount_kobo - applied,
+        ageDays: daysBetween(lagosDay(Date.parse(s.created_at)), today),
+        createdAt: s.created_at,
+      });
+    }
+  }
+  return out;
+}
+
+// Effective stock kind of one row: "sale" sells stock, "restock" adds it,
+// anything else is null. Corrections take the corrected entry's kind.
+export function stockKind(row, rows) {
+  const byId = new Map((rows ?? []).map((r) => [r.id, r]));
+  let cur = row;
+  const seen = new Set();
+  while (cur && cur.type === "correction") {
+    if (cur.corrects_id === null || cur.corrects_id === undefined || seen.has(cur.id)) return null;
+    seen.add(cur.id);
+    cur = byId.get(cur.corrects_id);
+  }
+  if (!cur) return null;
+  if (cur.type === "sale") return "sale";
+  if (cur.type === "restock") return "restock";
+  return null;
+}
+
 // Debtors only, biggest debt first.
 export function owingDebts(rows, opts = {}) {
   return customerDebts(rows, opts)

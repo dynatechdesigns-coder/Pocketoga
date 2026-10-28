@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS promises (
   due_date TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('open','kept','broken','cancelled')),
   created_at TEXT NOT NULL,
-  resolved_at TEXT
+  resolved_at TEXT,
+  paid_kobo INTEGER CHECK (paid_kobo IS NULL OR (typeof(paid_kobo) = 'integer' AND paid_kobo >= 0))
 );
 CREATE INDEX IF NOT EXISTS idx_promises_shop ON promises(shop_id);
 `;
@@ -43,13 +44,24 @@ export class PromiseStore {
       this.ownsDb = false;
     }
     this.db.exec(PROMISE_SCHEMA);
+    // Databases created before the paid_kobo column get it now.
+    const columns = this.db
+      .prepare("PRAGMA table_info(promises)")
+      .all()
+      .map((c) => c.name);
+    if (!columns.includes("paid_kobo")) {
+      this.db.exec("ALTER TABLE promises ADD COLUMN paid_kobo INTEGER CHECK (paid_kobo IS NULL OR (typeof(paid_kobo) = 'integer' AND paid_kobo >= 0))");
+    }
   }
 
-  create({ shopId, customer, amountKobo = null, dueDate, status = "open", createdAt = null, resolvedAt = null }) {
+  create({ shopId, customer, amountKobo = null, dueDate, status = "open", createdAt = null, resolvedAt = null, paidKobo = null }) {
     if (!shopId || typeof shopId !== "string") throw new Error("shopId is required");
     if (!customer || typeof customer !== "string" || !customer.trim()) throw new Error("customer is required");
     if (amountKobo !== null && amountKobo !== undefined) {
       if (!Number.isInteger(amountKobo) || amountKobo < 0) throw new Error("amount_kobo must be null or an integer >= 0");
+    }
+    if (paidKobo !== null && paidKobo !== undefined) {
+      if (!Number.isInteger(paidKobo) || paidKobo < 0) throw new Error("paid_kobo must be null or an integer >= 0");
     }
     assertDueDate(dueDate);
     if (!PROMISE_STATUSES.includes(status)) throw new Error(`bad promise status: ${String(status)}`);
@@ -57,10 +69,10 @@ export class PromiseStore {
     const result = this.db
       .prepare(
         `INSERT INTO promises
-           (shop_id, customer, amount_kobo, due_date, status, created_at, resolved_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+           (shop_id, customer, amount_kobo, due_date, status, created_at, resolved_at, paid_kobo)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(shopId, customer.trim(), amountKobo ?? null, dueDate, status, stamp, resolvedAt ?? null);
+      .run(shopId, customer.trim(), amountKobo ?? null, dueDate, status, stamp, resolvedAt ?? null, paidKobo ?? null);
     return this.get(Number(result.lastInsertRowid));
   }
 
@@ -77,13 +89,16 @@ export class PromiseStore {
   }
 
   // Resolution only moves forward: open -> kept, broken or cancelled.
-  resolve(id, { status, resolvedAt = null } = {}) {
+  resolve(id, { status, resolvedAt = null, paidKobo = null } = {}) {
     if (!["kept", "broken", "cancelled"].includes(status)) {
       throw new Error(`cannot resolve a promise as: ${String(status)}`);
     }
+    if (paidKobo !== null && paidKobo !== undefined && (!Number.isInteger(paidKobo) || paidKobo < 0)) {
+      throw new Error("paid_kobo must be null or an integer >= 0");
+    }
     this.db
-      .prepare("UPDATE promises SET status = ?, resolved_at = ? WHERE id = ?")
-      .run(status, resolvedAt ?? new Date().toISOString(), id);
+      .prepare("UPDATE promises SET status = ?, resolved_at = ?, paid_kobo = ? WHERE id = ?")
+      .run(status, resolvedAt ?? new Date().toISOString(), paidKobo ?? null, id);
     return this.get(id);
   }
 
@@ -136,30 +151,42 @@ function isPaymentLike(row, byId) {
   return !!cur && cur.type === "payment";
 }
 
-// Effective status of an OPEN promise against one shop's ledger rows:
-// kept when a qualifying payment exists on or before the due date (at least
-// the promised amount, or any payment when no amount was promised); broken
-// when the due date has passed with no payment at all on or before it;
-// otherwise still open (a part-payment before the due date keeps it open).
-export function promiseStatus(promise, shopRows, todayDay) {
+// Payments by one customer on or before a promise's due date (effective
+// rows, so corrected payments count at their corrected amount).
+function promisePayments(promise, shopRows) {
   const want = normCustomer(promise.customer);
   const byId = new Map((shopRows ?? []).map((r) => [r.id, r]));
-  const before = effectiveEntries(shopRows).filter(
+  return effectiveEntries(shopRows).filter(
     (r) =>
       isPaymentLike(r, byId) &&
       normCustomer(r.customer) === want &&
       lagosDay(Date.parse(r.created_at)) <= promise.due_date
   );
+}
+
+// What the customer paid toward a promise by its due date, in kobo.
+export function promisePaidKobo(promise, shopRows) {
+  return promisePayments(promise, shopRows).reduce((t, r) => t + r.amount_kobo, 0);
+}
+
+// Effective status of an OPEN promise against one shop's ledger rows:
+// kept when a qualifying payment exists on or before the due date (at least
+// the promised amount, or any payment when no amount was promised); broken
+// when the due date has passed without that — including past-due part
+// payments, whose paid part is recorded separately; otherwise still open.
+export function promiseStatus(promise, shopRows, todayDay) {
+  const before = promisePayments(promise, shopRows);
   const qualifying = before.filter(
     (r) => promise.amount_kobo === null || promise.amount_kobo === undefined || r.amount_kobo >= promise.amount_kobo
   );
   if (qualifying.length > 0) return "kept";
-  if (todayDay > promise.due_date && before.length === 0) return "broken";
+  if (todayDay > promise.due_date) return "broken";
   return "open";
 }
 
 // Moves every open promise of one shop to its effective status, stamping
-// resolved_at. Returns the transitions for callers that report them.
+// resolved_at and recording the paid part. Returns the transitions for
+// callers that report them.
 export function refreshPromises(store, ledger, shopId, { now = Date.now() } = {}) {
   if (!store || !ledger) return [];
   const today = lagosDay(now);
@@ -168,7 +195,7 @@ export function refreshPromises(store, ledger, shopId, { now = Date.now() } = {}
   for (const p of store.listOpenByShop(shopId)) {
     const next = promiseStatus(p, rows, today);
     if (next === "kept" || next === "broken") {
-      store.resolve(p.id, { status: next, resolvedAt: new Date(now).toISOString() });
+      store.resolve(p.id, { status: next, resolvedAt: new Date(now).toISOString(), paidKobo: promisePaidKobo(p, rows) });
       done.push({ id: p.id, to: next });
     }
   }

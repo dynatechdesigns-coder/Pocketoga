@@ -10,6 +10,7 @@ import { Ledger } from "./ledger.mjs";
 import { ProposalStore } from "./proposals.mjs";
 import { PromiseStore, refreshPromises } from "./promises.mjs";
 import { customerDebts, chaseForShop } from "./debts.mjs";
+import { moneyLeakReport } from "./leak.mjs";
 import { propose, confirmProposal, fixProposal, rejectProposal, getProposal } from "./voice.mjs";
 import {
   verifyWhatsAppSignature,
@@ -174,6 +175,13 @@ export async function handleVoiceRequest(req, res, deps) {
   if (req.method === "GET" && parts.length === 1 && parts[0] === "promises") {
     refreshPromises(deps.promises, deps.ledger, shopId, {});
     return send(res, 200, { promises: deps.promises ? deps.promises.listByShop(shopId) : [] });
+  }
+
+  if (req.method === "GET" && parts.length === 1 && parts[0] === "report") {
+    refreshPromises(deps.promises, deps.ledger, shopId, {});
+    const rows = deps.ledger.list(shopId);
+    const promises = deps.promises ? deps.promises.listByShop(shopId) : [];
+    return send(res, 200, { report: moneyLeakReport(rows, promises, {}) });
   }
 
   return send(res, 404, { error: "not found" });
