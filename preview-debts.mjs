@@ -31,9 +31,11 @@ function show(title, text) {
 
 const ledger = new Ledger(":memory:");
 ledger.append({ shopId: SHOP, type: "restock", amountKobo: 20000000, customer: SHOP, item: "rice", quantity: 10, unit: "bag", createdAt: daysAgo(20) });
+ledger.append({ shopId: SHOP, type: "restock", amountKobo: 500000, customer: SHOP, item: "garri", quantity: 5, createdAt: daysAgo(20) });
 ledger.append({ shopId: SHOP, type: "sale", amountKobo: 3000000, customer: "Ada", item: "rice", quantity: 2, unit: "bag", createdAt: daysAgo(12) });
 ledger.append({ shopId: SHOP, type: "payment", amountKobo: 1000000, customer: "Ada", createdAt: daysAgo(2) });
 ledger.append({ shopId: SHOP, type: "sale", amountKobo: 500000, customer: "Bola", item: "beans", quantity: 1, unit: "bag", createdAt: daysAgo(3) });
+ledger.append({ shopId: SHOP, type: "sale", amountKobo: 800000, customer: "Bola", item: "garri", quantity: 8, createdAt: daysAgo(3) });
 
 const promises = new PromiseStore(":memory:");
 promises.create({ shopId: SHOP, customer: "Ada", amountKobo: 2000000, dueDate: "2026-10-20" });

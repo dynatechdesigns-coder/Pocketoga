@@ -460,11 +460,15 @@ export function unknownCustomer(name) {
 }
 
 // Money check: one block per non-zero leak category, top 3 per list with
-// "+N more". Categories stay separate; they are never totalled.
+// "+N more". Categories stay separate; they are never totalled. The header
+// carries a warning only when something needs attention, and no emoji
+// appears twice: balance, promise, restock, payment each own one block.
 export function renderReport(report) {
   const lines = [];
+  let attention = false;
   const owed = report?.owed;
   if (owed && owed.totalKobo > 0) {
+    attention = true;
     let line = `${EMOJI.balance} Owed *${formatKobo(owed.totalKobo)}* (${owed.customers} customer${owed.customers === 1 ? "" : "s"})`;
     if (report?.overdue && report.overdue.amountKobo > 0) {
       line += `, *${formatKobo(report.overdue.amountKobo)}* over 30 days`;
@@ -473,24 +477,33 @@ export function renderReport(report) {
   }
   const broken = report?.broken;
   if (broken && broken.count > 0) {
+    attention = true;
     let line = `${EMOJI.promise} ${broken.count} broken promise${broken.count === 1 ? "" : "s"}`;
     if (broken.amountKobo > 0) line += ` (*${formatKobo(broken.amountKobo)}* at risk)`;
     lines.push(line);
   }
   const shortfalls = report?.shortfalls ?? [];
   if (shortfalls.length > 0) {
+    attention = true;
     lines.push(`${EMOJI.restock} Sold more than bought:`);
     for (const s of shortfalls.slice(0, 3)) lines.push(`${escapeMd(s.display)}: short ${s.shortfallQty}`);
     if (shortfalls.length > 3) lines.push(`+${shortfalls.length - 3} more`);
   }
+  const noStockRecord = report?.noStockRecord ?? 0;
+  if (noStockRecord > 0) {
+    lines.push(`No stock record for ${noStockRecord} item${noStockRecord === 1 ? "" : "s"}.`);
+  }
   const below = report?.belowCost?.items ?? [];
   if (below.length > 0) {
-    lines.push(`${EMOJI.check} Margin lost on below-cost sales:`);
+    attention = true;
+    lines.push(`${EMOJI.payment} Margin lost on below-cost sales:`);
     for (const f of below.slice(0, 3)) lines.push(`${escapeMd(f.display)}: *${formatKobo(f.marginKobo)}*`);
     if (below.length > 3) lines.push(`+${below.length - 3} more`);
   }
-  if (lines.length === 0) return `${EMOJI.check} *Money check*\n\nNothing alarming yet.`;
-  return fitBody(`${EMOJI.check} *Money check*\n${lines.join("\n")}`);
+  const header = attention ? `${EMOJI.check} *Money check*` : "*Money check*";
+  if (!attention) lines.push("Nothing alarming yet.");
+  const gap = attention ? "\n" : "\n\n";
+  return fitBody(`${header}${gap}${lines.join("\n")}`);
 }
 
 // One line per promise due today, capped at five plus an overflow line.

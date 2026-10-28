@@ -795,6 +795,7 @@ describe("debt commands (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", () =
       assert.deepEqual(report.overdue, { amountKobo: 2000000 });
       assert.deepEqual(report.broken, { count: 0, amountKobo: 0 });
       assert.deepEqual(report.shortfalls, []);
+      assert.equal(report.noStockRecord, 0);
       assert.deepEqual(report.belowCost, { items: [], skippedItems: 0 });
       assert.ok(!("total" in report));
       assert.equal((await dispatchOnly(ctx.deps, { method: "GET", url: "/report", headers: { "x-shop-id": shop } })).status, 404);

@@ -73,21 +73,24 @@ export function moneyLeakReport(ledgerRows, promises, { now = Date.now() } = {})
     }, 0),
   };
 
-  // (d) Items sold more than bought, biggest shortfall first.
-  const shortfalls = stockGroups(rows)
-    .map((g) => {
-      const soldQty = g.sales.reduce((t, r) => t + r.quantity, 0);
-      return {
-        display: stockDisplay(g.item, g.unit),
-        item: g.item,
-        unit: g.unit,
-        soldQty,
-        stockedQty: g.stockedQty,
-        shortfallQty: soldQty - g.stockedQty,
-      };
-    })
-    .filter((g) => g.shortfallQty > 0)
+  // (d) Items sold more than bought, biggest shortfall first — but only
+  // when the item and unit has restock history. Sale groups with nothing
+  // ever stocked are not shortfalls; they are counted separately.
+  const groups = stockGroups(rows).map((g) => {
+    const soldQty = g.sales.reduce((t, r) => t + r.quantity, 0);
+    return {
+      display: stockDisplay(g.item, g.unit),
+      item: g.item,
+      unit: g.unit,
+      soldQty,
+      stockedQty: g.stockedQty,
+      shortfallQty: soldQty - g.stockedQty,
+    };
+  });
+  const shortfalls = groups
+    .filter((g) => g.stockedQty > 0 && g.shortfallQty > 0)
     .sort((a, b) => b.shortfallQty - a.shortfallQty || compareText(a.display, b.display));
+  const noStockRecord = groups.filter((g) => g.soldQty > 0 && g.stockedQty <= 0).length;
 
   // (e) Below-cost sales: per item and unit, the quantity-weighted average
   // restock cost per unit (total kobo / total qty, rounded half-up to whole
@@ -114,5 +117,5 @@ export function moneyLeakReport(ledgerRows, promises, { now = Date.now() } = {})
   belowItems.sort((a, b) => b.marginKobo - a.marginKobo || compareText(a.display, b.display));
   const belowCost = { items: belowItems, skippedItems };
 
-  return { owed, overdue, broken, shortfalls, belowCost };
+  return { owed, overdue, broken, shortfalls, noStockRecord, belowCost };
 }

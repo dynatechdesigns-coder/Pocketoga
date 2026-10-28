@@ -358,14 +358,24 @@ describe("money leak report (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", 
       { shopId: "shop-a", type: "restock", amountKobo: 500000, customer: "shop-a", item: "Garri", quantity: 5, createdAt: daysAgo(9) },
       { shopId: "shop-a", type: "sale", amountKobo: 800000, customer: "Ada", item: "garri", quantity: 8, createdAt: daysAgo(8) },
       { shopId: "shop-a", type: "restock", amountKobo: 500000, customer: "shop-a", item: "oil", unit: "tin", quantity: 5, createdAt: daysAgo(9) },
+      // Oil in bottles was never restocked: no shortfall line, counted instead.
       { shopId: "shop-a", type: "sale", amountKobo: 200000, customer: "Ada", item: "oil", unit: "bottle", quantity: 2, createdAt: daysAgo(8) },
       { shopId: "shop-a", type: "sale", amountKobo: 300000, customer: "Ada", createdAt: daysAgo(8) },
     ]);
     assert.deepEqual(report.shortfalls, [
       { display: "garri", item: "garri", unit: null, soldQty: 8, stockedQty: 5, shortfallQty: 3 },
-      { display: "oil (bottle)", item: "oil", unit: "bottle", soldQty: 2, stockedQty: 0, shortfallQty: 2 },
       { display: "rice (bag)", item: "rice", unit: "bag", soldQty: 12, stockedQty: 10, shortfallQty: 2 },
     ]);
+    assert.equal(report.noStockRecord, 1);
+  });
+
+  it("a new shop with sales and no restocks shows no shortfalls, only the count", () => {
+    const report = reportOf([
+      { shopId: "shop-a", type: "sale", amountKobo: 1200000, customer: "Ada", item: "rice", unit: "bag", quantity: 12, createdAt: daysAgo(8) },
+      { shopId: "shop-a", type: "sale", amountKobo: 800000, customer: "Ada", item: "garri", quantity: 8, createdAt: daysAgo(8) },
+    ]);
+    assert.deepEqual(report.shortfalls, []);
+    assert.equal(report.noStockRecord, 2);
   });
 
   it("flags below-cost sales with margin lost and counts items without history", () => {
@@ -413,12 +423,50 @@ describe("money leak report (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", 
         { display: "beans (tin)", shortfallQty: 2 },
         { display: "garri", shortfallQty: 1 },
       ],
+      noStockRecord: 2,
       belowCost: { items: [{ display: "beans (tin)", marginKobo: 120000 }], skippedItems: 1 },
     });
     assert.equal(
       text,
-      `⚠️ *Money check*\n⚖️ Owed *₦50,000* (3 customers), *₦12,000* over 30 days\n🤝 2 broken promises (*₦8,000* at risk)\n📦 Sold more than bought:\nrice (bag): short 5\nyam (tuber): short 3\nbeans (tin): short 2\n+1 more\n⚠️ Margin lost on below-cost sales:\nbeans (tin): *₦1,200*`
+      `⚠️ *Money check*\n⚖️ Owed *₦50,000* (3 customers), *₦12,000* over 30 days\n🤝 2 broken promises (*₦8,000* at risk)\n📦 Sold more than bought:\nrice (bag): short 5\nyam (tuber): short 3\nbeans (tin): short 2\n+1 more\nNo stock record for 2 items.\n💵 Margin lost on below-cost sales:\nbeans (tin): *₦1,200*`
     );
+  });
+
+  it("shows a quiet no-stock-record line only when the count is above zero", () => {
+    const base = {
+      owed: { totalKobo: 0, customers: 0 },
+      overdue: { amountKobo: 0 },
+      broken: { count: 0, amountKobo: 0 },
+      shortfalls: [],
+      belowCost: { items: [], skippedItems: 0 },
+    };
+    assert.ok(renderReport({ ...base, noStockRecord: 2 }).includes("No stock record for 2 items."));
+    assert.ok(renderReport({ ...base, noStockRecord: 1 }).includes("No stock record for 1 item."));
+    assert.ok(!renderReport({ ...base, noStockRecord: 0 }).includes("No stock record"));
+  });
+
+  it("report emojis: warning header only on attention, none repeated", () => {
+    const attention = renderReport({
+      owed: { totalKobo: 5000000, customers: 3 },
+      overdue: { amountKobo: 1200000 },
+      broken: { count: 2, amountKobo: 800000 },
+      shortfalls: [{ display: "rice (bag)", shortfallQty: 5 }],
+      noStockRecord: 1,
+      belowCost: { items: [{ display: "beans (tin)", marginKobo: 120000 }], skippedItems: 0 },
+    });
+    for (const emoji of ["⚠️", "⚖️", "🤝", "📦", "💵"]) {
+      assert.equal(attention.split(emoji).length - 1, 1, emoji);
+    }
+    const clear = renderReport({
+      owed: { totalKobo: 0, customers: 0 },
+      overdue: { amountKobo: 0 },
+      broken: { count: 0, amountKobo: 0 },
+      shortfalls: [],
+      noStockRecord: 0,
+      belowCost: { items: [], skippedItems: 0 },
+    });
+    assert.ok(!clear.includes("⚠️"));
+    assert.ok(clear.includes("Nothing alarming yet."));
   });
 
   it("renders partial lines and the all-clear", () => {
@@ -440,7 +488,7 @@ describe("money leak report (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", 
         shortfalls: [],
         belowCost: { items: [], skippedItems: 4 },
       }),
-      `⚠️ *Money check*\n\nNothing alarming yet.`
+      `*Money check*\n\nNothing alarming yet.`
     );
   });
 
