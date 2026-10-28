@@ -10,6 +10,13 @@ import { Ledger } from "./ledger.mjs";
 import { ProposalStore } from "./proposals.mjs";
 import { createModelClient } from "./model.mjs";
 import { propose, confirmProposal, fixProposal, rejectProposal, getProposal } from "./voice.mjs";
+import {
+  verifyWhatsAppSignature,
+  verifyWebhookSubscription,
+  processWhatsAppPayload,
+  trackWhatsAppJob,
+  buildWhatsAppContext,
+} from "./whatsapp.mjs";
 
 const MAX_BODY_BYTES = 12 * 1024 * 1024;
 
@@ -44,10 +51,66 @@ function readBody(req) {
   });
 }
 
+function readRawBody(req) {
+  return new Promise((resolveBody, rejectBody) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        rejectBody(Object.assign(new Error("request body too large"), { status: 413 }));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolveBody(Buffer.concat(chunks)));
+    req.on("error", rejectBody);
+  });
+}
+
+// WhatsApp webhook. No x-shop-id header: Meta calls it, and the sender's
+// shop comes from the message itself via the allow-list.
+async function handleWebhookRoute(req, res, url, deps) {
+  const env = deps.env ?? process.env;
+  if (req.method === "GET") {
+    const challenge = verifyWebhookSubscription(url.searchParams, env.WHATSAPP_VERIFY_TOKEN);
+    if (!challenge) return send(res, 403, { error: "webhook verification failed" });
+    res.writeHead(200, { "Content-Type": "text/plain", "Content-Length": Buffer.byteLength(challenge) });
+    res.end(challenge);
+    return;
+  }
+  if (req.method === "POST") {
+    const raw = await readRawBody(req);
+    if (!verifyWhatsAppSignature(raw, req.headers["x-hub-signature-256"], env.WHATSAPP_APP_SECRET)) {
+      return send(res, 403, { error: "bad webhook signature" });
+    }
+    let payload;
+    try {
+      payload = JSON.parse(raw.toString("utf8"));
+    } catch {
+      return send(res, 400, { error: "webhook body must be JSON" });
+    }
+    // Answer 200 fast; the slow work (model, media) runs after responding.
+    send(res, 200, { ok: true });
+    const ctx = buildWhatsAppContext(deps, env);
+    trackWhatsAppJob(
+      processWhatsAppPayload(payload, ctx).catch((err) => {
+        ctx.log(`webhook job failed: ${err?.message ?? err}`);
+      })
+    );
+    return;
+  }
+  return send(res, 404, { error: "not found" });
+}
+
 // Exported for in-process tests; createVoiceServer wires it to real sockets.
 export async function handleVoiceRequest(req, res, deps) {
   const url = new URL(req.url ?? "/", "http://x");
   const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length >= 1 && parts[0] === "webhook") {
+    return handleWebhookRoute(req, res, url, deps);
+  }
   const shopHeader = req.headers["x-shop-id"];
   if (typeof shopHeader !== "string" || !shopHeader.trim()) {
     return send(res, 400, { error: "x-shop-id header is required" });
