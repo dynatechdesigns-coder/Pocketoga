@@ -171,14 +171,39 @@ export function createVoiceServer({ ledger, proposals, model }) {
   });
 }
 
+// Webhook-only listener. Serves GET/POST /webhook through the shared
+// handlers (same signature check, dedupe, allow-list) and 404s every other
+// path and method. This is the listener to tunnel; the main server is not.
+export async function handleWebhookOnlyRequest(req, res, deps) {
+  const url = new URL(req.url ?? "/", "http://x");
+  if (url.pathname !== "/webhook") {
+    return send(res, 404, { error: "not found" });
+  }
+  return handleWebhookRoute(req, res, url, deps);
+}
+
+export function createWebhookServer({ ledger, proposals, model }) {
+  return createServer((req, res) => {
+    handleWebhookOnlyRequest(req, res, { ledger, proposals, model }).catch((err) => {
+      if (!res.headersSent) send(res, err.status ?? 500, { error: err.message ?? "internal error" });
+    });
+  });
+}
+
 const invokedAsMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (invokedAsMain) {
   const db = new DatabaseSync(process.env.LEDGER_DB ?? "pocketoga.db");
-  const server = createVoiceServer({
+  const deps = {
     ledger: new Ledger(db),
     proposals: new ProposalStore(db),
     model: createModelClient({}),
-  });
+  };
   const port = Number(process.env.PORT ?? 3000);
-  server.listen(port, () => console.log(`voice server on :${port}`));
+  const webhookPort = Number(process.env.WEBHOOK_PORT ?? 3001);
+  createVoiceServer(deps).listen(port, () =>
+    console.log(`main server on :${port} (local only, never tunnel)`)
+  );
+  createWebhookServer(deps).listen(webhookPort, () =>
+    console.log(`webhook server on :${webhookPort} (tunnel this one)`)
+  );
 }

@@ -8,7 +8,7 @@ import { Ledger } from "./ledger.mjs";
 import { ProposalStore } from "./proposals.mjs";
 import { WhatsAppStore, drainWhatsAppJobs } from "./whatsapp.mjs";
 import { createMockModelClient } from "./model.mjs";
-import { handleVoiceRequest } from "./server.mjs";
+import { handleVoiceRequest, handleWebhookOnlyRequest, createWebhookServer } from "./server.mjs";
 
 // All fixtures are fake: fake numbers, fake secrets, fake shop data. No real
 // network: fetch, ffmpeg and the clock-facing bits are all mocked.
@@ -172,6 +172,21 @@ async function dispatch(deps, { method, url, headers = {}, rawBody }) {
   const res = fakeResponse();
   try {
     await handleVoiceRequest(req, res, deps);
+  } catch (err) {
+    if (!res.headersSent) {
+      res.writeHead(err.status ?? 500);
+      res.end(JSON.stringify({ error: err.message ?? "internal error" }));
+    }
+  }
+  return { status: res.statusCode, headers: res.headers, text: res.chunks };
+}
+
+// Same shape as dispatch, but through the webhook-only listener handler.
+async function dispatchOnly(deps, { method, url, headers = {}, rawBody }) {
+  const req = fakeRequest({ method, url, headers, rawBody });
+  const res = fakeResponse();
+  try {
+    await handleWebhookOnlyRequest(req, res, deps);
   } catch (err) {
     if (!res.headersSent) {
       res.writeHead(err.status ?? 500);
@@ -518,6 +533,92 @@ describe("whatsapp webhook (mocked fetch, no network)", () => {
         assert.ok(!line.includes(STRANGER), `full number in log: ${line}`);
       }
       assert.ok(ctx.logs.some((l) => l.includes("***78")), `masked sender missing: ${ctx.logs.join(" | ")}`);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+});
+
+describe("webhook-only listener (WEBHOOK_PORT)", () => {
+  it("builds an HTTP server around the webhook-only handler", async () => {
+    const ctx = setup(async () => WA_PART);
+    try {
+      const server = createWebhookServer(ctx.deps);
+      assert.equal(typeof server.listen, "function");
+      assert.equal(typeof server.close, "function");
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("returns 404 for /ledger, /propose, /confirm and /proposals", async () => {
+    const ctx = setup(async () => WA_PART);
+    try {
+      const shop = { "x-shop-id": "shop-a" };
+      assert.equal((await dispatchOnly(ctx.deps, { method: "GET", url: "/ledger", headers: shop })).status, 404);
+      assert.equal(
+        (await dispatchOnly(ctx.deps, { method: "POST", url: "/propose", headers: shop, rawBody: JSON.stringify({ text: "fake note" }) })).status,
+        404
+      );
+      assert.equal(
+        (await dispatchOnly(ctx.deps, { method: "POST", url: "/confirm/1", headers: shop, rawBody: "{}" })).status,
+        404
+      );
+      assert.equal((await dispatchOnly(ctx.deps, { method: "GET", url: "/proposals/1", headers: shop })).status, 404);
+      // Nothing was processed: the blocked propose stored nothing.
+      assert.equal(proposalCount(ctx), 0);
+      assert.deepEqual(ctx.fetch.calls, []);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("returns 404 for other methods and subpaths of /webhook", async () => {
+    const ctx = setup(async () => WA_PART);
+    try {
+      assert.equal((await dispatchOnly(ctx.deps, { method: "PUT", url: "/webhook" })).status, 404);
+      assert.equal((await dispatchOnly(ctx.deps, { method: "DELETE", url: "/webhook" })).status, 404);
+      assert.equal((await dispatchOnly(ctx.deps, { method: "GET", url: "/webhook/extra" })).status, 404);
+      assert.equal((await dispatchOnly(ctx.deps, { method: "GET", url: "/" })).status, 404);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("still verifies and processes /webhook", async () => {
+    const ctx = setup(async () => WA_PART);
+    try {
+      const ok = await dispatchOnly(ctx.deps, {
+        method: "GET",
+        url: "/webhook?hub.mode=subscribe&hub.verify_token=test-verify-token&hub.challenge=CH-ONLY-1",
+      });
+      assert.equal(ok.status, 200);
+      assert.equal(ok.text, "CH-ONLY-1");
+
+      const payload = wrap([waText(FROM_A, mid(), "fake note")]);
+      const raw = JSON.stringify(payload);
+      const out = await dispatchOnly(ctx.deps, {
+        method: "POST",
+        url: "/webhook",
+        headers: { "x-hub-signature-256": sign(raw) },
+        rawBody: raw,
+      });
+      assert.equal(out.status, 200);
+      await drainWhatsAppJobs();
+      assert.equal(proposalCount(ctx), 1);
+      assert.equal(sends(ctx).length, 1);
+      assert.equal(sends(ctx)[0].body.type, "interactive");
+
+      // Signature check unchanged: tampered body is rejected, nothing stored.
+      const bad = await dispatchOnly(ctx.deps, {
+        method: "POST",
+        url: "/webhook",
+        headers: { "x-hub-signature-256": sign(raw) },
+        rawBody: `${raw} `,
+      });
+      assert.equal(bad.status, 403);
+      await drainWhatsAppJobs();
+      assert.equal(proposalCount(ctx), 1);
     } finally {
       await teardown(ctx);
     }
