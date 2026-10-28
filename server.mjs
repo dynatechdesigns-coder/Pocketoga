@@ -108,6 +108,15 @@ async function handleWebhookRoute(req, res, url, deps) {
 export async function handleVoiceRequest(req, res, deps) {
   const url = new URL(req.url ?? "/", "http://x");
   const parts = url.pathname.split("/").filter(Boolean);
+  // Tunnel guard: with WEBHOOK_PUBLIC_ONLY=1, requests that arrived via the
+  // public tunnel (Cloudflare / proxy headers present) may only use /webhook.
+  // Local traffic without those headers behaves as before.
+  if ((deps.env ?? process.env).WEBHOOK_PUBLIC_ONLY === "1") {
+    const viaTunnel = req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"];
+    if (viaTunnel && !(parts.length >= 1 && parts[0] === "webhook")) {
+      return send(res, 404, { error: "not found" });
+    }
+  }
   if (parts.length >= 1 && parts[0] === "webhook") {
     return handleWebhookRoute(req, res, url, deps);
   }

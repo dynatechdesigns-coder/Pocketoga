@@ -477,8 +477,8 @@ describe("voice HTTP server", () => {
     return res;
   }
 
-  async function dispatch(deps, { method, url, shop, body, raw }) {
-    const headers = {};
+  async function dispatch(deps, { method, url, shop, body, raw, headers: extraHeaders }) {
+    const headers = { ...extraHeaders };
     if (shop) headers["x-shop-id"] = shop;
     const req = fakeRequest({ method, url, headers, body, raw });
     const res = fakeResponse();
@@ -491,7 +491,13 @@ describe("voice HTTP server", () => {
         res.end(JSON.stringify({ error: err.message ?? "internal error" }));
       }
     }
-    return { status: res.statusCode, json: JSON.parse(res.chunks) };
+    let json = null;
+    try {
+      json = JSON.parse(res.chunks);
+    } catch {
+      // Plain-text bodies, e.g. the webhook verification challenge.
+    }
+    return { status: res.statusCode, json, text: res.chunks };
   }
 
   async function withServer(handler, fn) {
@@ -503,12 +509,12 @@ describe("voice HTTP server", () => {
     }
   }
 
-  async function post(deps, path, shop, body, raw = false) {
-    return dispatch(deps, { method: "POST", url: path, shop, body, raw });
+  async function post(deps, path, shop, body, raw = false, headers) {
+    return dispatch(deps, { method: "POST", url: path, shop, body, raw, headers });
   }
 
-  async function get(deps, path, shop) {
-    return dispatch(deps, { method: "GET", url: path, shop });
+  async function get(deps, path, shop, headers) {
+    return dispatch(deps, { method: "GET", url: path, shop, headers });
   }
 
   it("builds an HTTP server around the handler", async () => {
@@ -614,6 +620,42 @@ describe("voice HTTP server", () => {
       const id2 = second.json.proposal.id;
       assert.equal((await post(base, `/reject/${id2}`, SHOP_A, {})).status, 200);
       assert.equal((await post(base, `/confirm/${id2}`, SHOP_A, {})).status, 409);
+    });
+  });
+
+  it("WEBHOOK_PUBLIC_ONLY hides non-webhook routes from tunnelled requests", async () => {
+    await withServer(async () => PART_PAYMENT, async (base, ctx) => {
+      base.env = { WEBHOOK_PUBLIC_ONLY: "1", WHATSAPP_VERIFY_TOKEN: "test-verify" };
+      const viaCf = { "cf-connecting-ip": "203.0.113.9" };
+      const viaFwd = { "x-forwarded-for": "203.0.113.9" };
+
+      assert.equal((await get(base, "/ledger", SHOP_A, viaCf)).status, 404);
+      assert.equal((await get(base, "/ledger", SHOP_A, viaFwd)).status, 404);
+      assert.equal((await post(base, "/propose", SHOP_A, { text: "fake note" }, false, viaCf)).status, 404);
+      assert.equal((await post(base, "/propose", SHOP_A, { text: "fake note" }, false, viaFwd)).status, 404);
+      // Processed no further: the blocked propose stored nothing.
+      assert.deepEqual(ctx.proposals.listByShop(SHOP_A), []);
+
+      // The webhook itself still answers through the tunnel.
+      const hook = await get(
+        base,
+        "/webhook?hub.mode=subscribe&hub.verify_token=test-verify&hub.challenge=C",
+        null,
+        viaCf
+      );
+      assert.equal(hook.status, 200);
+      assert.equal(hook.text, "C");
+      // POST /webhook reaches signature verification (403), not the guard's 404.
+      assert.equal((await post(base, "/webhook", null, {}, false, viaCf)).status, 403);
+    });
+  });
+
+  it("WEBHOOK_PUBLIC_ONLY changes nothing without tunnel headers", async () => {
+    await withServer(async () => PART_PAYMENT, async (base) => {
+      base.env = { WEBHOOK_PUBLIC_ONLY: "1" };
+      const created = await post(base, "/propose", SHOP_A, { text: "fake note" });
+      assert.equal(created.status, 201);
+      assert.equal((await get(base, "/ledger", SHOP_A)).status, 200);
     });
   });
 
