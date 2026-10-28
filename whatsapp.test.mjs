@@ -368,7 +368,7 @@ describe("whatsapp webhook (mocked fetch, no network)", () => {
       const buttons = sends(ctx)[0].body.interactive.action.buttons;
       assert.equal(buttons.length, 2);
       assert.ok(buttons.every((b) => !b.reply.id.startsWith("confirm:")));
-      assert.match(sends(ctx)[0].body.interactive.body.text, /do not add up/);
+      assert.match(sends(ctx)[0].body.interactive.body.text, /₦15,000 − ₦10,000 = ₦5,000, but you said ₦4,000 remain\. Which one na correct\?/);
     } finally {
       await teardown(ctx);
     }

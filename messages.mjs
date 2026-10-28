@@ -192,16 +192,59 @@ function sameCheck(a, b) {
 // back as a "needs clarification:" flag, and code-built questions wrap the
 // flags ("Abeg check am: ..."), so both shapes collapse to single lines.
 export function dedupeChecks(proposal) {
+  const mismatch = (proposal.flags ?? []).find((f) => String(f).startsWith(MISMATCH_PREFIX));
+  const line = mismatch ? mismatchLine(mismatch) : null;
   const items = [];
+  let inserted = false;
   for (const flag of proposal.flags ?? []) {
-    const text = String(flag).replace(/^needs clarification:\s*/i, "");
-    if (!items.some((x) => sameCheck(x, text))) items.push(text);
+    const text = String(flag);
+    if (line && text.startsWith(MISMATCH_PREFIX)) {
+      if (!inserted) {
+        items.push(line);
+        inserted = true;
+      }
+      continue;
+    }
+    if (line && /^needs clarification:\s*/i.test(text)) continue;
+    const stripped = text.replace(/^needs clarification:\s*/i, "");
+    if (!items.some((x) => sameCheck(x, stripped))) items.push(stripped);
   }
+  if (line && !inserted) items.push(line);
   const question = (proposal.question ?? "").trim();
-  if (question && !/^abeg check am:/i.test(question) && !items.some((x) => sameCheck(x, question))) {
+  if (!line && question && !/^abeg check am:/i.test(question) && !items.some((x) => sameCheck(x, question))) {
     items.push(question);
   }
   return items.map(renderCheckLine);
+}
+
+// Code-built remainder-mismatch flags ("numbers do not add up: ...") are
+// restated as one Pidgin-friendly line from the labelled numbers, and the
+// model's own question about the same mismatch is suppressed, so the card
+// asks once. Anything else on the card is untouched.
+const MISMATCH_PREFIX = "numbers do not add up";
+
+function parseKoboAmount(text) {
+  const m = /^₦([\d,]+)(\.\d{2})?$/.exec(text);
+  if (!m) return null;
+  const naira = Number(m[1].replace(/,/g, ""));
+  if (!Number.isInteger(naira)) return null;
+  return naira * 100 + (m[2] ? Number(m[2].slice(1)) : 0);
+}
+
+function labeledKobo(flag, label) {
+  const m = new RegExp(`${label} (₦[\\d,]+(?:\\.\\d{2})?)`).exec(String(flag));
+  return m ? parseKoboAmount(m[1]) : null;
+}
+
+// "₦30,000 − ₦10,000 = ₦20,000, but you said ₦5,000 remain. Which one na
+// correct?" Null when the flag has no readable labelled numbers, in which
+// case the card keeps the old rendering.
+function mismatchLine(flag) {
+  const total = labeledKobo(flag, "(?:total|sales)");
+  const paid = labeledKobo(flag, "paid");
+  const stated = labeledKobo(flag, "remainder");
+  if (total === null || paid === null || stated === null) return null;
+  return `${formatKobo(total)} − ${formatKobo(paid)} = ${formatKobo(total - paid)}, but you said ${formatKobo(stated)} remain. Which one na correct?`;
 }
 
 // Similar-name flags carry code-added *bold* around the two names. The names

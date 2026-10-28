@@ -482,7 +482,8 @@ describe("stated-remainder safety check (fake data)", () => {
         ["Fix", "Reject"]
       );
       assert.ok(card.buttons.every((b) => !b.reply.id.startsWith("confirm:")), "no Save button");
-      assert.equal(card.text.split(p.flags[0]).length - 1, 1, "question shows once");
+      const line = "₦30,000 − ₦10,000 = ₦20,000, but you said ₦5,000 remain. Which one na correct?";
+      assert.equal(card.text.split(line).length - 1, 1, "question shows once");
     } finally {
       teardown(ctx);
     }

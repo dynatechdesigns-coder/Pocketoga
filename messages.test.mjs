@@ -124,13 +124,51 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p);
     assert.equal(
       card.text,
-      `⚠️ *Check this one*\n\n2 bags of rice: *₦15,000*\n💵 Paid: *₦10,000*\nTotal: *₦15,000*\nPaid: *₦10,000*\nRemainder: *₦4,000*\n\nnumbers do not add up: total ₦15,000 but paid ₦10,000 + remainder ₦4,000 = ₦14,000\n\n_"Ada buy rice 2 bags, na 15k. She pay 10k, remain 4k."_`
+      `⚠️ *Check this one*\n\n2 bags of rice: *₦15,000*\n💵 Paid: *₦10,000*\nTotal: *₦15,000*\nPaid: *₦10,000*\nRemainder: *₦4,000*\n\n₦15,000 − ₦10,000 = ₦5,000, but you said ₦4,000 remain. Which one na correct?\n\n_"Ada buy rice 2 bags, na 15k. She pay 10k, remain 4k."_`
     );
     assert.deepEqual(
       card.buttons.map((b) => b.reply.id),
       ["fix:3", "reject:3"]
     );
     assert.ok(card.buttons.every((b) => !b.reply.id.startsWith("confirm:")));
+  });
+
+  it("remainder mismatch with a model question shows only the one code-built line", () => {
+    const p = proposal(20, {
+      heard: "Ada buy rice 2 bags, na 15k each. She pay 10k, remain 5k.",
+      entries: [saleEntry({ priceBasis: "each" }), paymentEntry()],
+      totals: null,
+      question: "2 bags at 15k each na 30k, but 10k paid plus remain 5k na 15k, which total correct?",
+    });
+    const card = renderProposalCard(p);
+    assert.equal(
+      card.text,
+      `⚠️ *Check this one*\n\n2 bags of rice × ₦15,000 = *₦30,000*\n💵 Paid: *₦10,000*\n\n₦30,000 − ₦10,000 = ₦20,000, but you said ₦5,000 remain. Which one na correct?\n\n_"Ada buy rice 2 bags, na 15k each. She pay 10k, remain 5k."_`
+    );
+    assert.deepEqual(
+      card.buttons.map((b) => b.reply.id),
+      ["fix:20", "reject:20"]
+    );
+    assert.ok(!card.text.includes("which total correct?"));
+  });
+
+  it("totals mismatch with a model question collapses to the same one line", () => {
+    const p = proposal(21, {
+      heard: "Ada buy rice 2 bags, na 15k. She pay 10k, remain 4k.",
+      entries: [saleEntry(), paymentEntry()],
+      totals: {
+        totalNaira: 15000, totalPhrase: "15k",
+        paidNaira: 10000, paidPhrase: "10k",
+        remainderNaira: 4000, remainderPhrase: "remain 4k",
+      },
+      question: "15k total but 10k paid plus 4k remain na 14k, which total correct?",
+    });
+    const card = renderProposalCard(p);
+    assert.equal(
+      card.text,
+      `⚠️ *Check this one*\n\n2 bags of rice: *₦15,000*\n💵 Paid: *₦10,000*\nTotal: *₦15,000*\nPaid: *₦10,000*\nRemainder: *₦4,000*\n\n₦15,000 − ₦10,000 = ₦5,000, but you said ₦4,000 remain. Which one na correct?\n\n_"Ada buy rice 2 bags, na 15k. She pay 10k, remain 4k."_`
+    );
+    assert.ok(!card.text.includes("which total correct?"));
   });
 
   it("multi-entry note prefixes each line and skips settled customers", () => {
@@ -224,7 +262,7 @@ describe("message rules", () => {
       },
       question: null,
     });
-    const flag = "numbers do not add up: total ₦15,000 but paid ₦10,000 + remainder ₦4,000 = ₦14,000";
+    const flag = "₦15,000 − ₦10,000 = ₦5,000, but you said ₦4,000 remain. Which one na correct?";
     const text = renderProposalCard(mismatch).text;
     assert.equal(countOccurrences(text, flag), 1);
     assert.equal(countOccurrences(text, "Abeg check am"), 0);
@@ -240,6 +278,22 @@ describe("message rules", () => {
     const bothText = renderProposalCard(both).text;
     assert.equal(countOccurrences(bothText, "Is that correct?"), 1);
     assert.equal(countOccurrences(bothText, 'note says "each" but the amount was read as a total'), 1);
+  });
+
+  it("the mismatch card has exactly one question", () => {
+    const p = proposal(22, {
+      heard: "Ada buy rice 2 bags, na 15k each. She pay 10k, remain 5k.",
+      entries: [saleEntry({ priceBasis: "each" }), paymentEntry()],
+      totals: null,
+      question: "2 bags at 15k each na 30k, but 10k paid plus remain 5k na 15k, which total correct?",
+    });
+    const line = "₦30,000 − ₦10,000 = ₦20,000, but you said ₦5,000 remain. Which one na correct?";
+    assert.deepEqual(dedupeChecks(p), [line]);
+    const text = renderProposalCard(p).text;
+    assert.equal(countOccurrences(text, line), 1);
+    assert.equal(countOccurrences(text, "?"), 1);
+    assert.ok(!text.includes("which total correct?"));
+    assert.ok(!text.includes("numbers do not add up"));
   });
 
   it("balances match case-insensitively and hide zero or credit", () => {
