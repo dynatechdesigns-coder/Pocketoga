@@ -83,3 +83,12 @@ Setup:
 | Said | Card showed | Verdict |
 |---|---|---|
 | | | |
+
+### Session 2: 28 Oct 2026 (WhatsApp)
+
+| Said | Card showed | Verdict |
+|---|---|---|
+| Typed: "Ada buy rice 2 bags, na 15k each, she pay 10k" | Sale 2 bags rice N30,000 (N15,000 each), payment N10,000, Save button | Pass |
+| Tapped Save | One sale and one payment in the ledger | Pass (fixed first: button taps hit the "text and voice only" fallback because the handler read the wrong payload shape; fixed with real button_reply parsing) |
+
+Setup problems found and fixed: expired temporary token, and the WhatsApp account was not subscribed to the app (fixed with a subscribed_apps call).
