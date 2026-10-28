@@ -1,7 +1,7 @@
 // Money Leak Report v1: separate leak categories over one shop's confirmed
 // ledger rows and promises. Plain code only — the AI never touches a number.
 // Categories stay separate and are never added into one number.
-import { customerDebts, allocatedSales, effectiveEntries, stockKind } from "./debts.mjs";
+import { customerDebts, allocatedSales, effectiveEntries, stockKind, entrySign, lagosDay } from "./debts.mjs";
 
 function normItem(value) {
   return String(value ?? "").trim().toLowerCase();
@@ -117,5 +117,27 @@ export function moneyLeakReport(ledgerRows, promises, { now = Date.now() } = {})
   belowItems.sort((a, b) => b.marginKobo - a.marginKobo || compareText(a.display, b.display));
   const belowCost = { items: belowItems, skippedItems };
 
-  return { owed, overdue, broken, shortfalls, noStockRecord, belowCost };
+  // Today's trading in Lagos time: sales recorded today, payments collected
+  // today, and the entry count. Effective entries only, so a correction
+  // replaces its original instead of double-counting it.
+  const todayDay = lagosDay(now);
+  const live = effectiveEntries(rows);
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  let soldTodayKobo = 0;
+  let collectedTodayKobo = 0;
+  let entriesToday = 0;
+  for (const r of live) {
+    if (lagosDay(Date.parse(r.created_at)) !== todayDay) continue;
+    const sign = entrySign(r, byId);
+    if (sign > 0) {
+      soldTodayKobo += r.amount_kobo;
+      entriesToday++;
+    } else if (sign < 0) {
+      collectedTodayKobo += r.amount_kobo;
+      entriesToday++;
+    }
+  }
+  const today = { soldTodayKobo, collectedTodayKobo, entriesToday };
+
+  return { owed, overdue, broken, shortfalls, noStockRecord, belowCost, today };
 }

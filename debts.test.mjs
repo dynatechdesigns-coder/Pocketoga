@@ -507,6 +507,48 @@ describe("money leak report (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", 
     assert.ok(text.startsWith("⚠️ *Money check*"));
   });
 
+  it("today's totals count only entries recorded today in Lagos time", () => {
+    const report = reportOf([
+      { shopId: "shop-a", type: "sale", amountKobo: 2000000, customer: "Ada", createdAt: new Date(NOW).toISOString() },
+      { shopId: "shop-a", type: "sale", amountKobo: 999900, customer: "Ada", createdAt: daysAgo(1) },
+      // 00:30 Lagos today, though still yesterday in UTC: included.
+      { shopId: "shop-a", type: "sale", amountKobo: 100000, customer: "Ada", createdAt: "2026-10-28T00:30:00+01:00" },
+      // 23:30 Lagos yesterday, though already today in UTC: excluded.
+      { shopId: "shop-a", type: "sale", amountKobo: 100000, customer: "Ada", createdAt: "2026-10-27T23:30:00+01:00" },
+      { shopId: "shop-a", type: "payment", amountKobo: 500000, customer: "Ada", createdAt: new Date(NOW).toISOString() },
+      { shopId: "shop-a", type: "payment", amountKobo: 400000, customer: "Ada", createdAt: daysAgo(1) },
+      { shopId: "shop-a", type: "restock", amountKobo: 700000, customer: "shop-a", createdAt: new Date(NOW).toISOString() },
+    ]);
+    assert.deepEqual(report.today, { soldTodayKobo: 2100000, collectedTodayKobo: 500000, entriesToday: 3 });
+  });
+
+  it("today's totals respect corrections", () => {
+    const ledger = new Ledger(":memory:");
+    try {
+      const sale = ledger.append({ shopId: "shop-a", type: "sale", amountKobo: 2000000, customer: "Ada", createdAt: new Date(NOW).toISOString() });
+      // Raw correction with a fixed stamp (appendCorrection always stamps now).
+      ledger.append({ shopId: "shop-a", type: "correction", amountKobo: 1200000, customer: "Ada", correctsId: sale.id, createdAt: new Date(NOW).toISOString() });
+      const payment = ledger.append({ shopId: "shop-a", type: "payment", amountKobo: 500000, customer: "Ada", createdAt: new Date(NOW).toISOString() });
+      ledger.append({ shopId: "shop-a", type: "correction", amountKobo: 300000, customer: "Ada", correctsId: payment.id, createdAt: new Date(NOW).toISOString() });
+      const report = moneyLeakReport(ledger.list("shop-a"), [], { now: NOW });
+      assert.deepEqual(report.today, { soldTodayKobo: 1200000, collectedTodayKobo: 300000, entriesToday: 2 });
+    } finally {
+      ledger.close();
+    }
+  });
+
+  it("another shop's entries never count toward today", () => {
+    const ledger = new Ledger(":memory:");
+    try {
+      ledger.append({ shopId: "shop-b", type: "sale", amountKobo: 9000000, customer: "Zed", createdAt: new Date(NOW).toISOString() });
+      ledger.append({ shopId: "shop-b", type: "payment", amountKobo: 8000000, customer: "Zed", createdAt: new Date(NOW).toISOString() });
+      const report = moneyLeakReport(ledger.list("shop-a"), [], { now: NOW });
+      assert.deepEqual(report.today, { soldTodayKobo: 0, collectedTodayKobo: 0, entriesToday: 0 });
+    } finally {
+      ledger.close();
+    }
+  });
+
   it("separates shops and keeps categories uncombined", () => {
     const ledger = new Ledger(":memory:");
     try {

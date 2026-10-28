@@ -40,7 +40,7 @@ function normCustomer(name) {
 // Sign of one row: sales add, payments subtract, everything else is ignored.
 // A correction counts with the corrected entry's sign, followed through
 // chains; dangling or circular corrections count nothing.
-function entrySign(row, byId) {
+export function entrySign(row, byId) {
   let cur = row;
   const seen = new Set();
   while (cur && cur.type === "correction") {
