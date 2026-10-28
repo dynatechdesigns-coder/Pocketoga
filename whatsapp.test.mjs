@@ -6,6 +6,7 @@ import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { Ledger } from "./ledger.mjs";
 import { ProposalStore } from "./proposals.mjs";
+import { PromiseStore } from "./promises.mjs";
 import { WhatsAppStore, drainWhatsAppJobs } from "./whatsapp.mjs";
 import { createMockModelClient } from "./model.mjs";
 import { handleVoiceRequest, handleWebhookOnlyRequest, createWebhookServer } from "./server.mjs";
@@ -122,6 +123,7 @@ function setup(modelHandler, opts = {}) {
   const db = new DatabaseSync(":memory:");
   const ledger = new Ledger(db);
   const proposals = new ProposalStore(db);
+  const promises = new PromiseStore(db);
   const whatsapp = new WhatsAppStore(db);
   const model = createMockModelClient(modelHandler);
   const fetch = makeFetch();
@@ -131,6 +133,7 @@ function setup(modelHandler, opts = {}) {
   const deps = {
     ledger,
     proposals,
+    promises,
     model,
     whatsapp,
     fetch,
@@ -138,8 +141,9 @@ function setup(modelHandler, opts = {}) {
     execFile,
     waTmpDir: TMP_BASE,
     env: ENV,
+    nowMs: opts.nowMs ?? null,
   };
-  return { db, ledger, proposals, model, whatsapp, fetch, logs, execFile, deps };
+  return { db, ledger, proposals, promises, model, whatsapp, fetch, logs, execFile, deps };
 }
 
 async function teardown(ctx) {
@@ -615,6 +619,171 @@ describe("whatsapp webhook (mocked fetch, no network)", () => {
         assert.ok(!line.includes(STRANGER), `full number in log: ${line}`);
       }
       assert.ok(ctx.logs.some((l) => l.includes("***78")), `masked sender missing: ${ctx.logs.join(" | ")}`);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+});
+
+describe("debt commands (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", () => {
+  const NOW = Date.UTC(2026, 9, 28, 12, 0, 0);
+  const daysAgo = (n) => new Date(NOW - n * 86400000).toISOString();
+  function seedSale(ctx, shop, customer, kobo, ago) {
+    return ctx.ledger.append({ shopId: shop, type: "sale", amountKobo: kobo, customer, createdAt: daysAgo(ago) });
+  }
+  function seedPayment(ctx, shop, customer, kobo, ago) {
+    return ctx.ledger.append({ shopId: shop, type: "payment", amountKobo: kobo, customer, createdAt: daysAgo(ago) });
+  }
+  function shopOf(ctx, from = FROM_A) {
+    return ctx.whatsapp.getOrCreateShop(from);
+  }
+
+  it("who owes answers from the ledger without calling the model", async () => {
+    const calls = [];
+    const ctx = setup(
+      async (req) => {
+        calls.push(req);
+        return WA_PART;
+      },
+      { nowMs: NOW }
+    );
+    try {
+      const shop = shopOf(ctx);
+      seedSale(ctx, shop, "Ada", 2000000, 12);
+      seedPayment(ctx, shop, "Ada", 500000, 2);
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "who owes")]));
+      assert.equal(calls.length, 0);
+      const reply = sends(ctx).at(-1).body;
+      assert.equal(reply.type, "text");
+      assert.match(reply.text.body, /Who owes/);
+      assert.match(reply.text.body, /Ada owes \*₦15,000\* \(12 days old\)/);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("chase ranks and drafts the top customer in three tones", async () => {
+    const calls = [];
+    const ctx = setup(
+      async (req) => {
+        calls.push(req);
+        return WA_PART;
+      },
+      { nowMs: NOW }
+    );
+    try {
+      const shop = shopOf(ctx);
+      seedSale(ctx, shop, "Ada", 2000000, 12);
+      seedSale(ctx, shop, "Bola", 500000, 3);
+      ctx.promises.create({ shopId: shop, customer: "Ada", amountKobo: 2000000, dueDate: "2026-10-20" });
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "chase")]));
+      assert.equal(calls.length, 0);
+      const reply = sends(ctx).at(-1).body;
+      assert.equal(reply.type, "text");
+      assert.match(reply.text.body, /Chase list/);
+      assert.match(reply.text.body, /1\. Ada: \*₦20,000\* \(12 days old, 1 broken promise\)/);
+      assert.match(reply.text.body, / Friendly: .*Ada.*₦20,000.*12 days old/);
+      assert.match(reply.text.body, / Firm: /);
+      assert.match(reply.text.body, / Final: /);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("balance shows debt, age and kept-rate; unknown names get a polite reply", async () => {
+    const calls = [];
+    const ctx = setup(
+      async (req) => {
+        calls.push(req);
+        return WA_PART;
+      },
+      { nowMs: NOW }
+    );
+    try {
+      const shop = shopOf(ctx);
+      seedSale(ctx, shop, "Ada", 2000000, 12);
+      seedPayment(ctx, shop, "Ada", 500000, 2);
+      const kept = ctx.promises.create({ shopId: shop, customer: "Ada", amountKobo: 500000, dueDate: "2026-10-25" });
+      ctx.promises.resolve(kept.id, { status: "kept" });
+      ctx.promises.create({ shopId: shop, customer: "Ada", amountKobo: 2000000, dueDate: "2026-10-20" });
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "balance Ada")]));
+      assert.equal(calls.length, 0);
+      const reply = sends(ctx).at(-1).body;
+      assert.match(reply.text.body, /Ada owes \*₦15,000\* \(12 days old\)/);
+      assert.match(reply.text.body, /Promises kept: 1 of 2 \(50%\)/);
+
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "balance Nobody")]));
+      assert.equal(calls.length, 0);
+      assert.match(sends(ctx).at(-1).body.text.body, /no record for "Nobody"/);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("commands are case-insensitive; bare balance is a note", async () => {
+    const calls = [];
+    const ctx = setup(
+      async (req) => {
+        calls.push(req);
+        return WA_PART;
+      },
+      { nowMs: NOW }
+    );
+    try {
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "WHO OWES?")]));
+      assert.equal(calls.length, 0);
+      assert.match(sends(ctx).at(-1).body.text.body, /Who owes/);
+
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "balance")]));
+      assert.equal(calls.length, 1);
+      assert.equal(sends(ctx).at(-1).body.type, "interactive");
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("promises due today ride on text replies and cards", async () => {
+    const ctx = setup(async () => WA_PART, { nowMs: NOW });
+    try {
+      const shop = shopOf(ctx);
+      ctx.promises.create({ shopId: shop, customer: "Ada", amountKobo: 2000000, dueDate: "2026-10-28" });
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "who owes")]));
+      assert.match(sends(ctx).at(-1).body.text.body, /Due today: Ada promised ₦20,000/);
+
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "fake note")]));
+      const card = sends(ctx).at(-1).body;
+      assert.equal(card.type, "interactive");
+      assert.match(card.interactive.body.text, /Due today: Ada promised ₦20,000/);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("GET /debts and /promises serve the shop only, never on the webhook port", async () => {
+    const ctx = setup(async () => WA_PART, { nowMs: NOW });
+    try {
+      const shop = shopOf(ctx);
+      seedSale(ctx, shop, "Ada", 2000000, 12);
+      seedSale(ctx, "other-shop", "Zed", 9000000, 9);
+      ctx.promises.create({ shopId: shop, customer: "Ada", amountKobo: 2000000, dueDate: "2026-10-30" });
+      ctx.promises.create({ shopId: "other-shop", customer: "Zed", dueDate: "2026-10-30" });
+
+      const debts = await dispatch(ctx.deps, { method: "GET", url: "/debts", headers: { "x-shop-id": shop } });
+      assert.equal(debts.status, 200);
+      const debtsJson = JSON.parse(debts.text);
+      assert.deepEqual(
+        debtsJson.debts.map((d) => d.customer),
+        ["Ada"]
+      );
+      assert.equal(debtsJson.chase[0].customer, "Ada");
+      assert.ok(debtsJson.chase[0].score > 0);
+
+      const promises = await dispatch(ctx.deps, { method: "GET", url: "/promises", headers: { "x-shop-id": shop } });
+      assert.equal(promises.status, 200);
+      assert.equal(JSON.parse(promises.text).promises.length, 1);
+
+      assert.equal((await dispatchOnly(ctx.deps, { method: "GET", url: "/debts", headers: { "x-shop-id": shop } })).status, 404);
+      assert.equal((await dispatchOnly(ctx.deps, { method: "GET", url: "/promises", headers: { "x-shop-id": shop } })).status, 404);
     } finally {
       await teardown(ctx);
     }

@@ -4,7 +4,7 @@
 //
 // Conventions: WhatsApp *bold* / _italic_, short lines, blank lines between
 // blocks. Only these emojis: sale, payment, restock, needs-checking,
-// saved, balance (see EMOJI). Amounts via formatKobo: naira sign with
+// saved, balance, promise (see EMOJI). Amounts via formatKobo: naira sign with
 // thousands separators, kobo only when non-zero. Interactive bodies stay
 // under 1024 characters (the heard quote shrinks first); button titles stay
 // under 20 characters; no footer unless a card ever needs one.
@@ -20,6 +20,7 @@ export const EMOJI = {
   check: "⚠️",
   saved: "✅",
   balance: "⚖️",
+  promise: "🤝",
 };
 
 // --- One-line replies --------------------------------------------------------
@@ -270,6 +271,7 @@ function renderCleanCard(proposal, { existing = [], shopId = null, heardMax = MA
   return joinBlocks([
     cardHeader(proposal, shopId),
     entries,
+    promiseCardLine(proposal.promise),
     owesLines(proposal, existing, shopId, " after saving").join("\n"),
     heardLine(proposal.heard, heardMax),
   ]);
@@ -277,7 +279,9 @@ function renderCleanCard(proposal, { existing = [], shopId = null, heardMax = MA
 
 function renderCheckCard(proposal, { heardMax = MAX_HEARD_CHARS }) {
   const multi = multipleCustomers(proposal.entries);
-  const arithmetic = [...proposal.entries.map((e) => entryLine(e, multi)), ...totalsLines(proposal.totals)].join("\n");
+  const arithmetic = [...proposal.entries.map((e) => entryLine(e, multi)), ...totalsLines(proposal.totals), promiseCardLine(proposal.promise)]
+    .filter(Boolean)
+    .join("\n");
   return joinBlocks([
     `${EMOJI.check} *Check this one*`,
     arithmetic,
@@ -351,4 +355,117 @@ export function renderSavedReply({ recorded = [], existing = [] }) {
   let text = joinBlocks([`${EMOJI.saved} *Saved*`, summaries.join("\n"), balances.join("\n")]);
   if (text.length > MAX_BODY_CHARS) text = `${text.slice(0, MAX_BODY_CHARS - 1)}…`;
   return text;
+}
+
+// --- Debts and promises ------------------------------------------------------
+// Only these emojis: balance, promise, checks. Every reply is capped at
+// MAX_BODY_CHARS so no debt message can overflow WhatsApp limits.
+
+function fitBody(text) {
+  return text.length > MAX_BODY_CHARS ? `${text.slice(0, MAX_BODY_CHARS - 1)}…` : text;
+}
+
+function ageText(ageDays) {
+  if (!Number.isInteger(ageDays) || ageDays <= 0) return "today";
+  return ageDays === 1 ? "1 day old" : `${ageDays} days old`;
+}
+
+function brokenText(broken) {
+  if (!Number.isInteger(broken) || broken <= 0) return null;
+  return broken === 1 ? "1 broken promise" : `${broken} broken promises`;
+}
+
+const DOW_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// "2026-10-30" -> "Fri 30 Oct". A pure calendar date: no timezone involved.
+export function formatDueDay(day) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(day ?? ""));
+  if (!m) return "date unknown";
+  const dt = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  if (Number.isNaN(dt.getTime())) return "date unknown";
+  return `${DOW_SHORT[dt.getUTCDay()]} ${dt.getUTCDate()} ${MONTH_SHORT[dt.getUTCMonth()]}`;
+}
+
+// " Ada to pay ₦20,000 by Fri 30 Oct". Null when there is no promise.
+export function promiseCardLine(promise) {
+  if (!promise) return null;
+  const name = escapeMd(String(promise.customer ?? "?").trim() || "?");
+  const amount = Number.isInteger(promise.amountKobo) ? ` to pay ${formatKobo(promise.amountKobo)}` : " to pay";
+  return `${EMOJI.promise} ${name}${amount} by ${formatDueDay(promise.dueDate)}`;
+}
+
+export function renderWhoOwes(debts) {
+  const owing = (debts ?? [])
+    .filter((d) => Number.isInteger(d.owedKobo) && d.owedKobo > 0)
+    .sort((a, b) => b.owedKobo - a.owedKobo);
+  if (owing.length === 0) return `${EMOJI.balance} *Who owes*\n\nNobody owes you anything.`;
+  const lines = owing
+    .slice(0, 10)
+    .map((d) => `${escapeMd(d.customer)} owes *${formatKobo(d.owedKobo)}* (${ageText(d.oldestUnpaidAgeDays)})`);
+  if (owing.length > 10) lines.push(`…and ${owing.length - 10} more.`);
+  return fitBody(`${EMOJI.balance} *Who owes*\n${lines.join("\n")}`);
+}
+
+// Fixed reminder templates in the trader's own voice. Values only — the
+// ranking and numbers always come from code.
+const REMINDER_TEMPLATES = {
+  friendly: (name, amount, age) =>
+    `Hello ${name}, trust you are well. This is a friendly reminder that your balance of ${amount} (${age}) is still open. Please pay soon. Thank you!`,
+  firm: (name, amount, age) =>
+    `Hello ${name}, your balance of ${amount} (${age}) is still unpaid. Please pay it today. Thank you.`,
+  final: (name, amount, age) =>
+    `${name}, final reminder: pay your ${amount} balance (${age}) today, or I will take further steps.`,
+};
+
+export function draftReminder(tone, { name, amountKobo, ageDays } = {}) {
+  const template = REMINDER_TEMPLATES[tone];
+  if (!template) throw new Error(`unknown reminder tone: ${String(tone)}`);
+  const amount = Number.isInteger(amountKobo) ? formatKobo(amountKobo) : "amount unknown";
+  const age =
+    !Number.isInteger(ageDays) || ageDays <= 0 ? "from today" : ageDays === 1 ? "1 day old" : `${ageDays} days old`;
+  return template(escapeMd(name), amount, age);
+}
+
+export function renderChase(ranked) {
+  const top = (ranked ?? []).filter((r) => Number.isInteger(r.owedKobo) && r.owedKobo > 0).slice(0, 5);
+  if (top.length === 0) return `${EMOJI.check} *Chase list*\n\nNobody owes you anything.`;
+  const lines = top.map((r, i) => {
+    const note = [ageText(r.ageDays), brokenText(r.broken)].filter(Boolean).join(", ");
+    return `${i + 1}. ${escapeMd(r.customer)}: *${formatKobo(r.owedKobo)}* (${note})`;
+  });
+  const first = top[0];
+  const drafts = ["friendly", "firm", "final"]
+    .map((tone) => {
+      const label = tone[0].toUpperCase() + tone.slice(1);
+      return `${EMOJI.promise} ${label}: ${draftReminder(tone, { name: first.customer, amountKobo: first.owedKobo, ageDays: first.ageDays })}`;
+    })
+    .join("\n");
+  return fitBody(`${EMOJI.check} *Chase list*\n${lines.join("\n")}\n\n${drafts}`);
+}
+
+export function renderBalance(debt, rate) {
+  const name = escapeMd(debt.customer);
+  const first =
+    debt.owedKobo > 0
+      ? `${EMOJI.balance} ${name} owes *${formatKobo(debt.owedKobo)}* (${ageText(debt.oldestUnpaidAgeDays)})`
+      : `${EMOJI.balance} ${name} owes nothing.`;
+  const second = rate ? `Promises kept: ${rate.kept} of ${rate.total} (${Math.round(rate.rate * 100)}%)` : "No promises yet.";
+  return fitBody(`${first}\n${second}`);
+}
+
+export function unknownCustomer(name) {
+  const clean = String(name ?? "").trim();
+  return fitBody(`Sorry, I have no record for "${escapeMd(clean || "?")}". Check the spelling and try again.`);
+}
+
+// One line per promise due today, capped at five plus an overflow line.
+export function dueTodayLines(promises) {
+  const rows = promises ?? [];
+  const lines = rows.slice(0, 5).map((p) => {
+    const amount = Number.isInteger(p.amount_kobo) ? ` promised ${formatKobo(p.amount_kobo)}` : " promised to pay";
+    return `${EMOJI.promise} Due today: ${escapeMd(p.customer)}${amount}`;
+  });
+  if (rows.length > lines.length) lines.push(`…and ${rows.length - lines.length} more due today.`);
+  return lines;
 }

@@ -1,0 +1,461 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { Ledger } from "./ledger.mjs";
+import { ProposalStore } from "./proposals.mjs";
+import { createMockModelClient } from "./model.mjs";
+import { propose, fixProposal, confirmProposal } from "./voice.mjs";
+import {
+  lagosDay,
+  addDays,
+  daysBetween,
+  effectiveEntries,
+  customerDebts,
+  owingDebts,
+  chaseScore,
+  rankChase,
+} from "./debts.mjs";
+import { PromiseStore, resolvePromiseDate, promiseStatus, refreshPromises, keptRate } from "./promises.mjs";
+import {
+  MAX_BODY_CHARS,
+  renderProposalCard,
+  formatDueDay,
+  promiseCardLine,
+  renderWhoOwes,
+  renderChase,
+  draftReminder,
+  renderBalance,
+  unknownCustomer,
+  dueTodayLines,
+} from "./messages.mjs";
+
+// Fake fixtures only. Fixed clock: Wed 28 Oct 2026, 12:00 UTC (13:00 Lagos).
+const NOW = Date.UTC(2026, 9, 28, 12, 0, 0);
+const daysAgo = (n) => new Date(NOW - n * 86400000).toISOString();
+
+function seed(rows) {
+  const ledger = new Ledger(":memory:");
+  for (const r of rows) ledger.append(r);
+  return ledger;
+}
+
+describe("debts core (fake data)", () => {
+  it("lagos calendar helpers", () => {
+    assert.equal(lagosDay(NOW), "2026-10-28");
+    assert.equal(addDays("2026-10-28", 1), "2026-10-29");
+    assert.equal(addDays("2026-10-28", -28), "2026-09-30");
+    assert.equal(daysBetween("2026-10-18", "2026-10-28"), 10);
+    assert.equal(daysBetween("2026-10-28", "2026-10-28"), 0);
+  });
+
+  it("balances with part payments, case-insensitive names and corrections", () => {
+    const ledger = seed([
+      { shopId: "shop-a", type: "sale", amountKobo: 1500000, customer: "Ada", item: "fake-rice", quantity: 2, unit: "bag", createdAt: daysAgo(10) },
+      { shopId: "shop-a", type: "payment", amountKobo: 1000000, customer: "ada", createdAt: daysAgo(5) },
+    ]);
+    try {
+      const original = ledger.append({
+        shopId: "shop-a", type: "sale", amountKobo: 2000000, customer: "Bola",
+        item: "fake-beans", quantity: 1, unit: "bag", createdAt: daysAgo(8),
+      });
+      ledger.appendCorrection(original.id, { amountKobo: 1200000 });
+      ledger.append({ shopId: "shop-a", type: "payment", amountKobo: 1000000, customer: "Bola", createdAt: daysAgo(2) });
+
+      const debts = customerDebts(ledger.list("shop-a"), { now: NOW });
+      const ada = debts.find((d) => d.customer === "Ada");
+      assert.equal(ada.owedKobo, 500000);
+      assert.equal(ada.salesKobo, 1500000);
+      assert.equal(ada.paidKobo, 1000000);
+      assert.equal(ada.oldestUnpaidAgeDays, 10);
+      assert.equal(ada.lastPaymentAt, daysAgo(5));
+
+      // The corrected sale counts at 12k, not 20k.
+      const bola = debts.find((d) => d.customer === "Bola");
+      assert.equal(bola.owedKobo, 200000);
+      assert.equal(bola.salesKobo, 1200000);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  it("payments apply to the oldest unpaid sale first", () => {
+    const ledger = seed([
+      { shopId: "shop-a", type: "sale", amountKobo: 1000000, customer: "Chidi", createdAt: daysAgo(20) },
+      { shopId: "shop-a", type: "sale", amountKobo: 1000000, customer: "Chidi", createdAt: daysAgo(5) },
+      { shopId: "shop-a", type: "payment", amountKobo: 1200000, customer: "Chidi", createdAt: daysAgo(1) },
+      { shopId: "shop-a", type: "sale", amountKobo: 500000, customer: "Tunde", createdAt: daysAgo(3) },
+      { shopId: "shop-a", type: "payment", amountKobo: 500000, customer: "Tunde", createdAt: daysAgo(1) },
+    ]);
+    try {
+      const debts = customerDebts(ledger.list("shop-a"), { now: NOW });
+      const chidi = debts.find((d) => d.customer === "Chidi");
+      assert.equal(chidi.owedKobo, 800000);
+      assert.equal(chidi.oldestUnpaidAgeDays, 5);
+      assert.equal(chidi.oldestUnpaidAt, daysAgo(5));
+      assert.equal(chidi.lastPaymentAt, daysAgo(1));
+
+      // Settled in full: nothing unpaid, last payment still reported.
+      const tunde = debts.find((d) => d.customer === "Tunde");
+      assert.equal(tunde.owedKobo, 0);
+      assert.equal(tunde.oldestUnpaidAgeDays, null);
+      assert.equal(tunde.oldestUnpaidAt, null);
+      assert.equal(tunde.lastPaymentAt, daysAgo(1));
+
+      // owingDebts keeps debtors only, biggest first.
+      assert.deepEqual(
+        owingDebts(ledger.list("shop-a"), { now: NOW }).map((d) => d.customer),
+        ["Chidi"]
+      );
+    } finally {
+      ledger.close();
+    }
+  });
+
+  it("corrections supersede the original and earlier sibling corrections", () => {
+    const ledger = new Ledger(":memory:");
+    try {
+      const o = ledger.append({ shopId: "shop-a", type: "sale", amountKobo: 1000000, customer: "Ada", createdAt: daysAgo(9) });
+      const c1 = ledger.appendCorrection(o.id, { amountKobo: 2000000 });
+      assert.deepEqual(effectiveEntries(ledger.list("shop-a")).map((e) => e.amount_kobo), [2000000]);
+      // A second correction of the same original wins; the first no longer counts.
+      ledger.append({ shopId: "shop-a", type: "correction", amountKobo: 3000000, customer: "Ada", correctsId: o.id, createdAt: daysAgo(1) });
+      assert.deepEqual(
+        effectiveEntries(ledger.list("shop-a")).map((e) => e.amount_kobo),
+        [3000000]
+      );
+      assert.equal(c1.corrects_id, o.id);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  it("chase ranking orders by score, then owed, then name", () => {
+    assert.equal(chaseScore({ owedKobo: 2000000, ageDays: 5, broken: 1 }), 5 * 10 + 1 * 500 + 20);
+    assert.equal(chaseScore({ owedKobo: 50000, ageDays: 0, broken: 0 }), 0);
+    const ranked = rankChase([
+      { customer: "Bola", owedKobo: 5000000, ageDays: 2, broken: 0 },
+      { customer: "Ada", owedKobo: 2000000, ageDays: 5, broken: 1 },
+      { customer: "Chidi", owedKobo: 500000, ageDays: 30, broken: 0 },
+      { customer: "Settled", owedKobo: 0, ageDays: null, broken: 2 },
+    ]);
+    assert.deepEqual(
+      ranked.map((r) => r.customer),
+      ["Ada", "Chidi", "Bola"]
+    );
+    assert.ok(ranked[0].score > ranked[1].score && ranked[1].score > ranked[2].score);
+
+    // Tie on score: bigger debt first, then name order.
+    const tied = rankChase([
+      { customer: "Zed", owedKobo: 1000000, ageDays: 1, broken: 0 },
+      { customer: "Amy", owedKobo: 1000000, ageDays: 1, broken: 0 },
+      { customer: "Big", owedKobo: 2000000, ageDays: 0, broken: 0 },
+    ]);
+    assert.deepEqual(
+      tied.map((r) => r.customer),
+      ["Big", "Amy", "Zed"]
+    );
+  });
+});
+
+describe("promises (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", () => {
+  it("stores, lists and resolves promises per shop", () => {
+    const store = new PromiseStore(":memory:");
+    try {
+      const p = store.create({ shopId: "shop-a", customer: "Ada", amountKobo: 2000000, dueDate: "2026-10-30" });
+      assert.equal(p.status, "open");
+      assert.equal(p.resolved_at, null);
+      assert.equal(store.get(p.id).customer, "Ada");
+      store.create({ shopId: "shop-b", customer: "Ada", dueDate: "2026-10-30" });
+      assert.equal(store.listByShop("shop-a").length, 1);
+      assert.equal(store.listOpenByShop("shop-a").length, 1);
+      const kept = store.resolve(p.id, { status: "kept", resolvedAt: "2026-10-29T00:00:00.000Z" });
+      assert.equal(kept.status, "kept");
+      assert.equal(store.listOpenByShop("shop-a").length, 0);
+      assert.throws(() => store.resolve(p.id, { status: "open" }), /cannot resolve/);
+      assert.throws(
+        () => store.create({ shopId: "shop-a", customer: "Ada", dueDate: "2026-10-30", amountKobo: -5 }),
+        /amount_kobo/
+      );
+      assert.throws(() => store.create({ shopId: "shop-a", customer: "Ada", dueDate: "tomorrow" }), /due_date/);
+      assert.throws(() => store.create({ shopId: "shop-a", customer: "Ada", dueDate: "2026-02-30" }), /due_date/);
+      assert.throws(() => store.create({ shopId: "shop-a", customer: "  ", dueDate: "2026-10-30" }), /customer/);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("resolves confident day-phrases in Lagos time", () => {
+    assert.equal(resolvePromiseDate("today", NOW), "2026-10-28");
+    assert.equal(resolvePromiseDate("Tomorrow", NOW), "2026-10-29");
+    assert.equal(resolvePromiseDate("friday", NOW), "2026-10-30");
+    assert.equal(resolvePromiseDate("Fri", NOW), "2026-10-30");
+    assert.equal(resolvePromiseDate("monday", NOW), "2026-11-02");
+    // A bare weekday never means today, even on that weekday.
+    assert.equal(resolvePromiseDate("wednesday", NOW), "2026-11-04");
+    assert.equal(resolvePromiseDate("on friday", NOW), "2026-10-30");
+    assert.equal(resolvePromiseDate("by monday morning", NOW), "2026-11-02");
+    assert.equal(resolvePromiseDate("next week", NOW), "2026-11-02");
+    assert.equal(resolvePromiseDate("end of month", NOW), "2026-10-31");
+    assert.equal(resolvePromiseDate("end of the month", NOW), "2026-10-31");
+  });
+
+  it("ambiguous phrases resolve to null so the trader is asked", () => {
+    for (const phrase of ["next friday", "this friday", "someday", "", "31st", "end of week", "friday the 13th", "whenever"]) {
+      assert.equal(resolvePromiseDate(phrase, NOW), null, JSON.stringify(phrase));
+    }
+  });
+
+  it("marks promises kept, broken or still open from ledger payments", () => {
+    const ledger = seed([
+      { shopId: "shop-a", type: "payment", amountKobo: 2000000, customer: "Ada", createdAt: daysAgo(8) },
+      { shopId: "shop-a", type: "payment", amountKobo: 500000, customer: "Bola", createdAt: daysAgo(8) },
+    ]);
+    const store = new PromiseStore(":memory:");
+    try {
+      const rows = ledger.list("shop-a");
+      const today = lagosDay(NOW);
+      // Paid in full before the due date: kept.
+      assert.equal(
+        promiseStatus({ customer: "Ada", amount_kobo: 2000000, due_date: "2026-10-25" }, rows, today),
+        "kept"
+      );
+      // No amount promised: any payment before the due date keeps it.
+      assert.equal(promiseStatus({ customer: "Bola", amount_kobo: null, due_date: "2026-10-25" }, rows, today), "kept");
+      // Part-payment only: still open past the due date.
+      assert.equal(
+        promiseStatus({ customer: "Bola", amount_kobo: 2000000, due_date: "2026-10-25" }, rows, today),
+        "open"
+      );
+      // Nothing paid and the date has passed: broken.
+      assert.equal(
+        promiseStatus({ customer: "Chidi", amount_kobo: 1000000, due_date: "2026-10-20" }, rows, today),
+        "broken"
+      );
+      // Due in the future: open.
+      assert.equal(
+        promiseStatus({ customer: "Chidi", amount_kobo: 1000000, due_date: "2026-11-05" }, rows, today),
+        "open"
+      );
+
+      // refreshPromises persists the transitions with resolved_at.
+      const keep = store.create({ shopId: "shop-a", customer: "Ada", amountKobo: 2000000, dueDate: "2026-10-25" });
+      const broke = store.create({ shopId: "shop-a", customer: "Chidi", amountKobo: 1000000, dueDate: "2026-10-20" });
+      const open = store.create({ shopId: "shop-a", customer: "Chidi", amountKobo: 1000000, dueDate: "2026-11-05" });
+      const done = refreshPromises(store, ledger, "shop-a", { now: NOW });
+      assert.deepEqual(done, [
+        { id: keep.id, to: "kept" },
+        { id: broke.id, to: "broken" },
+      ]);
+      assert.equal(store.get(keep.id).status, "kept");
+      assert.equal(store.get(keep.id).resolved_at, new Date(NOW).toISOString());
+      assert.equal(store.get(broke.id).status, "broken");
+      assert.equal(store.get(open.id).status, "open");
+      // Second refresh changes nothing: resolved promises are never reprocessed.
+      assert.deepEqual(refreshPromises(store, ledger, "shop-a", { now: NOW }), []);
+    } finally {
+      store.close();
+      ledger.close();
+    }
+  });
+
+  it("kept-rate counts kept over resolved, per customer", () => {
+    const promises = [
+      { customer: "Ada", status: "kept" },
+      { customer: "ada", status: "kept" },
+      { customer: "Ada", status: "broken" },
+      { customer: "Ada", status: "open" },
+      { customer: "Ada", status: "cancelled" },
+      { customer: "Bola", status: "broken" },
+    ];
+    assert.deepEqual(keptRate(promises, "Ada"), { kept: 2, total: 3, rate: 2 / 3 });
+    assert.deepEqual(keptRate(promises, "Bola"), { kept: 0, total: 1, rate: 0 });
+    assert.equal(keptRate(promises, "Nobody"), null);
+  });
+});
+
+describe("proposal promises (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", () => {
+  const PROMISE_SALE = {
+    type: "sale", customer: "Ada", item: "fake-rice", unit: "bag",
+    quantity: 1, amountNaira: 20000, amountPhrase: "20k", priceBasis: "total",
+  };
+  const withPromise = (promise) => async () => ({
+    heard: "Ada buy rice 1 bag na 20k. She go pay friday.",
+    entries: [PROMISE_SALE],
+    totals: null,
+    question: null,
+    promise,
+  });
+
+  function setup(modelHandler) {
+    const ledger = new Ledger(":memory:");
+    const proposals = new ProposalStore(":memory:");
+    const promises = new PromiseStore(":memory:");
+    const model = createMockModelClient(modelHandler);
+    return { ledger, proposals, promises, model, deps: { ledger, proposals, promises, model } };
+  }
+
+  function teardown({ ledger, proposals, promises }) {
+    ledger.close();
+    proposals.close();
+    promises.close();
+  }
+
+  it("a clear promise shows on the card and is created only on confirm", async () => {
+    const ctx = setup(withPromise({ customer: "Ada", datePhrase: "friday", amountNaira: 20000 }));
+    try {
+      const p = await propose("shop-a", "fake note", { ...ctx.deps, now: NOW });
+      assert.deepEqual(p.flags, []);
+      assert.deepEqual(p.promise, {
+        customer: "Ada",
+        datePhrase: "friday",
+        amountNaira: 20000,
+        amountKobo: 2000000,
+        dueDate: "2026-10-30",
+      });
+      const card = renderProposalCard(p);
+      assert.ok(card.text.includes("🤝 Ada to pay ₦20,000 by Fri 30 Oct"));
+      assert.deepEqual(ctx.promises.listByShop("shop-a"), []);
+
+      const out = confirmProposal(p.id, "shop-a", ctx.deps);
+      assert.equal(out.recordedIds.length, 1);
+      const rows = ctx.promises.listByShop("shop-a");
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].customer, "Ada");
+      assert.equal(rows[0].amount_kobo, 2000000);
+      assert.equal(rows[0].due_date, "2026-10-30");
+      assert.equal(rows[0].status, "open");
+      // Confirming twice does not duplicate the promise.
+      confirmProposal(p.id, "shop-a", ctx.deps);
+      assert.equal(ctx.promises.listByShop("shop-a").length, 1);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("an unclear day-phrase asks instead of guessing, then a Fix can set it", async () => {
+    const ctx = setup(async (req) =>
+      req.prior
+        ? await withPromise({ customer: "Ada", datePhrase: "friday", amountNaira: null })()
+        : await withPromise({ customer: "Ada", datePhrase: "next friday", amountNaira: null })()
+    );
+    try {
+      const p = await propose("shop-a", "fake note", { ...ctx.deps, now: NOW });
+      assert.match(p.flags.join(";"), /unclear/);
+      assert.ok(p.question);
+      assert.equal(p.promise, null);
+      assert.throws(() => confirmProposal(p.id, "shop-a", ctx.deps), /cannot confirm/);
+
+      const fixed = await fixProposal(p.id, "shop-a", "friday", { ...ctx.deps, now: NOW });
+      assert.deepEqual(fixed.flags, []);
+      assert.equal(fixed.promise.dueDate, "2026-10-30");
+      assert.equal(fixed.promise.amountKobo, null);
+      confirmProposal(fixed.id, "shop-a", ctx.deps);
+      assert.equal(ctx.promises.listByShop("shop-a")[0].amount_kobo, null);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("promise needs a customer and a whole-naira amount", async () => {
+    for (const [promise, want] of [
+      [{ customer: null, datePhrase: "friday", amountNaira: null }, /customer/],
+      [{ customer: "Ada", datePhrase: null, amountNaira: null }, /day/],
+      [{ customer: "Ada", datePhrase: "friday", amountNaira: 20.5 }, /whole naira/],
+      [{ customer: "Ada", datePhrase: "friday", amountNaira: -5 }, /negative/],
+    ]) {
+      const ctx = setup(withPromise(promise));
+      try {
+        const p = await propose("shop-a", "fake note", { ...ctx.deps, now: NOW });
+        assert.match(p.flags.join(";"), want, JSON.stringify(promise));
+        assert.equal(p.promise, null);
+      } finally {
+        teardown(ctx);
+      }
+    }
+  });
+});
+
+describe("debt messages (fake data)", () => {
+  it("formats due days and the promise card line", () => {
+    assert.equal(formatDueDay("2026-10-30"), "Fri 30 Oct");
+    assert.equal(formatDueDay("2026-11-02"), "Mon 2 Nov");
+    assert.equal(promiseCardLine(null), null);
+    assert.equal(
+      promiseCardLine({ customer: "Ada", amountKobo: 2000000, dueDate: "2026-10-30" }),
+      "🤝 Ada to pay ₦20,000 by Fri 30 Oct"
+    );
+    assert.equal(promiseCardLine({ customer: "Ada", amountKobo: null, dueDate: "2026-10-30" }), "🤝 Ada to pay by Fri 30 Oct");
+  });
+
+  it("who-owes lists debtors biggest first, capped", () => {
+    const debts = [
+      { customer: "Bola", owedKobo: 500000, oldestUnpaidAgeDays: 3 },
+      { customer: "Ada", owedKobo: 2000000, oldestUnpaidAgeDays: 12 },
+      { customer: "Settled", owedKobo: 0, oldestUnpaidAgeDays: null },
+    ];
+    assert.equal(renderWhoOwes(debts), "⚖️ *Who owes*\nAda owes *₦20,000* (12 days old)\nBola owes *₦5,000* (3 days old)");
+    assert.equal(renderWhoOwes([]), "⚖️ *Who owes*\n\nNobody owes you anything.");
+    const many = Array.from({ length: 15 }, (_, i) => ({ customer: `Customer ${i}`, owedKobo: (15 - i) * 100000, oldestUnpaidAgeDays: 1 }));
+    const capped = renderWhoOwes(many);
+    assert.ok(capped.includes("…and 5 more."));
+    assert.ok(capped.length <= MAX_BODY_CHARS);
+  });
+
+  it("chase ranks the top 5 with three drafted tones", () => {
+    const ranked = rankChase([
+      { customer: "Ada", owedKobo: 2000000, ageDays: 12, broken: 1 },
+      { customer: "Bola", owedKobo: 500000, ageDays: 3, broken: 0 },
+    ]);
+    const text = renderChase(ranked);
+    assert.ok(text.startsWith("⚠️ *Chase list*\n1. Ada: *₦20,000* (12 days old, 1 broken promise)\n2. Bola: *₦5,000* (3 days old)"));
+    assert.ok(text.includes("🤝 Friendly: "));
+    assert.ok(text.includes("🤝 Firm: "));
+    assert.ok(text.includes("🤝 Final: "));
+    assert.equal(renderChase([]), "⚠️ *Chase list*\n\nNobody owes you anything.");
+  });
+
+  it("reminder drafts use the name, amount and age in fixed tones", () => {
+    for (const tone of ["friendly", "firm", "final"]) {
+      const draft = draftReminder(tone, { name: "Ada", amountKobo: 2000000, ageDays: 12 });
+      assert.ok(draft.includes("Ada"), tone);
+      assert.ok(draft.includes("₦20,000"), tone);
+      assert.ok(draft.includes("12 days old"), tone);
+    }
+    assert.ok(draftReminder("friendly", { name: "Ada", amountKobo: 500000, ageDays: 0 }).includes("(from today)"));
+    assert.ok(!/[\u{1F300}-\u{1FAFF}]/u.test(draftReminder("firm", { name: "Ada", amountKobo: 500000, ageDays: 1 }).replace(/🤝/g, "")));
+  });
+
+  it("balance shows debt, age and kept-rate; unknown names get a polite reply", () => {
+    assert.equal(
+      renderBalance({ customer: "Ada", owedKobo: 2000000, oldestUnpaidAgeDays: 12 }, { kept: 2, total: 3, rate: 2 / 3 }),
+      "⚖️ Ada owes *₦20,000* (12 days old)\nPromises kept: 2 of 3 (67%)"
+    );
+    assert.equal(
+      renderBalance({ customer: "Ada", owedKobo: 0, oldestUnpaidAgeDays: null }, null),
+      "⚖️ Ada owes nothing.\nNo promises yet."
+    );
+    assert.equal(unknownCustomer("Nobody"), 'Sorry, I have no record for "Nobody". Check the spelling and try again.');
+  });
+
+  it("due-today lines name each promise, capped", () => {
+    assert.deepEqual(
+      dueTodayLines([
+        { customer: "Ada", amount_kobo: 2000000 },
+        { customer: "Bola", amount_kobo: null },
+      ]),
+      ["🤝 Due today: Ada promised ₦20,000", "🤝 Due today: Bola promised to pay"]
+    );
+    const many = Array.from({ length: 8 }, (_, i) => ({ customer: `Customer ${i}`, amount_kobo: 100000 }));
+    assert.deepEqual(dueTodayLines(many).length, 6);
+    assert.equal(dueTodayLines(many)[5], "…and 3 more due today.");
+  });
+
+  it("no debt message exceeds 1024 characters", () => {
+    const long = "C".repeat(150);
+    const debts = Array.from({ length: 15 }, (_, i) => ({ customer: `${long} ${i}`, owedKobo: (15 - i) * 100000, oldestUnpaidAgeDays: 400 }));
+    assert.ok(renderWhoOwes(debts).length <= MAX_BODY_CHARS);
+    const ranked = rankChase(debts.map((d) => ({ customer: d.customer, owedKobo: d.owedKobo, ageDays: d.oldestUnpaidAgeDays, broken: 2 })));
+    assert.ok(renderChase(ranked).length <= MAX_BODY_CHARS);
+    assert.ok(renderBalance({ customer: "D".repeat(500), owedKobo: 100000, oldestUnpaidAgeDays: 9 }, { kept: 1, total: 1, rate: 1 }).length <= MAX_BODY_CHARS);
+    assert.ok(unknownCustomer("E".repeat(2000)).length <= MAX_BODY_CHARS);
+  });
+});

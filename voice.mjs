@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { extname } from "node:path";
 import { parseNaira, formatKobo } from "./money.mjs";
 import { escapeMd } from "./messages.mjs";
+import { resolvePromiseDate } from "./promises.mjs";
 
 export const PROPOSAL_TTL_MS = 30 * 60 * 1000;
 export const ENTRY_TYPES = ["sale", "payment", "restock"];
@@ -46,6 +47,7 @@ export function toProposal(row) {
     notes: env.notes,
     recorded_ids: row.recorded_ids ? JSON.parse(row.recorded_ids) : null,
     name_checked: row.name_checked ? JSON.parse(row.name_checked) : null,
+    promise: env.promise ?? null,
   };
 }
 
@@ -395,9 +397,45 @@ function shopCustomers(ledger, shopId) {
   return [...seen];
 }
 
+// Promise validation. The model only supplies the customer's day-phrase;
+// code resolves it to a real date. Anything unclear becomes a clarifying
+// question — never a guess. Returns the envelope promise or null.
+function checkPromise(rawPromise, flags, nowMs) {
+  if (rawPromise === null || rawPromise === undefined) return null;
+  if (typeof rawPromise !== "object" || Array.isArray(rawPromise)) {
+    flags.push("promise must be an object with customer, datePhrase and amountNaira");
+    return null;
+  }
+  const customer = cleanText(rawPromise.customer);
+  if (!customer) flags.push("promise needs a customer name");
+  const datePhrase = cleanText(rawPromise.datePhrase);
+  let dueDate = null;
+  if (!datePhrase) {
+    flags.push(`promise needs a day: when will ${customer ?? "the customer"} pay?`);
+  } else {
+    dueDate = resolvePromiseDate(datePhrase, nowMs);
+    if (!dueDate) flags.push(`promise date "${datePhrase}" is unclear — which day will ${customer ?? "the customer"} pay?`);
+  }
+  let amountNaira = null;
+  let amountBad = false;
+  if (rawPromise.amountNaira !== null && rawPromise.amountNaira !== undefined) {
+    if (typeof rawPromise.amountNaira !== "number" || !Number.isInteger(rawPromise.amountNaira)) {
+      flags.push(`promise amount must be whole naira, got ${String(rawPromise.amountNaira)}`);
+      amountBad = true;
+    } else if (rawPromise.amountNaira < 0) {
+      flags.push("promise amount must not be negative");
+      amountBad = true;
+    } else {
+      amountNaira = rawPromise.amountNaira;
+    }
+  }
+  if (!customer || !dueDate || amountBad) return null;
+  return { customer, datePhrase, amountNaira, amountKobo: amountNaira === null ? null : amountNaira * 100, dueDate };
+}
+
 // Runs every check on raw model output. Missing or ambiguous input stays
 // pending with a clarifying question; nothing is ever guessed.
-export function checkModelOutput(raw, shopId, { existingCustomers = [], checkedNames = [] } = {}) {
+export function checkModelOutput(raw, shopId, { existingCustomers = [], checkedNames = [], now = Date.now() } = {}) {
   const flags = [];
   const notes = [];
   const questionedNames = [];
@@ -411,13 +449,14 @@ export function checkModelOutput(raw, shopId, { existingCustomers = [], checkedN
   const totals = checkTotals(raw.totals, flags, notes);
   checkStatedRemainder(heard, entries, flags);
   checkSimilarNames(entries, shopId, existingCustomers, checkedNames, flags, questionedNames);
+  const promise = checkPromise(raw.promise, flags, now);
   if (entries.length === 0 && flags.length === 0) {
     flags.push("no entries to record");
   }
   let question = cleanText(raw.question);
   if (question) flags.push(`needs clarification: ${question}`);
   if (!question && flags.length > 0) question = `Abeg check am: ${flags.join("; ")}`;
-  return { version: 1, entries, totals, flags, notes, heard, question, questionedNames };
+  return { version: 1, entries, totals, flags, notes, heard, question, questionedNames, promise };
 }
 
 // --- Input handling --------------------------------------------------------
@@ -462,7 +501,7 @@ function confusedEnvelope(heard) {
 
 // --- Proposal operations ---------------------------------------------------
 
-export async function propose(shopId, input, { proposals, model, ledger = null }) {
+export async function propose(shopId, input, { proposals, model, ledger = null, now = Date.now() }) {
   if (!shopId || typeof shopId !== "string") throw voiceError(400, "shopId is required");
   if (!proposals || !model) throw new Error("propose needs { proposals, model }");
   const norm = normalizeInput(input);
@@ -480,6 +519,7 @@ export async function propose(shopId, input, { proposals, model, ledger = null }
   }
   const { heard, question, questionedNames, ...envelope } = checkModelOutput(raw, shopId, {
     existingCustomers: shopCustomers(ledger, shopId),
+    now,
   });
   return toProposal(
     proposals.create({ shopId, envelope, heard, question, nameChecked: questionedNames.length > 0 ? questionedNames : null })
@@ -505,7 +545,7 @@ function applyExpiry(proposals, row) {
 
 // The ONLY path that appends to the ledger. Idempotent: confirming twice
 // records once and reports alreadyConfirmed the second time.
-export function confirmProposal(proposalId, shopId, { proposals, ledger }) {
+export function confirmProposal(proposalId, shopId, { proposals, ledger, promises = null }) {
   if (!proposals || !ledger) throw new Error("confirmProposal needs { proposals, ledger }");
   const row = applyExpiry(proposals, getOwnedRow(proposals, proposalId, shopId));
   if (row.status === "confirmed") {
@@ -550,6 +590,18 @@ export function confirmProposal(proposalId, shopId, { proposals, ledger }) {
     }
     throw err;
   }
+  // A promise on the proposal is created only now, on confirm — never on
+  // propose. Same crash window as the confirmed mark below; the data was
+  // validated when the proposal was checked, so this cannot fail on content.
+  if (proposal.promise) {
+    if (!promises) throw new Error("confirmProposal needs { promises } to record the proposal's promise");
+    promises.create({
+      shopId: row.shop_id,
+      customer: proposal.promise.customer,
+      amountKobo: proposal.promise.amountKobo ?? null,
+      dueDate: proposal.promise.dueDate,
+    });
+  }
   const recordedIds = recorded.map((r) => r.id);
   const updated = proposals.update(row.id, { status: "confirmed", recordedIds });
   return { proposal: toProposal(updated), recordedIds, alreadyConfirmed: false };
@@ -557,7 +609,7 @@ export function confirmProposal(proposalId, shopId, { proposals, ledger }) {
 
 // Re-proposes using the previous proposal plus the trader's correction.
 // Renews the proposal clock. Never touches confirmed proposals.
-export async function fixProposal(proposalId, shopId, correctionText, { proposals, model, ledger = null }) {
+export async function fixProposal(proposalId, shopId, correctionText, { proposals, model, ledger = null, now = Date.now() }) {
   if (!proposals || !model) throw new Error("fixProposal needs { proposals, model }");
   if (!correctionText || typeof correctionText !== "string" || !correctionText.trim()) {
     throw voiceError(400, "correction text is required");
@@ -578,7 +630,7 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
   const stamp = new Date().toISOString();
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     const msg = "I no understand the correction — abeg talk am again.";
-    const envelope = { version: 1, entries: prior.entries, totals: prior.totals, flags: [msg], notes: prior.notes };
+    const envelope = { version: 1, entries: prior.entries, totals: prior.totals, flags: [msg], notes: prior.notes, promise: prior.promise ?? null };
     const updated = proposals.update(row.id, {
       status: "pending",
       envelope,
@@ -593,11 +645,12 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
   const checked = checkModelOutput(raw, shopId, {
     existingCustomers: shopCustomers(ledger, shopId),
     checkedNames: priorChecked,
+    now,
   });
   const merged = [...new Set([...priorChecked, ...checked.questionedNames])];
   const updated = proposals.update(row.id, {
     status: "pending",
-    envelope: { version: 1, entries: checked.entries, totals: checked.totals, flags: checked.flags, notes: checked.notes },
+    envelope: { version: 1, entries: checked.entries, totals: checked.totals, flags: checked.flags, notes: checked.notes, promise: checked.promise },
     heard: checked.heard !== "(no transcript)" ? checked.heard : `${prior.heard}\nTrader: ${correctionText.trim()}`,
     question: checked.question,
     createdAt: stamp,

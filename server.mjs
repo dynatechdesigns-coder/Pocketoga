@@ -8,7 +8,8 @@ import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Ledger } from "./ledger.mjs";
 import { ProposalStore } from "./proposals.mjs";
-import { createModelClient } from "./model.mjs";
+import { PromiseStore, refreshPromises } from "./promises.mjs";
+import { customerDebts, chaseForShop } from "./debts.mjs";
 import { propose, confirmProposal, fixProposal, rejectProposal, getProposal } from "./voice.mjs";
 import {
   verifyWhatsAppSignature,
@@ -160,12 +161,27 @@ export async function handleVoiceRequest(req, res, deps) {
     return send(res, 200, { entries: deps.ledger.list(shopId), verify: deps.ledger.verify(shopId) });
   }
 
+  // Read-only debt views for the caller's own shop: what the WhatsApp debt
+  // commands use. Promise statuses refresh first (derived-state maintenance
+  // like proposal expiry; the ledger is never written here).
+  if (req.method === "GET" && parts.length === 1 && parts[0] === "debts") {
+    refreshPromises(deps.promises, deps.ledger, shopId, {});
+    const rows = deps.ledger.list(shopId);
+    const promises = deps.promises ? deps.promises.listByShop(shopId) : [];
+    return send(res, 200, { debts: customerDebts(rows, {}), chase: chaseForShop(rows, promises, {}) });
+  }
+
+  if (req.method === "GET" && parts.length === 1 && parts[0] === "promises") {
+    refreshPromises(deps.promises, deps.ledger, shopId, {});
+    return send(res, 200, { promises: deps.promises ? deps.promises.listByShop(shopId) : [] });
+  }
+
   return send(res, 404, { error: "not found" });
 }
 
-export function createVoiceServer({ ledger, proposals, model }) {
+export function createVoiceServer({ ledger, proposals, promises, model }) {
   return createServer((req, res) => {
-    handleVoiceRequest(req, res, { ledger, proposals, model }).catch((err) => {
+    handleVoiceRequest(req, res, { ledger, proposals, promises, model }).catch((err) => {
       if (!res.headersSent) send(res, err.status ?? 500, { error: err.message ?? "internal error" });
     });
   });
@@ -182,9 +198,9 @@ export async function handleWebhookOnlyRequest(req, res, deps) {
   return handleWebhookRoute(req, res, url, deps);
 }
 
-export function createWebhookServer({ ledger, proposals, model }) {
+export function createWebhookServer({ ledger, proposals, promises, model }) {
   return createServer((req, res) => {
-    handleWebhookOnlyRequest(req, res, { ledger, proposals, model }).catch((err) => {
+    handleWebhookOnlyRequest(req, res, { ledger, proposals, promises, model }).catch((err) => {
       if (!res.headersSent) send(res, err.status ?? 500, { error: err.message ?? "internal error" });
     });
   });
@@ -196,6 +212,7 @@ if (invokedAsMain) {
   const deps = {
     ledger: new Ledger(db),
     proposals: new ProposalStore(db),
+    promises: new PromiseStore(db),
     model: createModelClient({}),
   };
   const port = Number(process.env.PORT ?? 3000);

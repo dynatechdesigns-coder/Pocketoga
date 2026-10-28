@@ -11,6 +11,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { propose, confirmProposal, fixProposal, rejectProposal } from "./voice.mjs";
+import { customerDebts, chaseForShop, lagosDay } from "./debts.mjs";
+import { PromiseStore, refreshPromises, keptRate } from "./promises.mjs";
 import {
   NOT_REGISTERED,
   FFMPEG_MISSING,
@@ -26,10 +28,16 @@ import {
   BAD_AUDIO_JSON,
   CORRECTION_AS_TEXT,
   REJECTED,
+  MAX_BODY_CHARS,
   alreadyConfirmedFix,
   friendlyErrorText,
   renderProposalCard,
   renderSavedReply,
+  renderWhoOwes,
+  renderChase,
+  renderBalance,
+  unknownCustomer,
+  dueTodayLines,
 } from "./messages.mjs";
 
 export const GRAPH_VERSION = "v25.0";
@@ -78,6 +86,12 @@ export class WhatsAppStore {
       .prepare("INSERT INTO shops (shop_id, wa_number, created_at) VALUES (?, ?, ?)")
       .run(shopId, digits, new Date().toISOString());
     return shopId;
+  }
+
+  // Shop id for a sender, or null. Never creates a shop (unlike
+  // getOrCreateShop), so stranger replies stay shop-free.
+  findShop(digits) {
+    return this.db.prepare("SELECT shop_id FROM shops WHERE wa_number = ?").get(digits)?.shop_id ?? null;
   }
 
   getFixState(digits) {
@@ -153,6 +167,13 @@ export function getWhatsAppStore(deps) {
   return deps._waStore;
 }
 
+export function getPromiseStore(deps) {
+  if (deps.promises) return deps.promises;
+  if (!deps.ledger) return null;
+  deps._promiseStore ??= new PromiseStore(deps.ledger.db);
+  return deps._promiseStore;
+}
+
 export function buildWhatsAppContext(deps, env = deps.env ?? process.env) {
   const config = readWhatsAppConfig(env);
   const sink = deps.log ?? console.log;
@@ -160,13 +181,33 @@ export function buildWhatsAppContext(deps, env = deps.env ?? process.env) {
     store: getWhatsAppStore(deps),
     ledger: deps.ledger,
     proposals: deps.proposals,
+    promises: getPromiseStore(deps),
     model: deps.model,
+    nowMs: deps.nowMs ?? Date.now(),
     config,
     fetchFn: deps.fetch ?? fetch,
     log: (line) => sink(maskForLog(line, config)),
     execFileFn: deps.execFile ?? defaultExecFile,
     tmpBase: deps.waTmpDir ?? tmpdir(),
   };
+}
+
+function normCustomerName(name) {
+  return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+// Exact debt commands, matched before any model call: "who owes", "chase"
+// and "balance <name>" (case-insensitive, trailing punctuation ignored).
+// Anything else returns null and flows to the model as a note.
+export function parseCommand(text) {
+  const clean = String(text ?? "").trim().replace(/\s+/g, " ").replace(/[?!.\s]+$/, "");
+  if (!clean) return null;
+  const lower = clean.toLowerCase();
+  if (lower === "who owes") return { name: "whoowes" };
+  if (lower === "chase") return { name: "chase" };
+  const m = /^balance\s+(.+)$/i.exec(clean);
+  if (m && m[1].trim()) return { name: "balance", arg: m[1].trim() };
+  return null;
 }
 
 // --- Sending ---------------------------------------------------------------
@@ -192,17 +233,61 @@ async function graphSend(ctx, payload) {
 
 async function sendText(ctx, to, body) {
   if (!to) return null;
-  return graphSend(ctx, { to, type: "text", text: { body: String(body).slice(0, 4000) } });
+  let text = String(body);
+  const extra = dueTodayBlock(ctx, ctx.store.findShop(digitsOf(to)));
+  if (extra && text.length + extra.length <= MAX_BODY_CHARS) text += extra;
+  return graphSend(ctx, { to, type: "text", text: { body: text.slice(0, 4000) } });
 }
 
 async function sendCard(ctx, to, proposal, shopId) {
   const existing = ctx.ledger && shopId ? ctx.ledger.list(shopId) : [];
-  const { text, buttons } = renderProposalCard(proposal, { existing, shopId });
+  const { text: cardText, buttons } = renderProposalCard(proposal, { existing, shopId });
+  let text = cardText;
+  const extra = dueTodayBlock(ctx, shopId);
+  if (extra && text.length + extra.length <= MAX_BODY_CHARS) text += extra;
   return graphSend(ctx, {
     to,
     type: "interactive",
     interactive: { type: "button", body: { text }, action: { buttons } },
   });
+}
+
+// Promises due today ride on the reply to the trader's own message — never
+// as a proactive send, so nothing ever leaves the 24-hour customer service
+// window. Empty string when there is nothing due (or no promises store).
+function dueTodayBlock(ctx, shopId) {
+  if (!shopId || !ctx.promises || !ctx.ledger) return "";
+  refreshPromises(ctx.promises, ctx.ledger, shopId, { now: ctx.nowMs });
+  const today = lagosDay(ctx.nowMs);
+  const due = ctx.promises.listOpenByShop(shopId).filter((p) => p.due_date === today);
+  if (due.length === 0) return "";
+  return `\n\n${dueTodayLines(due).join("\n")}`;
+}
+
+async function handleDebtCommand(ctx, sender, shopId, cmd) {
+  const rows = ctx.ledger.list(shopId);
+  if (cmd.name === "whoowes") {
+    await sendText(ctx, sender, renderWhoOwes(customerDebts(rows, { now: ctx.nowMs })));
+    return;
+  }
+  refreshPromises(ctx.promises, ctx.ledger, shopId, { now: ctx.nowMs });
+  const promises = ctx.promises ? ctx.promises.listByShop(shopId) : [];
+  if (cmd.name === "chase") {
+    await sendText(ctx, sender, renderChase(chaseForShop(rows, promises, { now: ctx.nowMs })));
+    return;
+  }
+  const want = normCustomerName(cmd.arg);
+  const debts = customerDebts(rows, { now: ctx.nowMs });
+  let debt = debts.find((d) => normCustomerName(d.customer) === want);
+  if (!debt) {
+    const prom = promises.find((p) => normCustomerName(p.customer) === want);
+    if (!prom) {
+      await sendText(ctx, sender, unknownCustomer(cmd.arg));
+      return;
+    }
+    debt = { customer: prom.customer, owedKobo: 0, oldestUnpaidAgeDays: null };
+  }
+  await sendText(ctx, sender, renderBalance(debt, keptRate(promises, cmd.arg)));
 }
 
 // --- Media -----------------------------------------------------------------
@@ -287,7 +372,7 @@ async function handleButtonReply(ctx, sender, shopId, reply) {
   }
   await replyFriendly(ctx, sender, async () => {
     if (action === "confirm") {
-      const out = confirmProposal(proposalId, shopId, { proposals: ctx.proposals, ledger: ctx.ledger });
+      const out = confirmProposal(proposalId, shopId, { proposals: ctx.proposals, ledger: ctx.ledger, promises: ctx.promises });
       ctx.store.clearFixState(sender);
       if (out.alreadyConfirmed) {
         await sendText(ctx, sender, ALREADY_SAVED);
@@ -403,6 +488,14 @@ async function handleIncomingMessage(message, ctx) {
   if (state?.fixProposalId) {
     await handleCorrection(ctx, sender, shopId, state.fixProposalId, message);
     return;
+  }
+  // Exact debt commands run before any model call and never touch the model.
+  if (message?.type === "text") {
+    const cmd = parseCommand(message.text?.body ?? "");
+    if (cmd) {
+      await replyFriendly(ctx, sender, () => handleDebtCommand(ctx, sender, shopId, cmd));
+      return;
+    }
   }
   await replyFriendly(ctx, sender, async () => {
     if (message?.type === "text") {
