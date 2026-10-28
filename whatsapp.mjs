@@ -301,8 +301,8 @@ async function replyFriendly(ctx, to, fn) {
   }
 }
 
-async function handleButtonReply(ctx, sender, shopId, button) {
-  const match = /^(\w+):(\d+)$/.exec(button?.payload ?? "");
+async function handleButtonReply(ctx, sender, shopId, reply) {
+  const match = /^(\w+):(\d+)$/.exec(reply?.id ?? "");
   const action = match?.[1];
   if (!match || !["confirm", "fix", "reject"].includes(action)) {
     await sendText(ctx, sender, "I didn't understand that button. Send your note again.");
@@ -436,8 +436,11 @@ async function handleIncomingMessage(message, ctx) {
     return;
   }
   const shopId = ctx.store.getOrCreateShop(sender);
-  if (message?.type === "button") {
-    await handleButtonReply(ctx, sender, shopId, message.button);
+  // Reply-button taps arrive as type "interactive" with the tapped id in
+  // interactive.button_reply.id. Other interactive types (e.g. list replies,
+  // which our cards never send) fall through to the text/audio handling.
+  if (message?.type === "interactive" && message.interactive?.type === "button_reply") {
+    await handleButtonReply(ctx, sender, shopId, message.interactive.button_reply);
     return;
   }
   const state = ctx.store.getFixState(sender);

@@ -56,8 +56,19 @@ function waText(from, id, body) {
 function waAudio(from, id, mediaId = "media-1") {
   return { from, id, type: "audio", audio: { id: mediaId, mime_type: "audio/ogg; codecs=opus", voice: true } };
 }
+// Realistic Meta shape: reply-button taps arrive as type "interactive"
+// with the tapped id in interactive.button_reply.id.
 function waButton(from, id, payload) {
-  return { from, id, type: "button", button: { payload, text: payload } };
+  return {
+    from,
+    id,
+    timestamp: "1780000000",
+    type: "interactive",
+    interactive: {
+      type: "button_reply",
+      button_reply: { id: payload, title: String(payload).split(":")[0] },
+    },
+  };
 }
 function wrap(messages) {
   return {
@@ -441,6 +452,75 @@ describe("whatsapp webhook (mocked fetch, no network)", () => {
       await postWebhook(ctx, wrap([waButton(FROM_B, mid(), `confirm:${id}`)]));
       assert.match(sends(ctx).at(-1).body.text.body, /another shop/);
       assert.deepEqual(ctx.ledger.list(), []);
+      assert.equal(ctx.proposals.get(id).status, "pending");
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("Save tap with a raw Meta button_reply payload saves and reports", async () => {
+    const ctx = setup(async () => WA_PART);
+    try {
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "fake note")]));
+      const shop = ctx.whatsapp.getOrCreateShop(FROM_A);
+      const id = ctx.proposals.listByShop(shop)[0].id;
+      // Raw Meta shape, as delivered: context, timestamp, button_reply id.
+      const tap = {
+        from: FROM_A,
+        id: mid(),
+        timestamp: "1780000001",
+        type: "interactive",
+        context: { from: FROM_A, id: "wamid-test-context" },
+        interactive: { type: "button_reply", button_reply: { id: `confirm:${id}`, title: "Save" } },
+      };
+      assert.equal((await postWebhook(ctx, wrap([tap]))).status, 200);
+      assert.equal(ctx.ledger.list(shop).length, 2);
+      const reply = sends(ctx).at(-1).body;
+      assert.equal(reply.type, "text");
+      assert.match(reply.text.body, /Saved:/);
+      assert.match(reply.text.body, /₦15,000/);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("repeated Save taps record once", async () => {
+    const ctx = setup(async () => WA_PART);
+    try {
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "fake note")]));
+      const shop = ctx.whatsapp.getOrCreateShop(FROM_A);
+      const id = ctx.proposals.listByShop(shop)[0].id;
+      // Two distinct taps (separate message ids), not a Meta redelivery.
+      await postWebhook(ctx, wrap([waButton(FROM_A, mid(), `confirm:${id}`)]));
+      await postWebhook(ctx, wrap([waButton(FROM_A, mid(), `confirm:${id}`)]));
+      assert.equal(ctx.ledger.list(shop).length, 2);
+      assert.match(sends(ctx).at(-1).body.text.body, /Already saved/);
+      assert.equal(ctx.ledger.verify(shop).ok, true);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("unknown button ids and list replies get a polite reply, nothing saved", async () => {
+    const ctx = setup(async () => WA_PART);
+    try {
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "fake note")]));
+      const shop = ctx.whatsapp.getOrCreateShop(FROM_A);
+      const id = ctx.proposals.listByShop(shop)[0].id;
+      await postWebhook(ctx, wrap([waButton(FROM_A, mid(), "nonsense")])); // no action:id shape
+      assert.match(sends(ctx).at(-1).body.text.body, /didn't understand that button/);
+      await postWebhook(ctx, wrap([waButton(FROM_A, mid(), `confirm:${id + 999}`)])); // no such proposal
+      assert.match(sends(ctx).at(-1).body.text.body, /can't find that proposal/);
+      const listTap = {
+        from: FROM_A,
+        id: mid(),
+        timestamp: "1780000002",
+        type: "interactive",
+        interactive: { type: "list_reply", list_reply: { id: "row-1", title: "Row", description: "fake row" } },
+      };
+      await postWebhook(ctx, wrap([listTap]));
+      assert.match(sends(ctx).at(-1).body.text.body, /can only read text and voice notes/);
+      assert.deepEqual(ctx.ledger.list(shop), []);
       assert.equal(ctx.proposals.get(id).status, "pending");
     } finally {
       await teardown(ctx);
