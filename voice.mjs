@@ -11,6 +11,18 @@ export const PRICE_BASES = ["each", "total", "unclear"];
 // Words that mean a price is per item. Checked against the note when the
 // model claims the amount is a total.
 const EACH_WORDS = /\b(each|per|every|apiece|one-one|one one|a piece)\b/i;
+// Phrases where the note itself states what is still owed ("remain 5k",
+// "balance na 3k", "e remain 2k"). Plain code cross-checks the stated
+// figure against the note's own sales-minus-payments, even when the model
+// sent no totals.
+const STATED_REMAINDER_SRC = "\\b(?:she\\s+still\\s+owes?|e\\s+remains?|remains?\\s+for|remaining|remainder|remains?|balances?|left)\\b";
+// Filler words between a remainder phrase and its amount ("remain na 5k",
+// "balance for am 5k"). Never amount words.
+const REMAINDER_FILLER = new Set([
+  "na", "be", "is", "are", "dey", "still", "now", "just",
+  "me", "am", "him", "her", "them", "us", "my",
+  "for", "to", "of", "the", "o", "oh",
+]);
 const AUDIO_FORMATS = { ".wav": "wav", ".mp3": "mp3", ".mpeg": "mp3" };
 
 export function voiceError(status, message) {
@@ -218,6 +230,83 @@ function checkTotals(rawTotals, flags, notes) {
   };
 }
 
+function stripEdgePunct(token) {
+  return token.replace(/^['"«(（]+/, "").replace(/[.,;:!?'"»)）]+$/, "");
+}
+
+// Amount at the start of the text after a remainder phrase, read with the
+// existing money parser. Tries the longest lead-in first so "five thousand"
+// wins over "five". Returns kobo, or null when no amount follows.
+function parseLeadingKobo(after) {
+  const tokens = String(after ?? "")
+    .split(/\s+/)
+    .map(stripEdgePunct)
+    .filter(Boolean);
+  let i = 0;
+  while (i < tokens.length && REMAINDER_FILLER.has(tokens[i].toLowerCase())) i++;
+  const rest = tokens.slice(i, i + 6);
+  for (let n = rest.length; n >= 1; n--) {
+    try {
+      return parseNaira(rest.slice(0, n).join(" ")).kobo;
+    } catch {
+      // Try a shorter lead-in.
+    }
+  }
+  return null;
+}
+
+// First stated remainder in the heard text ("remain 5k" -> 500000 kobo).
+// Null when the note states no remainder with a readable amount.
+function statedRemainderKobo(heard) {
+  const text = String(heard ?? "");
+  const re = new RegExp(STATED_REMAINDER_SRC, "gi");
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const kobo = parseLeadingKobo(text.slice(m.index + m[0].length));
+    if (kobo !== null) return kobo;
+  }
+  return null;
+}
+
+// The note's own expected remainder: sale totals minus payments, restock
+// excluded (stock, not debt). Null when there is no sale or an amount is
+// unknown — e.g. payment-only notes, where "remain 5k" refers to old debt
+// this note cannot verify.
+function noteExpectedRemainder(entries) {
+  let sales = 0;
+  let paid = 0;
+  let hasSale = false;
+  for (const e of entries) {
+    if (e.type === "sale") {
+      if (!Number.isInteger(e.amountKobo)) return null;
+      hasSale = true;
+      sales += e.amountKobo;
+    } else if (e.type === "payment") {
+      if (!Number.isInteger(e.amountKobo)) return null;
+      paid += e.amountKobo;
+    }
+  }
+  if (!hasSale) return null;
+  return { sales, paid, expected: sales - paid };
+}
+
+// Safety net independent of model totals: a remainder stated in the heard
+// text must equal sales minus payments in this note. Skipped when the
+// totals check already flagged the same mismatch, so the card shows one
+// arithmetic question, not two.
+function checkStatedRemainder(heard, entries, flags) {
+  if (flags.some((f) => f.startsWith("numbers do not add up"))) return;
+  const stated = statedRemainderKobo(heard);
+  if (stated === null) return;
+  const note = noteExpectedRemainder(entries);
+  if (note === null) return;
+  if (stated !== note.expected) {
+    flags.push(
+      `numbers do not add up: note says remainder ${formatKobo(stated)} but sales ${formatKobo(note.sales)} minus paid ${formatKobo(note.paid)} = ${formatKobo(note.expected)}`
+    );
+  }
+}
+
 // Runs every check on raw model output. Missing or ambiguous input stays
 // pending with a clarifying question; nothing is ever guessed.
 export function checkModelOutput(raw, shopId) {
@@ -231,6 +320,7 @@ export function checkModelOutput(raw, shopId) {
     entries = raw.entries.map((e, i) => checkEntry(e, i, shopId, flags, notes, heard)).filter(Boolean);
   }
   const totals = checkTotals(raw.totals, flags, notes);
+  checkStatedRemainder(heard, entries, flags);
   if (entries.length === 0 && flags.length === 0) {
     flags.push("no entries to record");
   }

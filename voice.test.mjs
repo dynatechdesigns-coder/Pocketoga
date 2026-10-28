@@ -6,6 +6,7 @@ import { Ledger } from "./ledger.mjs";
 import { ProposalStore } from "./proposals.mjs";
 import { createMockModelClient } from "./model.mjs";
 import { propose, confirmProposal, fixProposal, rejectProposal, getProposal } from "./voice.mjs";
+import { renderProposalCard } from "./messages.mjs";
 import { createVoiceServer, handleVoiceRequest } from "./server.mjs";
 
 // Fake fixtures only. No real customers, items, or amounts.
@@ -439,6 +440,97 @@ describe("voice loop (mock model, no API calls)", () => {
     try {
       await assert.rejects(propose(SHOP_A, "fake note", ctx.deps), /boom/);
       assert.deepEqual(ctx.proposals.listByShop(SHOP_A), []);
+    } finally {
+      teardown(ctx);
+    }
+  });
+});
+
+describe("stated-remainder safety check (fake data)", () => {
+  // The model sent entries but no totals, so only the heard-text check can
+  // catch a stated remainder that does not add up.
+  const ADABOY_SALE = {
+    type: "sale", customer: "Test Customer Adaboy", item: "fake-rice", unit: "bag",
+    quantity: 2, amountNaira: 15000, amountPhrase: "15k", priceBasis: "each",
+  };
+  const ADABOY_PAY = {
+    type: "payment", customer: "Test Customer Adaboy", item: null,
+    quantity: null, unit: null, amountNaira: 10000, amountPhrase: "10k", priceBasis: "total",
+  };
+  const adaboyModel = (heard) => async () => ({
+    heard,
+    entries: [ADABOY_SALE, ADABOY_PAY],
+    totals: null,
+    question: null,
+  });
+
+  it("flags the Adaboy note when the stated remainder does not add up", async () => {
+    const heard = "Adaboy 2 bag of rice 15k each, she pay 10k, remain 5k";
+    const ctx = setup(adaboyModel(heard));
+    try {
+      const p = await propose(SHOP_A, heard, ctx.deps);
+      assert.equal(p.status, "pending");
+      assert.equal(p.flags.length, 1);
+      assert.match(p.flags[0], /note says remainder ₦5,000/);
+      assert.match(p.flags[0], /sales ₦30,000 minus paid ₦10,000 = ₦20,000/);
+      assert.ok(p.question);
+      assert.throws(() => confirmProposal(p.id, SHOP_A, ctx.deps), /cannot confirm/);
+      assert.deepEqual(ctx.ledger.list(SHOP_A), []);
+      const card = renderProposalCard(p);
+      assert.deepEqual(
+        card.buttons.map((b) => b.reply.title),
+        ["Fix", "Reject"]
+      );
+      assert.ok(card.buttons.every((b) => !b.reply.id.startsWith("confirm:")), "no Save button");
+      assert.equal(card.text.split(p.flags[0]).length - 1, 1, "question shows once");
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("a matching stated remainder (remain 20k) stays clean", async () => {
+    const heard = "Adaboy 2 bag of rice 15k each, she pay 10k, remain 20k";
+    const ctx = setup(adaboyModel(heard));
+    try {
+      const p = await propose(SHOP_A, heard, ctx.deps);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+      const card = renderProposalCard(p);
+      assert.deepEqual(
+        card.buttons.map((b) => b.reply.title),
+        ["Save", "Fix", "Reject"]
+      );
+      assert.equal(confirmProposal(p.id, SHOP_A, ctx.deps).recordedIds.length, 2);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("no remainder phrase stays clean", async () => {
+    const heard = "Adaboy 2 bag of rice 15k each, she pay 10k.";
+    const ctx = setup(adaboyModel(heard));
+    try {
+      const p = await propose(SHOP_A, heard, ctx.deps);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("payment-only note with remain 5k is not falsely flagged", async () => {
+    const ctx = setup(async () => ({
+      heard: "Test Customer Ada pay 10k, remain 5k.",
+      entries: [
+        { type: "payment", customer: "Test Customer Ada", item: null, quantity: null, unit: null, amountNaira: 10000, amountPhrase: "10k", priceBasis: "total" },
+      ],
+      totals: null,
+      question: null,
+    }));
+    try {
+      const p = await propose(SHOP_A, "fake note", ctx.deps);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
     } finally {
       teardown(ctx);
     }
