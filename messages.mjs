@@ -201,7 +201,20 @@ export function dedupeChecks(proposal) {
   if (question && !/^abeg check am:/i.test(question) && !items.some((x) => sameCheck(x, question))) {
     items.push(question);
   }
-  return items.map(escapeMd);
+  return items.map(renderCheckLine);
+}
+
+// Similar-name flags carry code-added *bold* around the two names. The names
+// are escaped again here (idempotent for code-built flags) so a forged shape
+// with raw markdown still cannot break card formatting.
+const SAME_PERSON_RE = /^Is \*(.+?)\* the same person as \*(.+?)\*\? Send the right name, or say new customer\.$/;
+
+function renderCheckLine(text) {
+  const match = SAME_PERSON_RE.exec(text);
+  if (match) {
+    return `Is *${escapeMd(match[1])}* the same person as *${escapeMd(match[2])}*? Send the right name, or say new customer.`;
+  }
+  return escapeMd(text);
 }
 
 function joinBlocks(blocks) {

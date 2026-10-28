@@ -317,6 +317,7 @@ async function handleCorrection(ctx, sender, shopId, fixProposalId, message) {
       const revised = await fixProposal(fixProposalId, shopId, message.text?.body ?? "", {
         proposals: ctx.proposals,
         model: ctx.model,
+        ledger: ctx.ledger,
       });
       ctx.store.clearFixState(sender);
       await sendCard(ctx, sender, revised, shopId);
@@ -362,7 +363,7 @@ async function handleCorrection(ctx, sender, shopId, fixProposalId, message) {
       return;
     }
     try {
-      const revised = await fixProposal(fixProposalId, shopId, heard, { proposals: ctx.proposals, model: ctx.model });
+      const revised = await fixProposal(fixProposalId, shopId, heard, { proposals: ctx.proposals, model: ctx.model, ledger: ctx.ledger });
       ctx.store.clearFixState(sender);
       await sendCard(ctx, sender, revised, shopId);
     } catch (err) {
@@ -408,6 +409,7 @@ async function handleIncomingMessage(message, ctx) {
       const proposal = await propose(shopId, message.text?.body ?? "", {
         proposals: ctx.proposals,
         model: ctx.model,
+        ledger: ctx.ledger,
       });
       await sendCard(ctx, sender, proposal, shopId);
     } else if (message?.type === "audio") {
@@ -419,7 +421,7 @@ async function handleIncomingMessage(message, ctx) {
       let got;
       try {
         got = await withWavFromMedia(ctx, mediaId, async (wavPath) =>
-          propose(shopId, { audioPath: wavPath }, { proposals: ctx.proposals, model: ctx.model })
+          propose(shopId, { audioPath: wavPath }, { proposals: ctx.proposals, model: ctx.model, ledger: ctx.ledger })
         );
       } catch (err) {
         ctx.log(`audio download failed: ${err?.message ?? err}`);

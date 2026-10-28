@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS proposals (
   heard TEXT NOT NULL,
   question TEXT,
   created_at TEXT NOT NULL,
-  recorded_ids TEXT
+  recorded_ids TEXT,
+  name_checked TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_proposals_shop ON proposals(shop_id);
 `;
@@ -27,19 +28,27 @@ export class ProposalStore {
       this.ownsDb = false;
     }
     this.db.exec(PROPOSAL_SCHEMA);
+    // Databases created before the name_checked column get it now.
+    const columns = this.db
+      .prepare("PRAGMA table_info(proposals)")
+      .all()
+      .map((c) => c.name);
+    if (!columns.includes("name_checked")) {
+      this.db.exec("ALTER TABLE proposals ADD COLUMN name_checked TEXT");
+    }
   }
 
   // envelope: { version, entries, totals, flags, notes } (plain-code checks).
-  create({ shopId, status = "pending", envelope, heard, question = null, createdAt = null, recordedIds = null }) {
+  create({ shopId, status = "pending", envelope, heard, question = null, createdAt = null, recordedIds = null, nameChecked = null }) {
     if (!shopId || typeof shopId !== "string") throw new Error("shopId is required");
     const stamp = createdAt ?? new Date().toISOString();
     const result = this.db
       .prepare(
         `INSERT INTO proposals
-           (shop_id, status, entries_json, heard, question, created_at, recorded_ids)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+           (shop_id, status, entries_json, heard, question, created_at, recorded_ids, name_checked)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(shopId, status, JSON.stringify(envelope), heard, question, stamp, recordedIds ? JSON.stringify(recordedIds) : null);
+      .run(shopId, status, JSON.stringify(envelope), heard, question, stamp, recordedIds ? JSON.stringify(recordedIds) : null, nameChecked ? JSON.stringify(nameChecked) : null);
     return this.get(Number(result.lastInsertRowid));
   }
 
@@ -47,7 +56,7 @@ export class ProposalStore {
     return this.db.prepare("SELECT * FROM proposals WHERE id = ?").get(id) ?? null;
   }
 
-  update(id, { status, envelope, heard, question, createdAt, recordedIds } = {}) {
+  update(id, { status, envelope, heard, question, createdAt, recordedIds, nameChecked } = {}) {
     const sets = [];
     const args = [];
     if (status !== undefined) {
@@ -73,6 +82,10 @@ export class ProposalStore {
     if (recordedIds !== undefined) {
       sets.push("recorded_ids = ?");
       args.push(recordedIds ? JSON.stringify(recordedIds) : null);
+    }
+    if (nameChecked !== undefined) {
+      sets.push("name_checked = ?");
+      args.push(nameChecked ? JSON.stringify(nameChecked) : null);
     }
     if (sets.length > 0) {
       this.db.prepare(`UPDATE proposals SET ${sets.join(", ")} WHERE id = ?`).run(...args, id);

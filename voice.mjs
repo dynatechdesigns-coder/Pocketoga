@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
 import { parseNaira, formatKobo } from "./money.mjs";
+import { escapeMd } from "./messages.mjs";
 
 export const PROPOSAL_TTL_MS = 30 * 60 * 1000;
 export const ENTRY_TYPES = ["sale", "payment", "restock"];
@@ -44,6 +45,7 @@ export function toProposal(row) {
     flags: env.flags,
     notes: env.notes,
     recorded_ids: row.recorded_ids ? JSON.parse(row.recorded_ids) : null,
+    name_checked: row.name_checked ? JSON.parse(row.name_checked) : null,
   };
 }
 
@@ -307,11 +309,98 @@ function checkStatedRemainder(heard, entries, flags) {
   }
 }
 
+// Leading titles stripped for the similar-name check, so "Mama Chinedu"
+// matches "Chinedu".
+const NAME_TITLES = ["mama", "baba", "mr", "mrs", "alhaji", "alhaja", "chief", "madam", "oga"];
+
+function normalizeName(name) {
+  return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+// Plain edit distance over normalized names. Trader ledgers are small, so
+// the simple O(n*m) table is plenty.
+function editDistance(a, b) {
+  let prev = [];
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(
+        prev[j] + 1,
+        cur[j - 1] + 1,
+        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+// A leading title word plus the rest ("mama chinedu" -> "chinedu").
+// Unchanged when there is no leading title.
+function stripTitle(normalized) {
+  const m = /^(\S+)\s+(.+)$/.exec(normalized);
+  if (m && NAME_TITLES.includes(m[1])) return m[2];
+  return normalized;
+}
+
+// True when two already-normalized, non-equal names may be the same person:
+// a small typo, one name extending the other, or a title difference.
+function namesSimilar(a, b) {
+  if (editDistance(a, b) <= 2) return true;
+  const short = a.length <= b.length ? a : b;
+  const long = a.length <= b.length ? b : a;
+  if (short.length >= 3 && long.startsWith(short)) return true;
+  const sa = stripTitle(a);
+  const sb = stripTitle(b);
+  if (sa && sb && sa === sb) return true;
+  return false;
+}
+
+// Similar-name check: each proposed customer against the shop's own ledger
+// names. Exact-after-normalization is clean; near matches ask the trader.
+// Names in checkedNames (already questioned on this proposal) are skipped.
+// Questioned names are collected into questioned (normalized).
+function checkSimilarNames(entries, shopId, existingCustomers, checkedNames, flags, questioned) {
+  if (!existingCustomers || existingCustomers.length === 0) return;
+  const checked = new Set((checkedNames ?? []).map((n) => normalizeName(n)));
+  const stored = existingCustomers
+    .filter((c) => typeof c === "string" && normalizeName(c))
+    .map((c) => ({ raw: c.trim(), norm: normalizeName(c) }));
+  const asked = new Set();
+  for (const e of entries) {
+    if (!e.customer || e.customer === shopId) continue;
+    const norm = normalizeName(e.customer);
+    if (!norm || checked.has(norm) || asked.has(norm)) continue;
+    if (stored.some((s) => s.norm === norm)) continue;
+    const match = stored.find((s) => namesSimilar(norm, s.norm));
+    if (match) {
+      asked.add(norm);
+      questioned.push(norm);
+      flags.push(`Is *${escapeMd(e.customer.trim())}* the same person as *${escapeMd(match.raw)}*? Send the right name, or say new customer.`);
+    }
+  }
+}
+
+// Distinct customer names already in the shop's own ledger. Empty when no
+// ledger was supplied, so those callers skip the similar-name check.
+function shopCustomers(ledger, shopId) {
+  if (!ledger || typeof ledger.list !== "function") return [];
+  const seen = new Set();
+  for (const row of ledger.list(shopId)) {
+    if (typeof row.customer === "string" && row.customer.trim() && !seen.has(row.customer)) {
+      seen.add(row.customer);
+    }
+  }
+  return [...seen];
+}
+
 // Runs every check on raw model output. Missing or ambiguous input stays
 // pending with a clarifying question; nothing is ever guessed.
-export function checkModelOutput(raw, shopId) {
+export function checkModelOutput(raw, shopId, { existingCustomers = [], checkedNames = [] } = {}) {
   const flags = [];
   const notes = [];
+  const questionedNames = [];
   const heard = cleanText(raw.heard) ?? "(no transcript)";
   let entries = [];
   if (!Array.isArray(raw.entries)) {
@@ -321,13 +410,14 @@ export function checkModelOutput(raw, shopId) {
   }
   const totals = checkTotals(raw.totals, flags, notes);
   checkStatedRemainder(heard, entries, flags);
+  checkSimilarNames(entries, shopId, existingCustomers, checkedNames, flags, questionedNames);
   if (entries.length === 0 && flags.length === 0) {
     flags.push("no entries to record");
   }
   let question = cleanText(raw.question);
   if (question) flags.push(`needs clarification: ${question}`);
   if (!question && flags.length > 0) question = `Abeg check am: ${flags.join("; ")}`;
-  return { version: 1, entries, totals, flags, notes, heard, question };
+  return { version: 1, entries, totals, flags, notes, heard, question, questionedNames };
 }
 
 // --- Input handling --------------------------------------------------------
@@ -372,7 +462,7 @@ function confusedEnvelope(heard) {
 
 // --- Proposal operations ---------------------------------------------------
 
-export async function propose(shopId, input, { proposals, model }) {
+export async function propose(shopId, input, { proposals, model, ledger = null }) {
   if (!shopId || typeof shopId !== "string") throw voiceError(400, "shopId is required");
   if (!proposals || !model) throw new Error("propose needs { proposals, model }");
   const norm = normalizeInput(input);
@@ -388,8 +478,12 @@ export async function propose(shopId, input, { proposals, model }) {
     const c = confusedEnvelope(fallbackHeard);
     return toProposal(proposals.create({ shopId, envelope: c.envelope, heard: c.heard, question: c.question }));
   }
-  const { heard, question, ...envelope } = checkModelOutput(raw, shopId);
-  return toProposal(proposals.create({ shopId, envelope, heard, question }));
+  const { heard, question, questionedNames, ...envelope } = checkModelOutput(raw, shopId, {
+    existingCustomers: shopCustomers(ledger, shopId),
+  });
+  return toProposal(
+    proposals.create({ shopId, envelope, heard, question, nameChecked: questionedNames.length > 0 ? questionedNames : null })
+  );
 }
 
 // The per-shop check every proposal-scoped operation goes through.
@@ -463,7 +557,7 @@ export function confirmProposal(proposalId, shopId, { proposals, ledger }) {
 
 // Re-proposes using the previous proposal plus the trader's correction.
 // Renews the proposal clock. Never touches confirmed proposals.
-export async function fixProposal(proposalId, shopId, correctionText, { proposals, model }) {
+export async function fixProposal(proposalId, shopId, correctionText, { proposals, model, ledger = null }) {
   if (!proposals || !model) throw new Error("fixProposal needs { proposals, model }");
   if (!correctionText || typeof correctionText !== "string" || !correctionText.trim()) {
     throw voiceError(400, "correction text is required");
@@ -495,7 +589,12 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
     });
     return toProposal(updated);
   }
-  const checked = checkModelOutput(raw, shopId);
+  const priorChecked = Array.isArray(prior.name_checked) ? prior.name_checked : [];
+  const checked = checkModelOutput(raw, shopId, {
+    existingCustomers: shopCustomers(ledger, shopId),
+    checkedNames: priorChecked,
+  });
+  const merged = [...new Set([...priorChecked, ...checked.questionedNames])];
   const updated = proposals.update(row.id, {
     status: "pending",
     envelope: { version: 1, entries: checked.entries, totals: checked.totals, flags: checked.flags, notes: checked.notes },
@@ -503,6 +602,7 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
     question: checked.question,
     createdAt: stamp,
     recordedIds: null,
+    nameChecked: merged.length > 0 ? merged : null,
   });
   return toProposal(updated);
 }
