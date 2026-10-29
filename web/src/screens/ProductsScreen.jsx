@@ -1,14 +1,15 @@
 import { useState } from "react";
-import { ChevronRight, Package } from "lucide-react";
+import { ChevronRight, Package, Plus } from "lucide-react";
 import { friendlyError, getProducts, setProductPrices } from "../api.js";
 import { formatKobo, nairaInput, parseNaira, plural } from "../format.js";
 import { Button, Card, EmptyState, ErrorState, Field, IconCircle, NotAvailable, Pill, ScreenHeader, Sheet, Skeleton, rise, useLoad } from "../ui.jsx";
 import { inputClass } from "./ConfirmCard.jsx";
 
 // GET /products: stock on hand, a low-stock pill, and a sheet to set the sell
-// and cost prices (POST /products/:id). Cost prices are what let Reports
+// and cost prices (POST /products/:id). "Add product" pre-fills a restock note on
+// Record, so it is saved through the normal check-and-confirm step. Cost prices are what let Reports
 // count cost of goods; a product with none is left out of the estimate.
-export default function ProductsScreen() {
+export default function ProductsScreen({ onGo }) {
   const { data: products, error, loading, unavailable, reload } = useLoad(getProducts);
   const [open, setOpen] = useState(null); // product
   const [shown, setShown] = useState(null); // kept while the sheet slides away
@@ -29,7 +30,7 @@ export default function ProductsScreen() {
   else if (list.length === 0)
     body = (
       <EmptyState icon={Package} title="No products yet">
-        Products appear here once you record restocks and sales.
+        Say “I restock 10 bags of rice” to add one. Products appear once you record restocks and sales.
       </EmptyState>
     );
   else
@@ -64,6 +65,13 @@ export default function ProductsScreen() {
   return (
     <section>
       <ScreenHeader title="Products" />
+      {!unavailable && (
+        <div className="mb-4">
+          <Button data-part="add-product" variant="secondary" onClick={() => onGo("record", { text: "I restock " })}>
+            <Plus aria-hidden="true" /> Add product
+          </Button>
+        </div>
+      )}
       {body}
       <Sheet open={!!open} onClose={() => setOpen(null)} title={shown ? `${shown.name} prices` : ""}>
         {shown && (

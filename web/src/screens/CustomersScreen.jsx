@@ -1,13 +1,15 @@
 import { useState } from "react";
-import { ChevronRight, Phone, UserPlus, Users } from "lucide-react";
+import { ChevronRight, Phone, ShieldCheck, UserPlus, Users } from "lucide-react";
 import { friendlyError, getCustomers, saveCustomer } from "../api.js";
 import { formatKobo, phoneText, sameCustomer } from "../format.js";
 import { waNumber } from "../reminders.js";
-import { Avatar, Button, Card, EmptyState, ErrorState, Field, NotAvailable, ScreenHeader, Sheet, Skeleton, rise, useLoad } from "../ui.jsx";
+import { Avatar, Button, Card, EmptyState, ErrorState, Field, NotAvailable, Pill, ScreenHeader, Sheet, Skeleton, rise, useLoad } from "../ui.jsx";
 import { inputClass } from "./ConfirmCard.jsx";
 
 // GET /customers: who they are, what they owe (amber) and their phone. The
-// add/edit sheet stores a number only with the trader's explicit consent;
+// add/edit sheet stores a number only with the trader's explicit consent (a
+// saved number always has it, so the row shows "Permission given"). Like Record,
+// it first shows what will be saved and saves only on a tap on Confirm;
 // Debts uses it to open WhatsApp straight to that customer.
 export default function CustomersScreen() {
   const { data, error, loading, unavailable, reload } = useLoad(getCustomers);
@@ -41,7 +43,7 @@ export default function CustomersScreen() {
             <button
               data-part="customer-row"
               onClick={() => openSheet(c)}
-              aria-label={`${c.name}, ${c.owedKobo > 0 ? `owes ${formatKobo(c.owedKobo)}` : "owes nothing"}, ${c.phone ? `phone ${phoneText(c.phone)}` : "no phone number"}. Edit`}
+              aria-label={`${c.name}, ${c.owedKobo > 0 ? `owes ${formatKobo(c.owedKobo)}` : "owes nothing"}, ${c.phone ? `phone ${phoneText(c.phone)}, permission given` : "no phone number"}. Edit`}
               className="flex min-h-[76px] w-full items-center gap-3 rounded-card px-[18px] py-3 text-left transition duration-150 hover:bg-page active:scale-[0.98]"
             >
               <Avatar name={c.name} />
@@ -50,6 +52,11 @@ export default function CustomersScreen() {
                 <span className="inline-flex items-center gap-1 text-sm whitespace-nowrap text-muted [&_svg]:size-3.5 [&_svg]:shrink-0">
                   <Phone aria-hidden="true" /> {c.phone ? phoneText(c.phone) : "No number"}
                 </span>
+                {c.phone && (
+                  <span data-part="consent-flag" className="mt-1">
+                    <Pill tone="blue">Permission given</Pill>
+                  </span>
+                )}
               </span>
               <span className="grid justify-items-end">
                 {c.owedKobo > 0 ? (
@@ -102,6 +109,7 @@ function CustomerForm({ customer, onSaved }) {
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [review, setReview] = useState(false); // proposed, waiting for the confirm tap
 
   // A number is optional (a customer can be saved by name alone). Saving one
   // needs the permission box ticked, and changing an existing customer needs one.
@@ -110,9 +118,13 @@ function CustomerForm({ customer, onSaved }) {
   const ready = name.trim() && phoneOk && (isNew || hasPhone) && (!hasPhone || consent) && !busy;
   const why = !isNew && !hasPhone ? "Type a number to save a change." : hasPhone && !consent ? "Tick the permission box to save a number." : null;
 
-  async function save(e) {
+  // Step one proposes: nothing is sent until Confirm.
+  function propose(e) {
     e.preventDefault();
-    if (!ready) return;
+    if (ready) setReview(true);
+  }
+
+  async function save() {
     setBusy(true);
     setError(null);
     try {
@@ -124,8 +136,41 @@ function CustomerForm({ customer, onSaved }) {
     }
   }
 
+  if (review)
+    return (
+      <div className="grid gap-4" data-part="customer-review">
+        <p className="text-muted">Check this before it is saved.</p>
+        <Card as="dl" className="grid gap-2">
+          <div>
+            <dt className="text-sm text-muted">Name</dt>
+            <dd className="font-bold">{name.trim()}</dd>
+          </div>
+          <div>
+            <dt className="text-sm text-muted">Phone number</dt>
+            <dd className="font-bold">{hasPhone ? phoneText(phone) : "None"}</dd>
+          </div>
+          {hasPhone && (
+            <div className="flex items-center gap-2 text-sm text-muted">
+              <ShieldCheck aria-hidden="true" className="size-4 shrink-0" /> Permission to store the number confirmed
+            </div>
+          )}
+        </Card>
+        {error && (
+          <p role="alert" className="rounded-2xl bg-slate px-4 py-3">
+            {error}
+          </p>
+        )}
+        <Button size="lg" onClick={save} disabled={busy}>
+          {busy ? "Saving…" : "Confirm and save"}
+        </Button>
+        <Button variant="quiet" onClick={() => setReview(false)} disabled={busy}>
+          Go back and change
+        </Button>
+      </div>
+    );
+
   return (
-    <form className="grid gap-4" onSubmit={save} data-part="customer-form">
+    <form className="grid gap-4" onSubmit={propose} data-part="customer-form">
       <Field id="customer-name" label="Name">
         <input
           id="customer-name"
@@ -174,7 +219,7 @@ function CustomerForm({ customer, onSaved }) {
         </p>
       )}
       <Button size="lg" disabled={!ready} aria-describedby={why ? "consent-why" : undefined}>
-        {busy ? "Saving…" : "Save customer"}
+        Review customer
       </Button>
       {why && (
         <p id="consent-why" className="-mt-2 text-center text-sm text-muted">

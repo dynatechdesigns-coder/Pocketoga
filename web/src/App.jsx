@@ -107,7 +107,7 @@ export default function App({ shop, onExit }) {
         {tab === "record" && <RecordScreen shop={shop} intent={intent} onGo={go} />}
         {tab === "report" && <ReportScreen shop={shop} onGo={go} />}
         {tab === "sales" && <SalesScreen shop={shop} onGo={go} />}
-        {tab === "products" && <ProductsScreen />}
+        {tab === "products" && <ProductsScreen onGo={go} />}
         {tab === "expenses" && <ExpensesScreen onGo={go} />}
         {tab === "customers" && <CustomersScreen />}
         {tab === "ledger" && <LedgerScreen shop={shop} intent={intent} onGo={go} />}

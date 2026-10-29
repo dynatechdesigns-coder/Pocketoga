@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CalendarX2, Check, ChevronRight, Copy, MessageCircle, Search, Users } from "lucide-react";
 import { getCustomers, getDebts, getPromises } from "../api.js";
-import { ageText, dueText, formatDueDay, formatKobo, phoneText, sameCustomer } from "../format.js";
+import { ageText, dueText, formatDueDay, formatKobo, sameCustomer } from "../format.js";
 import { draftReminder, TONES, whatsappLink } from "../reminders.js";
 import { Avatar, Button, Card, EmptyState, ErrorState, Pill, ScreenHeader, SectionTitle, Sheet, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
 
@@ -228,7 +228,7 @@ function CustomerDetail({ row, debt, promises, phone }) {
       <SectionTitle as="h3">Send a reminder</SectionTitle>
       <p data-part="send-to" className="text-sm text-muted">
         Pick a tone. You send it from your own WhatsApp; PocketOga never sends anything.{" "}
-        {phone ? `WhatsApp opens to ${phoneText(phone)}.` : "No number saved, so WhatsApp will ask who to send it to."}
+        {phone ? "WhatsApp opens to this customer's saved number." : "No number saved, so WhatsApp will ask who to send it to."}
       </p>
       {TONES.map((t) => (
         <Reminder key={t.key} label={t.label} text={draftReminder(t.key, row)} phone={phone} />
