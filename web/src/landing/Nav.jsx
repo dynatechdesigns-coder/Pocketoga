@@ -12,7 +12,7 @@ const LINKS = [
 // Sticky nav: clear at the very top, white with a light blur once the page
 // scrolls. Phones get the logo, theme toggle and button, with the section
 // links behind a small menu button.
-export default function Nav({ onDemo }) {
+export default function Nav({ onDemo, onLogin }) {
   const [scrolled, setScrolled] = useState(false);
   const [open, setOpen] = useState(false);
   const menu = useRef(null);
@@ -24,16 +24,19 @@ export default function Nav({ onDemo }) {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  // The menu closes on Escape or a tap outside it.
+  // The menu closes on Escape, a tap outside it, or any scroll.
   useEffect(() => {
     if (!open) return;
-    const onKey = (e) => e.key === "Escape" && setOpen(false);
-    const onDown = (e) => !menu.current?.contains(e.target) && setOpen(false);
+    const close = () => setOpen(false);
+    const onKey = (e) => e.key === "Escape" && close();
+    const onDown = (e) => !menu.current?.contains(e.target) && close();
     document.addEventListener("keydown", onKey);
     document.addEventListener("pointerdown", onDown);
+    window.addEventListener("scroll", close, { passive: true });
     return () => {
       document.removeEventListener("keydown", onKey);
       document.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("scroll", close);
     };
   }, [open]);
 
@@ -46,17 +49,17 @@ export default function Nav({ onDemo }) {
         scrolled ? "border-line bg-surface/85 backdrop-blur-md" : "border-transparent bg-surface",
       )}
     >
-      <Container className="flex h-16 items-center justify-between gap-2">
+      <Container className="flex h-16 items-center justify-between gap-2 max-[399px]:gap-1.5">
         <a
           href="/"
           aria-label="PocketOga home"
-          className="flex min-h-12 min-w-12 items-center gap-2.5 text-lg font-extrabold tracking-tight text-ink no-underline"
+          className="flex min-h-12 shrink-0 items-center gap-2 max-[399px]:gap-1.5 text-lg font-extrabold tracking-tight text-ink no-underline max-[399px]:text-base"
         >
-          <img src="/icon.svg" alt="" width="36" height="36" className="size-9 rounded-[11px]" />
-          <span className="max-[399px]:sr-only">PocketOga</span>
+          <img src="/icon.svg" alt="" width="36" height="36" className="size-9 shrink-0 rounded-[11px]" />
+          <span>PocketOga</span>
         </a>
 
-        <nav aria-label="Sections" className="hidden items-center gap-1 md:flex">
+        <nav aria-label="Sections" className="hidden items-center gap-1 lg:flex">
           {LINKS.map(([href, label]) => (
             <a
               key={href}
@@ -68,24 +71,28 @@ export default function Nav({ onDemo }) {
           ))}
         </nav>
 
-        <div className="flex items-center gap-2">
-          <div ref={menu} className="relative md:hidden">
+        <div className="flex shrink-0 items-center gap-2 max-[399px]:gap-1.5">
+          <div ref={menu} className="lg:hidden">
             <button
               data-part="menu-button"
               aria-expanded={open}
               aria-controls="landing-menu"
               aria-label={open ? "Close menu" : "Open menu"}
               onClick={() => setOpen((o) => !o)}
-              className="grid size-12 place-items-center rounded-full border border-line bg-card text-ink [&_svg]:size-[22px]"
+              className="grid size-12 place-items-center rounded-full border border-line bg-card text-ink max-[399px]:size-11 [&_svg]:size-[22px]"
             >
               {open ? <X aria-hidden="true" /> : <Menu aria-hidden="true" />}
             </button>
             {open && (
-              <nav
-                id="landing-menu"
-                aria-label="Sections"
-                className="absolute right-0 mt-2 grid w-52 rounded-2xl border border-line bg-card p-2 shadow-lift"
-              >
+              <>
+                {/* Dims the page below the header; a tap on it closes the menu. */}
+                <div aria-hidden="true" data-part="menu-backdrop" onClick={() => setOpen(false)} className="absolute inset-x-0 top-full h-dvh bg-black/40" />
+                {/* Inside the page gutter, full width, below the header. */}
+                <nav
+                  id="landing-menu"
+                  aria-label="Sections"
+                  className="absolute inset-x-5 top-full mt-2 md:inset-x-8 grid max-h-[calc(100dvh-5rem)] overflow-y-auto rounded-2xl border border-line bg-card p-2 shadow-lift"
+                >
                 {LINKS.map(([href, label]) => (
                   <a
                     key={href}
@@ -96,18 +103,40 @@ export default function Nav({ onDemo }) {
                     {label}
                   </a>
                 ))}
-              </nav>
+                <button
+                  type="button"
+                  data-part="menu-login"
+                  onClick={() => {
+                    setOpen(false);
+                    onLogin();
+                  }}
+                  className="flex min-h-12 items-center rounded-xl px-3 text-left font-extrabold text-link hover:bg-ink/5"
+                >
+                  Open my shop
+                </button>
+                </nav>
+              </>
             )}
           </div>
-          <ThemeToggle />
+          <ThemeToggle className="max-[399px]:size-11" />
+          <Button
+            data-part="nav-login"
+            variant="outline"
+            size="sm"
+            className="w-auto whitespace-nowrap max-sm:hidden"
+            onClick={onLogin}
+          >
+            Open my shop
+          </Button>
           <Button
             data-part="nav-demo"
             variant="gradient"
             size="sm"
-            className="w-auto whitespace-nowrap max-[399px]:px-3 max-[399px]:text-sm"
+            className="w-auto whitespace-nowrap max-[399px]:px-2.5 max-[399px]:text-sm"
             onClick={onDemo}
           >
-            Try the demo shop
+            <span className="max-[399px]:hidden">Try the demo shop</span>
+            <span className="min-[400px]:hidden">Try demo</span>
           </Button>
         </div>
       </Container>
