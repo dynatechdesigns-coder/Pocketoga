@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { CalendarX2, Check, ChevronRight, Copy, MessageCircle, Search, Users } from "lucide-react";
-import { getDebts, getPromises } from "../api.js";
-import { ageText, dueText, formatDueDay, formatKobo, sameCustomer } from "../format.js";
+import { getCustomers, getDebts, getPromises } from "../api.js";
+import { ageText, dueText, formatDueDay, formatKobo, phoneText, sameCustomer } from "../format.js";
 import { draftReminder, TONES, whatsappLink } from "../reminders.js";
 import { Avatar, Button, Card, EmptyState, ErrorState, Pill, ScreenHeader, SectionTitle, Sheet, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
 
-// Both reads in one go: the ranked chase list and every promise.
+// All reads in one go: the ranked chase list, every promise, and customers
+// (for phone numbers stored with consent; optional, so Debts still works
+// without them and WhatsApp then asks who to send to).
 async function loadDebts() {
-  const [{ debts, chase }, promises] = await Promise.all([getDebts(), getPromises()]);
-  return { debts, chase, promises };
+  const [{ debts, chase }, promises, customers] = await Promise.all([getDebts(), getPromises(), getCustomers().catch(() => [])]);
+  return { debts, chase, promises, customers };
 }
 
 // The pill a customer row shows: the next open promise, else Broken if a
@@ -146,6 +148,7 @@ export default function DebtsScreen({ intent, onGo }) {
             row={r}
             debt={data.debts.find((d) => sameCustomer(d.customer, r.customer))}
             promises={promisesOf(r.customer)}
+            phone={data.customers.find((c) => sameCustomer(c.name, r.customer))?.phone ?? null}
           />
         )}
       </Sheet>
@@ -164,7 +167,7 @@ function Stat({ label, children }) {
   );
 }
 
-function CustomerDetail({ row, debt, promises }) {
+function CustomerDetail({ row, debt, promises, phone }) {
   const resolved = promises.filter((p) => p.status === "kept" || p.status === "broken");
   const kept = resolved.filter((p) => p.status === "kept").length;
   const past = [...promises].sort((a, b) => (a.due_date < b.due_date ? 1 : -1));
@@ -223,15 +226,18 @@ function CustomerDetail({ row, debt, promises }) {
       )}
 
       <SectionTitle as="h3">Send a reminder</SectionTitle>
-      <p className="text-sm text-muted">Pick a tone. You send it from your own WhatsApp; PocketOga never sends anything.</p>
+      <p data-part="send-to" className="text-sm text-muted">
+        Pick a tone. You send it from your own WhatsApp; PocketOga never sends anything.{" "}
+        {phone ? `WhatsApp opens to ${phoneText(phone)}.` : "No number saved, so WhatsApp will ask who to send it to."}
+      </p>
       {TONES.map((t) => (
-        <Reminder key={t.key} label={t.label} text={draftReminder(t.key, row)} />
+        <Reminder key={t.key} label={t.label} text={draftReminder(t.key, row)} phone={phone} />
       ))}
     </div>
   );
 }
 
-function Reminder({ label, text }) {
+function Reminder({ label, text, phone }) {
   const [copied, setCopied] = useState(false);
   const id = `draft-${label}`;
 
@@ -263,7 +269,7 @@ function Reminder({ label, text }) {
         <Button
           as="a"
           size="sm"
-          href={whatsappLink(text)}
+          href={whatsappLink(text, phone)}
           target="_blank"
           rel="noopener noreferrer"
           aria-label={`Open ${label.toLowerCase()} reminder in WhatsApp`}

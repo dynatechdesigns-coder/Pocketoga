@@ -8,6 +8,7 @@ import { createPortal } from "react-dom";
 import { Moon, Sun, X } from "lucide-react";
 import { friendlyError } from "./api.js";
 import { isDark, setTheme } from "./theme.js";
+export { setTheme };
 
 // Joins class names, skipping empty ones.
 export const cx = (...parts) => parts.filter(Boolean).join(" ");
@@ -158,16 +159,63 @@ export function Avatar({ name, size = "md" }) {
   );
 }
 
+// --- PeriodTabs ------------------------------------------------------------------
+
+// Today / Week / Month / Year as one segmented control.
+export function PeriodTabs({ periods, value, onChange, label = "Period" }) {
+  return (
+    <div role="group" aria-label={label} data-part="periods" className="grid grid-flow-col auto-cols-fr gap-1 rounded-full border border-line bg-card p-1 shadow-soft">
+      {periods.map((p) => (
+        <button
+          key={p.key}
+          data-part="period"
+          aria-pressed={value === p.key}
+          onClick={() => onChange(p.key)}
+          className="min-h-12 rounded-full text-[0.9375rem] font-bold text-muted transition-colors aria-pressed:bg-primary aria-pressed:text-white"
+        >
+          {p.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// --- Field ------------------------------------------------------------------------
+
+// A labelled form control with an optional hint under the label.
+export function Field({ id, label, hint, children }) {
+  return (
+    <div className="grid gap-1.5">
+      <label htmlFor={id} className="font-bold">
+        {label}
+      </label>
+      {hint && (
+        <p id={`${id}-hint`} className="-mt-1 text-sm text-muted">
+          {hint}
+        </p>
+      )}
+      {children}
+    </div>
+  );
+}
+
 // --- ThemeToggle ----------------------------------------------------------------
+
+// Whether dark mode is on, kept current when any control changes it.
+export function useDark() {
+  const [dark, setDark] = useState(isDark);
+  useEffect(() => {
+    const sync = () => setDark(isDark());
+    window.addEventListener("pocketoga:theme", sync);
+    return () => window.removeEventListener("pocketoga:theme", sync);
+  }, []);
+  return dark;
+}
 
 // Sun/Moon button: switches light and dark and remembers it on this device.
 export function ThemeToggle({ className }) {
-  const [dark, setDark] = useState(isDark);
-
-  function toggle() {
-    setTheme(dark ? "light" : "dark");
-    setDark(isDark());
-  }
+  const dark = useDark();
+  const toggle = () => setTheme(dark ? "light" : "dark");
 
   return (
     <button

@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { ArrowDownLeft, Filter, PackagePlus, RotateCcw, ScrollText, ShieldAlert, ShieldCheck, ShoppingBag } from "lucide-react";
-import { getLedger } from "../api.js";
-import { dayLabel, formatKobo, itemText, plural, timeLabel, typeLabel } from "../format.js";
-import { Button, Card, EmptyState, ErrorState, IconCircle, ScreenHeader, Skeleton, cx, rise, useLoad } from "../ui.jsx";
+import { ArrowDownLeft, Check, Filter, PackagePlus, Pencil, RotateCcw, ScrollText, ShieldAlert, ShieldCheck, ShoppingBag } from "lucide-react";
+import { correctEntry, friendlyError, getLedger } from "../api.js";
+import { dayLabel, formatKobo, itemText, nairaInput, parseNaira, plural, timeLabel, typeLabel } from "../format.js";
+import { Button, Card, EmptyState, ErrorState, Field, IconCircle, Pill, ScreenHeader, Sheet, Skeleton, cx, rise, useLoad } from "../ui.jsx";
+import { inputClass } from "./ConfirmCard.jsx";
 
 // Icon and tint for each entry type.
 const KIND = {
@@ -17,12 +18,25 @@ const KIND = {
 const norm = (v) => String(v ?? "").trim().toLowerCase();
 const isSaleOf = (e, f) => e.type === "sale" && norm(e.item) === f.item && (norm(e.unit) || null) === (f.unit ?? null);
 
+// The id of the entry that replaced this one, or null. Newer servers send
+// correctedById; otherwise the corrects_id links say the same.
+const supersededBy = (e, all) => (e.correctedById !== undefined ? e.correctedById : all.find((x) => x.corrects_id === e.id)?.id ?? null);
+
 // Saved entries grouped by day, newest first, under the hash-chain check
 // from GET /ledger. `intent.item` (from "Margin lost") shows only the sales
-// of that item until "Show all".
+// of that item until "Show all". "Fix this entry" adds a correction entry
+// (POST /ledger/:id/correct); saved entries are never edited.
 export default function LedgerScreen({ shop, intent, onGo }) {
   const { data, error, loading, reload } = useLoad(getLedger);
   const [only, setOnly] = useState(intent?.item ? intent : null);
+  const [fixing, setFixing] = useState(null); // entry
+  const [shown, setShown] = useState(null); // kept while the sheet slides away
+  const [added, setAdded] = useState(null); // the correction just added
+
+  function openFix(e) {
+    setShown(e);
+    setFixing(e);
+  }
 
   return (
     <section>
@@ -34,18 +48,35 @@ export default function LedgerScreen({ shop, intent, onGo }) {
       ) : (
         <LedgerBody
           entries={only ? data.entries.filter((e) => isSaleOf(e, only)) : data.entries}
+          all={data.entries}
           verify={data.verify}
           only={only}
           onShowAll={() => setOnly(null)}
+          added={added}
+          onFix={openFix}
           shop={shop}
           onGo={onGo}
         />
       )}
+      <Sheet open={!!fixing} onClose={() => setFixing(null)} title="Fix this entry">
+        {shown && (
+          <FixForm
+            key={shown.id}
+            entry={shown}
+            shop={shop}
+            onDone={(entry) => {
+              setAdded(entry);
+              setFixing(null);
+              reload();
+            }}
+          />
+        )}
+      </Sheet>
     </section>
   );
 }
 
-function LedgerBody({ entries, verify, only, onShowAll, shop, onGo }) {
+function LedgerBody({ entries, all, verify, only, onShowAll, added, onFix, shop, onGo }) {
   // Group newest first by Lagos day.
   const days = [];
   for (const e of [...entries].reverse()) {
@@ -77,6 +108,12 @@ function LedgerBody({ entries, verify, only, onShowAll, shop, onGo }) {
         </div>
       )}
 
+      {added && (
+        <p data-part="fix-added" role="status" className="flex items-center gap-2 rounded-2xl border border-line bg-card px-4 py-3 font-semibold [&_svg]:size-5 [&_svg]:shrink-0">
+          <Check aria-hidden="true" /> Correction #{added.seq} added. The original entry is kept and marked Corrected.
+        </p>
+      )}
+
       {only && (
         <div data-part="filter" className="flex items-center justify-between gap-3 rounded-2xl border-[1.5px] border-line bg-card py-1.5 pr-1.5 pl-4">
           <span className="flex min-w-0 items-center gap-2 font-bold [&_svg]:size-5 [&_svg]:shrink-0">
@@ -102,25 +139,44 @@ function LedgerBody({ entries, verify, only, onShowAll, shop, onGo }) {
               {d.rows.map((e) => {
                 const [icon, tone] = KIND[e.type] ?? [ScrollText, "slate"];
                 const what = itemText(e);
+                const replaced = supersededBy(e, all) != null;
+                const fixes = e.corrects_id != null ? all.find((x) => x.id === e.corrects_id) : null;
                 return (
-                  <li key={e.id} data-part="entry-row" data-kind={e.type} className="flex min-h-[68px] items-center gap-3 py-2.5">
-                    <IconCircle icon={icon} tone={tone} />
-                    <span className="grid min-w-0 flex-1">
-                      <span className="truncate font-bold">{e.customer === shop.id ? "Your shop" : e.customer}</span>
-                      <span className="text-[0.8125rem] text-muted">
-                        {typeLabel(e.type)}
-                        {what && ` · ${what}`}
+                  <li key={e.id} data-part="entry-row" data-kind={e.type} data-corrected={replaced} className="grid gap-0.5 py-2.5">
+                    <div className="flex min-h-12 items-center gap-3">
+                      <IconCircle icon={icon} tone={tone} />
+                      <span className="grid min-w-0 flex-1">
+                        <span className="truncate font-bold">{e.customer === shop.id ? "Your shop" : e.customer}</span>
+                        <span className="text-[0.8125rem] text-muted">
+                          {typeLabel(e.type)}
+                          {what && ` · ${what}`}
+                        </span>
                       </span>
-                    </span>
-                    <span className="grid justify-items-end">
-                      <span className={cx("font-extrabold whitespace-nowrap tabular-nums", e.type === "payment" && "text-blue-ink")}>
-                        {e.type === "payment" ? "+" : ""}
-                        {formatKobo(e.amount_kobo)}
+                      <span className="grid justify-items-end">
+                        <span className={cx("font-extrabold whitespace-nowrap tabular-nums", e.type === "payment" && "text-blue-ink", replaced && "text-muted line-through")}>
+                          {e.type === "payment" ? "+" : ""}
+                          {formatKobo(e.amount_kobo)}
+                        </span>
+                        <span className="text-[0.8125rem] whitespace-nowrap text-muted tabular-nums">
+                          {timeLabel(e.created_at)} · #{e.seq}
+                        </span>
                       </span>
-                      <span className="text-[0.8125rem] whitespace-nowrap text-muted tabular-nums">
-                        {timeLabel(e.created_at)} · #{e.seq}
+                    </div>
+                    <div className="flex min-h-12 items-center justify-between gap-2 pl-14">
+                      <span className="text-[0.8125rem] font-semibold text-muted">
+                        {replaced ? <Pill tone="slate">Corrected</Pill> : fixes ? `Corrects #${fixes.seq}` : ""}
                       </span>
-                    </span>
+                      {!replaced && (
+                        <button
+                          data-part="fix-entry"
+                          onClick={() => onFix(e)}
+                          aria-label={`Fix this entry, #${e.seq}`}
+                          className="-mr-3 inline-flex min-h-12 shrink-0 items-center gap-1.5 rounded-full px-3 text-sm font-bold text-link transition-transform active:scale-96 [&_svg]:size-4"
+                        >
+                          <Pencil aria-hidden="true" /> Fix this entry
+                        </button>
+                      )}
+                    </div>
                   </li>
                 );
               })}
@@ -129,5 +185,103 @@ function LedgerBody({ entries, verify, only, onShowAll, shop, onGo }) {
         ))
       )}
     </div>
+  );
+}
+
+// The fix sheet. Fields start as the entry is; only what the trader changes
+// is sent, with a reason. The result is a new correction entry.
+function FixForm({ entry, shop, onDone }) {
+  const goods = entry.type === "sale" || entry.type === "restock" || (entry.type === "correction" && !!entry.item);
+  const start = {
+    amount: nairaInput(entry.amount_kobo),
+    customer: entry.customer === shop.id ? "" : entry.customer ?? "",
+    item: entry.item ?? "",
+    quantity: entry.quantity == null ? "" : String(entry.quantity),
+    unit: entry.unit ?? "",
+  };
+  const [v, setV] = useState(start);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const set = (k) => (e) => setV((x) => ({ ...x, [k]: e.target.value }));
+
+  const amountKobo = parseNaira(v.amount);
+  const q = v.quantity.trim();
+  const quantity = q === "" ? null : /^\d+$/.test(q) && Number(q) > 0 ? Number(q) : NaN;
+  const badAmount = amountKobo === null || amountKobo === 0;
+  const bad = badAmount || Number.isNaN(quantity);
+
+  // Only what changed is sent.
+  const changes = {};
+  if (v.amount !== start.amount && !badAmount) changes.amountKobo = amountKobo;
+  if (v.customer.trim() && v.customer.trim() !== start.customer) changes.customer = v.customer.trim();
+  if (goods && v.item.trim() !== start.item) changes.item = v.item.trim() || null;
+  if (goods && q !== start.quantity && !Number.isNaN(quantity)) changes.quantity = quantity;
+  if (goods && v.unit.trim() !== start.unit) changes.unit = v.unit.trim() || null;
+  const changed = Object.keys(changes).length > 0;
+  const ready = changed && reason.trim() && !bad && !busy;
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!ready) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await correctEntry(entry.id, { ...changes, reason: reason.trim() });
+      onDone(res.entry);
+    } catch (err) {
+      setError(friendlyError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="grid gap-4" onSubmit={submit} data-part="fix-form">
+      <p data-part="fix-explainer" className="rounded-2xl border-[1.5px] border-line bg-card px-4 py-3">
+        <strong>Fixing adds a correction; it never edits.</strong> Entry #{entry.seq} stays in your records exactly as saved, marked
+        Corrected, and a new entry with the right details takes its place in your totals.
+      </p>
+      <Field id="fix-amount" label="Amount (₦)">
+        <input id="fix-amount" inputMode="decimal" autoComplete="off" value={v.amount} onChange={set("amount")} className={inputClass} aria-invalid={badAmount} />
+      </Field>
+      <Field id="fix-customer" label={entry.type === "restock" ? "Supplier" : "Customer"}>
+        <input id="fix-customer" autoComplete="off" value={v.customer} onChange={set("customer")} placeholder={entry.customer === shop.id ? "Your shop" : ""} className={inputClass} />
+      </Field>
+      {goods && (
+        <>
+          <Field id="fix-item" label="Item">
+            <input id="fix-item" autoComplete="off" value={v.item} onChange={set("item")} className={inputClass} />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field id="fix-quantity" label="Quantity">
+              <input id="fix-quantity" inputMode="numeric" autoComplete="off" value={v.quantity} onChange={set("quantity")} className={inputClass} aria-invalid={Number.isNaN(quantity)} />
+            </Field>
+            <Field id="fix-unit" label="Unit">
+              <input id="fix-unit" autoComplete="off" value={v.unit} onChange={set("unit")} placeholder="e.g. bag" className={inputClass} />
+            </Field>
+          </div>
+        </>
+      )}
+      <Field id="fix-reason" label="Reason for the fix" hint="Kept with the correction, e.g. “wrong price, it was 45k”.">
+        <textarea id="fix-reason" rows={2} value={reason} onChange={(e) => setReason(e.target.value)} className={inputClass} aria-describedby="fix-reason-hint" />
+      </Field>
+      {bad && (
+        <p role="alert" className="font-semibold text-coral-ink">
+          Check the amount and quantity: plain numbers, amount above zero.
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="rounded-2xl bg-slate px-4 py-3">
+          {error}
+        </p>
+      )}
+      <Button size="lg" disabled={!ready} aria-describedby="fix-why">
+        {busy ? "Adding…" : "Add correction"}
+      </Button>
+      <p id="fix-why" className="-mt-2 text-center text-sm text-muted">
+        {!changed ? "Change at least one detail above." : !reason.trim() ? "Give a reason to add the correction." : "Nothing is deleted or edited."}
+      </p>
+    </form>
   );
 }

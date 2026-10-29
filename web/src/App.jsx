@@ -1,15 +1,19 @@
 import { useState } from "react";
-import { FileText, Mic, ScrollText, Users, Wallet } from "lucide-react";
+import { BarChart3, ChevronRight, Ellipsis, Mic, Package, Receipt, ScrollText, Settings, ShoppingBag, Users, UserRound, Wallet } from "lucide-react";
 import { setShop } from "./api.js";
 import { greeting } from "./format.js";
-import { Avatar, ThemeToggle, cx } from "./ui.jsx";
+import { Avatar, IconCircle, Sheet, ThemeToggle, cx } from "./ui.jsx";
 import Home from "./screens/Home.jsx";
 import RecordScreen from "./screens/RecordScreen.jsx";
 import MoneyScreen from "./screens/MoneyScreen.jsx";
 import DebtsScreen from "./screens/DebtsScreen.jsx";
 import LedgerScreen from "./screens/LedgerScreen.jsx";
 import ReportScreen from "./screens/ReportScreen.jsx";
-import AccountSheet from "./screens/AccountSheet.jsx";
+import SalesScreen from "./screens/SalesScreen.jsx";
+import ProductsScreen from "./screens/ProductsScreen.jsx";
+import ExpensesScreen from "./screens/ExpensesScreen.jsx";
+import CustomersScreen from "./screens/CustomersScreen.jsx";
+import SettingsScreen from "./screens/SettingsScreen.jsx";
 
 // The open shop ({ id, name, demo }) is remembered on this device.
 const SHOP_KEY = "pocketoga.shop";
@@ -39,10 +43,17 @@ const LEFT = [
   { key: "money", label: "Money", icon: Wallet },
   { key: "debts", label: "Debts", icon: Users },
 ];
-const RIGHT = [
-  { key: "ledger", label: "Ledger", icon: ScrollText },
-  { key: "report", label: "Report", icon: FileText },
+
+// Screens behind the More sheet, in the order the sheet lists them.
+const MORE = [
+  { key: "sales", label: "Sales", icon: ShoppingBag, hint: "Every sale, by day" },
+  { key: "products", label: "Products", icon: Package, hint: "Stock and prices" },
+  { key: "expenses", label: "Expenses", icon: Receipt, hint: "What the shop spends" },
+  { key: "customers", label: "Customers", icon: UserRound, hint: "Phone numbers and balances" },
+  { key: "ledger", label: "Ledger", icon: ScrollText, hint: "All records, and fixes" },
+  { key: "settings", label: "Settings", icon: Settings, hint: "Theme and shop" },
 ];
+const MORE_KEYS = MORE.map((m) => m.key);
 
 // Every slot has the same shape (24px icon row, then the label, pinned to
 // the bottom), so all labels and icons share one baseline.
@@ -55,7 +66,7 @@ export default function App() {
   // "broken" (debtors with a broken promise), { text } (pre-fill Record),
   // { item, unit, display } (Ledger: that item's sales).
   const [intent, setIntent] = useState(null);
-  const [account, setAccount] = useState(false);
+  const [more, setMore] = useState(false);
 
   // Tell the API layer which shop we are, before any screen makes a call.
   if (shop) setShop(shop.id);
@@ -67,13 +78,13 @@ export default function App() {
   }
 
   function exitShop() {
-    setAccount(false);
     saveShop(null);
     setShopState(null);
   }
 
   // Screens move between tabs with go("debts") or go("debts", "chase").
   function go(next, nextIntent = null) {
+    setMore(false);
     setIntent(nextIntent);
     setTab(next);
     window.scrollTo(0, 0);
@@ -87,22 +98,18 @@ export default function App() {
 
   if (!shop) return <Home onOpen={openShop} />;
 
-  const tabButton = (t) => {
-    const Icon = t.icon;
-    const active = tab === t.key;
-    return (
-      <button
-        key={t.key}
-        data-part="tab"
-        aria-current={active ? "page" : undefined}
-        onClick={() => go(t.key)}
-        className={cx(SLOT, "text-muted transition-colors aria-[current=page]:font-extrabold aria-[current=page]:text-link [&_svg]:size-6")}
-      >
-        <Icon aria-hidden="true" strokeWidth={active ? 2.2 : 1.75} />
-        <span data-part="tab-label">{t.label}</span>
-      </button>
-    );
-  };
+  const slot = ({ key, label, icon: Icon, active, onClick, part = "tab" }) => (
+    <button
+      key={key}
+      data-part={part}
+      aria-current={active ? "page" : undefined}
+      onClick={onClick}
+      className={cx(SLOT, "text-muted transition-colors aria-[current=page]:font-extrabold aria-[current=page]:text-link [&_svg]:size-6")}
+    >
+      <Icon aria-hidden="true" strokeWidth={active ? 2.2 : 1.75} />
+      <span data-part="tab-label">{label}</span>
+    </button>
+  );
 
   return (
     <div className="min-h-dvh">
@@ -115,8 +122,8 @@ export default function App() {
           <ThemeToggle />
           <button
             data-part="avatar-btn"
-            onClick={() => setAccount(true)}
-            aria-label={`Account for ${shop.name}`}
+            onClick={() => go("settings")}
+            aria-label={`Settings for ${shop.name}`}
             className="rounded-full shadow-soft transition-transform duration-150 active:scale-96"
           >
             <Avatar name={shop.name} size="btn" />
@@ -131,8 +138,13 @@ export default function App() {
         {tab === "money" && <MoneyScreen shop={shop} onGo={go} />}
         {tab === "debts" && <DebtsScreen intent={intent} onGo={go} />}
         {tab === "record" && <RecordScreen shop={shop} intent={intent} onGo={go} />}
-        {tab === "ledger" && <LedgerScreen shop={shop} intent={intent} onGo={go} />}
         {tab === "report" && <ReportScreen shop={shop} onGo={go} />}
+        {tab === "sales" && <SalesScreen shop={shop} onGo={go} />}
+        {tab === "products" && <ProductsScreen />}
+        {tab === "expenses" && <ExpensesScreen onGo={go} />}
+        {tab === "customers" && <CustomersScreen />}
+        {tab === "ledger" && <LedgerScreen shop={shop} intent={intent} onGo={go} />}
+        {tab === "settings" && <SettingsScreen shop={shop} onExit={exitShop} />}
       </main>
 
       <nav
@@ -141,7 +153,7 @@ export default function App() {
         className="fixed inset-x-0 bottom-0 z-20 mx-auto max-w-[600px] rounded-t-3xl border-t border-line bg-card/85 pb-[env(safe-area-inset-bottom)] shadow-bar backdrop-blur-xl md:bottom-3 md:rounded-3xl md:border"
       >
         <div className="grid grid-cols-5 px-2">
-          {LEFT.map(tabButton)}
+          {LEFT.map((t) => slot({ ...t, active: tab === t.key, onClick: () => go(t.key) }))}
           {/* The middle slot is one button: the gradient circle rides 28px
               above the dock's top edge, centred on the slot, and "Record"
               sits on the shared label baseline. */}
@@ -161,11 +173,32 @@ export default function App() {
             </span>
             <span data-part="tab-label">Record</span>
           </button>
-          {RIGHT.map(tabButton)}
+          {slot({ key: "report", label: "Reports", icon: BarChart3, active: tab === "report", onClick: () => go("report") })}
+          {slot({ key: "more", label: "More", icon: Ellipsis, active: MORE_KEYS.includes(tab), onClick: () => setMore(true) })}
         </div>
       </nav>
 
-      <AccountSheet open={account} shop={shop} onClose={() => setAccount(false)} onExit={exitShop} />
+      <Sheet open={more} onClose={() => setMore(false)} title="More">
+        <ul data-part="more-list" className="grid gap-2">
+          {MORE.map((m) => (
+            <li key={m.key}>
+              <button
+                data-part="more-item"
+                onClick={() => go(m.key)}
+                aria-current={tab === m.key ? "page" : undefined}
+                className="flex min-h-16 w-full items-center gap-3.5 rounded-card border border-line bg-card px-4 py-2.5 text-left shadow-soft transition-transform duration-150 active:scale-[0.98] aria-[current=page]:border-accent"
+              >
+                <IconCircle icon={m.icon} tone="lavender" />
+                <span className="grid flex-1">
+                  <span className="font-bold">{m.label}</span>
+                  <span className="text-sm text-muted">{m.hint}</span>
+                </span>
+                <ChevronRight aria-hidden="true" className="size-5 text-grey" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      </Sheet>
     </div>
   );
 }

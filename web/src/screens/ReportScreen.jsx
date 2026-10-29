@@ -1,31 +1,112 @@
-import { ArrowRight, CalendarX2, ChevronRight, PackageMinus, PartyPopper, Share2, TrendingDown } from "lucide-react";
-import { getReport } from "../api.js";
-import { formatKobo, plural } from "../format.js";
+import { useCallback, useState } from "react";
+import { ArrowDownLeft, ArrowRight, CalendarX2, ChevronRight, Package, PackageMinus, PartyPopper, Receipt, Share2, ShoppingBag, TrendingDown } from "lucide-react";
+import { getProfit, getReport } from "../api.js";
+import { PERIODS, formatKobo, plural } from "../format.js";
 import { reportText, shareText } from "../share.js";
-import { Button, Card, EmptyState, ErrorState, IconCircle, ScreenHeader, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
+import { Button, Card, EmptyState, ErrorState, IconCircle, PeriodTabs, ScreenHeader, SectionTitle, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
+import ProfitChart from "../ProfitChart.jsx";
 
 // How many leak categories need the trader's attention (Money shows the count).
 export const attentionCount = (report) =>
   (report.broken.count > 0 ? 1 : 0) + (report.shortfalls.length > 0 ? 1 : 0) + (report.belowCost.items.length > 0 ? 1 : 0);
 
-// Where money is leaking, from GET /report: one coral card per category,
-// each with one action that opens a screen or pre-fills a note. Categories
-// stay separate and are never added into one total — they overlap, so a sum
-// would count some naira twice.
+// Reports: what the shop made (GET /profit, by period) and, below it, where
+// money is leaking (GET /report). Profit is always "Estimated": it can only
+// count the cost of items that have a cost record. Sales and Collected stay
+// side by side and are never merged.
 export default function ReportScreen({ shop, onGo }) {
-  const { data: report, error, loading, reload } = useLoad(getReport);
+  const [period, setPeriod] = useState("today");
+  const loadProfit = useCallback(() => getProfit(period), [period]);
+  const profit = useLoad(loadProfit);
+  const leaks = useLoad(getReport);
 
   return (
     <section>
-      <ScreenHeader title="Where money is leaking" />
-      {loading && !report ? (
-        <Skeleton blocks={[176, 176, 176]} label="Loading report" />
-      ) : error ? (
-        <ErrorState message={error} onRetry={reload} />
-      ) : (
-        <ReportBody report={report} shop={shop} onGo={onGo} />
-      )}
+      <ScreenHeader title="Reports" />
+      <div className="grid gap-4">
+        <PeriodTabs periods={PERIODS} value={period} onChange={setPeriod} label="Report period" />
+        {profit.loading && !profit.data ? (
+          <Skeleton blocks={[104, 104, 120, 260]} label="Loading profit" />
+        ) : profit.error ? (
+          <ErrorState message={profit.error} onRetry={profit.reload} />
+        ) : (
+          <ProfitBody p={profit.data} period={period} busy={profit.loading} onGo={onGo} />
+        )}
+
+        <SectionTitle className="mt-4">Where money is leaking</SectionTitle>
+        {leaks.loading && !leaks.data ? (
+          <Skeleton blocks={[176, 176, 176]} label="Loading report" />
+        ) : leaks.error ? (
+          <ErrorState message={leaks.error} onRetry={leaks.reload} />
+        ) : (
+          <ReportBody report={leaks.data} shop={shop} onGo={onGo} />
+        )}
+      </div>
     </section>
+  );
+}
+
+const CHART_TITLE = { today: "Estimated profit by hour", week: "Estimated profit by day", month: "Estimated profit by week", year: "Estimated profit by month" };
+
+function ProfitBody({ p, period, busy, onGo }) {
+  const loss = p.estimatedProfitKobo < 0;
+  return (
+    <div className={cx("grid gap-4 transition-opacity", busy && "opacity-60")} aria-busy={busy}>
+      <div className="grid grid-cols-2 gap-3">
+        <Tile part="sales" icon={ShoppingBag} tone="lavender" label="Sales" kobo={p.salesKobo} />
+        <Tile part="collected" icon={ArrowDownLeft} tone="blue" label="Collected" kobo={p.collectedKobo} />
+        <Tile part="cogs" icon={Package} tone="slate" label="Cost of goods" kobo={p.cogsKobo} />
+        <Tile part="expenses" icon={Receipt} tone="slate" label="Expenses" kobo={p.expensesKobo} />
+      </div>
+
+      {/* Money in, so the brand gradient; a loss is coral. */}
+      <article
+        data-part="profit"
+        className={cx(
+          "grid gap-1 rounded-3xl p-5",
+          loss ? "border-[1.5px] border-coral bg-coral-soft text-coral-ink" : "bg-hero text-white shadow-lift"
+        )}
+      >
+        <p className="font-semibold">Estimated profit</p>
+        <p data-part="profit-figure" className="text-[2.25rem] leading-tight font-extrabold tracking-tight tabular-nums [overflow-wrap:anywhere]">
+          {formatKobo(p.estimatedProfitKobo)}
+        </p>
+        <p className="text-sm font-medium">Sales minus cost of goods and expenses. Collected is not part of this.</p>
+        {p.itemsWithoutCost > 0 && (
+          <button
+            data-part="no-cost"
+            onClick={() => onGo("products")}
+            className={cx(
+              "mt-2 inline-flex min-h-12 items-center justify-between gap-2 rounded-2xl px-4 text-left text-sm font-bold [&_svg]:size-5 [&_svg]:shrink-0",
+              loss ? "bg-card text-coral-ink" : "bg-frost text-white"
+            )}
+          >
+            <span>
+              No cost record for {plural(p.itemsWithoutCost, "item")}, so {p.itemsWithoutCost === 1 ? "its" : "their"} cost is not counted. Add cost prices
+            </span>
+            <ChevronRight aria-hidden="true" />
+          </button>
+        )}
+      </article>
+
+      <Card as="article" className="grid min-w-0 grid-cols-1 gap-3">
+        <h3 className="font-extrabold">{CHART_TITLE[period]}</h3>
+        <ProfitChart series={p.series} title={CHART_TITLE[period]} />
+      </Card>
+    </div>
+  );
+}
+
+function Tile({ part, icon, tone, label, kobo }) {
+  return (
+    <Card as="article" data-part={part} className="grid content-start gap-2 p-4">
+      <span className="flex items-center gap-2">
+        <IconCircle icon={icon} tone={tone} size="sm" />
+        <span className="text-sm font-bold">{label}</span>
+      </span>
+      {/* Sized to the tile so ₦22,343,000 fits on one line at 360px. */}
+      <span className={cx(figure, "text-[clamp(1rem,4.6vw,1.375rem)]")}>{formatKobo(kobo)}</span>
+    </Card>
   );
 }
 

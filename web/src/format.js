@@ -82,3 +82,49 @@ export const timeLabel = (iso) =>
 export const sameCustomer = (a, b) =>
   String(a ?? "").trim().toLowerCase().replace(/\s+/g, " ") ===
   String(b ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+
+// --- Typed amounts -------------------------------------------------------------
+
+// What the trader types in a ₦ field -> integer kobo, or null if it is not a
+// plain amount. "15,000" -> 1500000, "15000.5" -> 1500050. String work only,
+// never floats.
+export function parseNaira(text) {
+  const m = /^\s*₦?\s*(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?\s*$/.exec(String(text ?? ""));
+  if (!m) return null;
+  const naira = m[1].replace(/,/g, "");
+  if (naira.length > 12) return null;
+  const kobo = Number(naira) * 100 + Number((m[2] ?? "").padEnd(2, "0"));
+  return Number.isSafeInteger(kobo) ? kobo : null;
+}
+
+// Integer kobo -> the text a ₦ field starts with: 1500000 -> "15000", 1550 -> "15.50".
+export function nairaInput(kobo) {
+  if (!Number.isInteger(kobo)) return "";
+  const k = kobo % 100;
+  return `${Math.floor(kobo / 100)}${k ? "." + String(k).padStart(2, "0") : ""}`;
+}
+
+// --- Periods (Lagos calendar) ----------------------------------------------------
+
+export const PERIODS = [
+  { key: "today", label: "Today" },
+  { key: "week", label: "Week" },
+  { key: "month", label: "Month" },
+  { key: "year", label: "Year" },
+];
+
+// First Lagos day of the period, "YYYY-MM-DD". Weeks start on Monday.
+export function periodStartDay(period) {
+  const [y, m, d] = lagosToday().split("-").map(Number);
+  if (period === "month") return `${y}-${String(m).padStart(2, "0")}-01`;
+  if (period === "year") return `${y}-01-01`;
+  if (period !== "week") return lagosToday();
+  const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  return new Date(Date.UTC(y, m - 1, d - ((dow + 6) % 7))).toISOString().slice(0, 10);
+}
+
+// The Lagos day an entry was made, "YYYY-MM-DD".
+export const lagosDay = (iso) => dayKey(iso);
+
+// A phone number as written ("0803 000 0011", "+234 803…").
+export const phoneText = (phone) => String(phone ?? "").replace(/(\d{4})(\d{3})(\d{4})$/, "$1 $2 $3");

@@ -28,5 +28,15 @@ export function draftReminder(tone, { customer, owedKobo, ageDays }) {
   return TEMPLATES[tone](customer, formatKobo(owedKobo), ageWords(ageDays));
 }
 
-// wa.me with no number opens WhatsApp's contact picker with the text ready.
-export const whatsappLink = (text) => `https://wa.me/?text=${encodeURIComponent(text)}`;
+// A stored phone number in the international digits wa.me wants:
+// "0803 000 0011" -> "2348030000011". Null when it does not look like one.
+export function waNumber(phone) {
+  const digits = String(phone ?? "").replace(/\D/g, "");
+  if (/^0\d{10}$/.test(digits)) return "234" + digits.slice(1);
+  if (/^234\d{10}$/.test(digits)) return digits;
+  return digits.length >= 8 && digits.length <= 15 && String(phone).trim().startsWith("+") ? digits : null;
+}
+
+// wa.me straight to the customer's chat when we have their number (stored
+// with their permission); with no number WhatsApp opens its contact picker.
+export const whatsappLink = (text, phone) => `https://wa.me/${waNumber(phone) ?? ""}?text=${encodeURIComponent(text)}`;

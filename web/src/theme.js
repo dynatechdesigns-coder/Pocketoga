@@ -17,4 +17,6 @@ export function setTheme(theme) {
     document.documentElement.classList.toggle("dark", theme === "dark");
     document.querySelector('meta[name="theme-color"]').content = theme === "dark" ? "#0d0d1e" : "#f7f8fc";
   }
+  // Every theme control (header button, Settings) follows the change.
+  window.dispatchEvent(new Event("pocketoga:theme"));
 }

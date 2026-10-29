@@ -83,6 +83,8 @@ export async function getProposal(id) {
 // --- Read-only views ---------------------------------------------------------
 
 // GET /ledger -> { entries: rows ordered by seq, verify }
+// entries[].correctedById: id of the correction that replaced it, or null
+// (older servers leave it out; corrects_id links are used then).
 // verify: { ok: true, count } or { ok: false, brokenId, index, reason }
 export function getLedger() {
   return request("GET", "/ledger");
@@ -107,6 +109,59 @@ export async function getReport() {
   return (await request("GET", "/report")).report;
 }
 
+// --- Routes being built (scripts/mock-contract.mjs serves them in dev) --------
+
+// A 404 from these means the server does not have the route yet.
+async function newRoute(method, path, body) {
+  try {
+    return await request(method, path, body);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404 && /^not found$/i.test(err.message)) throw new ApiError(404, "not built");
+    throw err;
+  }
+}
+
+const periodQuery = (period) => `?period=${encodeURIComponent(period)}`;
+
+// GET /profit?period=today|week|month|year -> { period, from, to, salesKobo,
+//   collectedKobo, cogsKobo, expensesKobo, estimatedProfitKobo, itemsWithoutCost,
+//   series[]: { label, salesKobo, cogsKobo, expensesKobo, profitKobo } }
+export function getProfit(period) {
+  return newRoute("GET", "/profit" + periodQuery(period));
+}
+
+// GET /expenses?period=... -> { expenses[]: { id, createdAt, category, payee, amountKobo },
+//   byCategory[]: { category, amountKobo } }
+export function getExpenses(period) {
+  return newRoute("GET", "/expenses" + periodQuery(period));
+}
+
+// GET /products -> { products[]: { id, name, unit, sellPriceKobo, costPriceKobo, stockOnHand, lowStock } }
+export async function getProducts() {
+  return (await newRoute("GET", "/products")).products;
+}
+
+// POST /products/:id { sellPriceKobo?, costPriceKobo? } -> { product }
+export async function setProductPrices(id, prices) {
+  return (await newRoute("POST", `/products/${encodeURIComponent(id)}`, prices)).product;
+}
+
+// GET /customers -> { customers[]: { id, name, phone, owedKobo, lastActivityAt } }
+export async function getCustomers() {
+  return (await newRoute("GET", "/customers")).customers;
+}
+
+// POST /customers { name, phone, consent: true } -> { customer }
+export async function saveCustomer({ name, phone }) {
+  return (await newRoute("POST", "/customers", { name, phone, consent: true })).customer;
+}
+
+// POST /ledger/:id/correct { amountKobo?, customer?, item?, quantity?, unit?, reason }
+//   -> { entry, verify }. Adds a correction entry; the original is never edited.
+export function correctEntry(id, changes) {
+  return newRoute("POST", `/ledger/${encodeURIComponent(id)}/correct`, changes);
+}
+
 // Turns any error into one plain sentence for the trader.
 export function friendlyError(err) {
   if (!(err instanceof ApiError)) return "Something went wrong. Please try again.";
@@ -116,7 +171,9 @@ export function friendlyError(err) {
     case 403:
       return "This note belongs to another shop.";
     case 404:
-      return "We could not find that. Please try again.";
+      return err.message === "not built"
+        ? "This part needs the newer PocketOga server, which is still being built."
+        : "We could not find that. Please try again.";
     case 409:
       return err.message.includes("confirmed")
         ? "This note is already saved. To change it, record a new note."

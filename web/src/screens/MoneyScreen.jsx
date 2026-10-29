@@ -1,21 +1,28 @@
-import { ChevronRight, CircleCheck, Clock, HandCoins, Megaphone, Mic, PackagePlus, Share2, TriangleAlert, Users } from "lucide-react";
-import { getReport } from "../api.js";
+import { ChevronRight, CircleCheck, Clock, HandCoins, Megaphone, Mic, PackagePlus, Share2, ShieldAlert, ShieldCheck, TriangleAlert, Users } from "lucide-react";
+import { getLedger, getReport } from "../api.js";
 import { formatKobo, plural } from "../format.js";
 import { reportText, shareText } from "../share.js";
 import { Button, Card, ErrorState, IconCircle, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
 import { attentionCount } from "./ReportScreen.jsx";
 
+// The report, plus the ledger's own check of its hash chain for the chip.
+// The chip is optional: if the ledger cannot load, Money still shows.
+async function loadMoney() {
+  const [report, verify] = await Promise.all([getReport(), getLedger().then((l) => l.verify, () => null)]);
+  return { ...report, verify };
+}
+
 // Home, top to bottom: money in today (brand gradient), money owed (amber),
-// quick actions, and one row pointing at the Report when something leaks.
-// The leak cards themselves live on the Report screen.
+// quick actions, the records check, and one row pointing at Reports when
+// something leaks. The leak cards themselves live on Reports.
 export default function MoneyScreen({ shop, onGo }) {
-  const { data: report, error, loading, reload } = useLoad(getReport);
+  const { data: report, error, loading, reload } = useLoad(loadMoney);
 
   return (
     <section>
       <h1 className="sr-only">Money check</h1>
       {loading && !report ? (
-        <Skeleton blocks={[112, 172, 84, 68]} label="Loading money check" />
+        <Skeleton blocks={[112, 172, 84, 48, 56]} label="Loading money check" />
       ) : error ? (
         <ErrorState message={error} onRetry={reload} />
       ) : (
@@ -120,22 +127,46 @@ function MoneyBody({ report, shop, onGo }) {
         ))}
       </nav>
 
+      {report.verify && <VerifiedChip verify={report.verify} onOpen={() => onGo("ledger")} />}
+
       {attention > 0 ? (
         <button
           data-part="attention"
           onClick={() => onGo("report")}
-          {...rise(3, "flex min-h-14 w-full items-center gap-3 rounded-2xl border border-line bg-card px-4 py-2 text-left shadow-soft transition-transform duration-150 active:scale-[0.98]")}
+          {...rise(4, "flex min-h-14 w-full items-center gap-3 rounded-2xl border border-line bg-card px-4 py-2 text-left shadow-soft transition-transform duration-150 active:scale-[0.98]")}
         >
           <IconCircle icon={TriangleAlert} tone="rose" size="sm" />
           <span className="flex-1 font-bold">{attention === 1 ? "1 thing needs attention" : `${attention} things need attention`}</span>
           <ChevronRight aria-hidden="true" className="size-5 text-grey" />
         </button>
       ) : (
-        <p data-part="all-clear" {...rise(3, "flex min-h-14 items-center gap-3 px-1 font-semibold text-muted")}>
+        <p data-part="all-clear" {...rise(4, "flex min-h-14 items-center gap-3 px-1 font-semibold text-muted")}>
           <IconCircle icon={CircleCheck} tone="lavender" size="sm" />
           All clear: no broken promises, missing stock or sales below cost.
         </p>
       )}
+    </div>
+  );
+}
+
+// Teal only when the hash chain checks out; coral when records were changed.
+function VerifiedChip({ verify, onOpen }) {
+  const ok = verify.ok;
+  return (
+    <div {...rise(3, "flex")}>
+      <button
+        data-part="verified-chip"
+        data-tone={ok ? "teal" : "coral"}
+        onClick={onOpen}
+        className={cx(
+          "inline-flex min-h-12 items-center gap-2 rounded-full border-[1.5px] px-4 text-[0.9375rem] font-bold transition-transform duration-150 active:scale-96 [&_svg]:size-[18px] [&_svg]:shrink-0",
+          ok ? "border-teal bg-teal-soft text-teal-ink" : "border-coral bg-coral-soft text-coral-ink"
+        )}
+      >
+        {ok ? <ShieldCheck aria-hidden="true" /> : <ShieldAlert aria-hidden="true" />}
+        {ok ? "Records verified" : "Records changed — check the ledger"}
+        <ChevronRight aria-hidden="true" />
+      </button>
     </div>
   );
 }
