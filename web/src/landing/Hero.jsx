@@ -22,7 +22,7 @@ export default function Hero({ onDemo, onLogin }) {
     >
       <Container className="grid items-center gap-14 lg:grid-cols-[1fr_1.15fr] lg:gap-14">
         <div className="grid content-start justify-items-start gap-6">
-          <Pill {...rise(0)}>Built for Nigerian market traders</Pill>
+          <Pill {...rise(0)}>Made for market traders and small shops</Pill>
           <h1 id="hero-h" {...rise(1, "text-[2.375rem] leading-[1.08] font-extrabold tracking-tight md:text-[3.75rem] lg:text-[4.25rem]")}>
             Know where your shop{" "}
             <span className="relative isolate whitespace-nowrap after:absolute after:inset-x-0 after:bottom-[0.06em] after:-z-10 after:h-[0.28em] after:rounded-full after:bg-marigold/55 dark:after:bg-marigold/30 after:content-['']">

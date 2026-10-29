@@ -1,16 +1,16 @@
-import { Calculator, Link2, Sparkles } from "lucide-react";
-import ChainDemo from "./ChainDemo.jsx";
+import { Calculator, Lock, Sparkles } from "lucide-react";
+import LedgerPeek from "./LedgerPeek.jsx";
 import { Reveal } from "./motion.jsx";
 import { Section } from "./parts.jsx";
 
 const POINTS = [
   [Sparkles, "The AI only proposes", "It reads your voice note and suggests the entries. Nothing is saved until you tap Save."],
   [Calculator, "Plain code checks every number", "Totals, payments and what is still owed are worked out in code, not guessed."],
-  [Link2, "Locked in a chain", "Every entry is linked to the one before it. It can be corrected with a new entry, never erased."],
+  [Lock, "Nobody can change your records quietly", "Every sale you save is locked in. Made a mistake? Add a correction. The old line stays, so there is always a clear record of what happened."],
 ];
 
-// The deep violet section: who decides, and the hash chain showing a change
-// being caught. Two equal columns, both centred on the same line, so neither
+// The deep violet section: who decides, and a saved sale with its correction
+// under it. Two equal columns, both centred on the same line, so neither
 // hangs below the other. The section is a dark-colour island (see Section tone).
 export default function Trust() {
   return (
@@ -33,7 +33,7 @@ export default function Trust() {
           ))}
         </ul>
         <Reveal delay={120} className="lg:h-full">
-          <ChainDemo />
+          <LedgerPeek />
         </Reveal>
       </div>
       <Reveal as="p" data-part="accuracy-note" className="mt-12 border-t border-white/15 pt-6 text-[1.125rem] text-white/90">
