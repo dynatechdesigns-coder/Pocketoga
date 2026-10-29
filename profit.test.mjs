@@ -464,6 +464,64 @@ describe("profit maths", () => {
   });
 });
 
+describe("profit edge cases", () => {
+  it("an empty shop reports zeros for every figure in every period", () => {
+    for (const period of PROFIT_PERIODS) {
+      const out = profitForPeriod([], period, { now: NOW });
+      assert.deepEqual(
+        [out.salesKobo, out.collectedKobo, out.cogsKobo, out.expensesKobo, out.estimatedProfitKobo, out.itemsWithoutCost],
+        [0, 0, 0, 0, 0, 0]
+      );
+      for (const key of ["salesKobo", "collectedKobo", "cogsKobo", "expensesKobo", "estimatedProfitKobo"]) {
+        assert.equal(Number.isInteger(out[key]), true);
+      }
+      assert.equal(out.estimatedProfitKobo, out.salesKobo - out.cogsKobo - out.expensesKobo);
+      assert.ok(out.series.length > 0);
+      for (const bucket of out.series) {
+        assert.deepEqual([bucket.salesKobo, bucket.cogsKobo, bucket.expensesKobo, bucket.profitKobo], [0, 0, 0, 0]);
+      }
+    }
+    assert.deepEqual(expensesForPeriod([], "month", { now: NOW }), { expenses: [], byCategory: [] });
+  });
+
+  it("a refund-style correction removes the sale from profit without touching the original", () => {
+    const ctx = setup();
+    try {
+      ctx.ledger.append({ shopId: SHOP, type: "restock", amountKobo: 6000000, customer: SHOP, item: "rice", quantity: 10, unit: "bag", createdAt: "2026-10-01T10:00:00.000Z" });
+      const sale = ctx.ledger.append({ shopId: SHOP, type: "sale", amountKobo: 4000000, customer: "Ada", item: "rice", quantity: 4, unit: "bag", createdAt: "2026-10-28T09:30:00.000Z" });
+      assert.equal(profitForPeriod(ctx.ledger.list(SHOP), "today", { now: NOW }).salesKobo, 4000000);
+      // Full refund: amount back to zero, quantity cleared so no cost lingers.
+      ctx.ledger.appendCorrection(sale.id, { amountKobo: 0, quantity: null, createdAt: "2026-10-28T11:00:00.000Z" });
+      const after = profitForPeriod(ctx.ledger.list(SHOP), "today", { now: NOW });
+      assert.deepEqual([after.salesKobo, after.cogsKobo, after.estimatedProfitKobo], [0, 0, 0]);
+      assert.equal(ctx.ledger.get(sale.id).amount_kobo, 4000000);
+      assert.equal(ctx.ledger.verify(SHOP).ok, true);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("a Lagos midnight splits Sunday and Monday sales into different weeks", () => {
+    const ctx = setup();
+    try {
+      // Lagos Sun 1 Nov 21:00 and Lagos Mon 2 Nov 00:30.
+      ctx.ledger.append({ shopId: SHOP, type: "sale", amountKobo: 1000000, customer: "Ada", createdAt: "2026-11-01T20:00:00.000Z" });
+      ctx.ledger.append({ shopId: SHOP, type: "sale", amountKobo: 2000000, customer: "Ada", createdAt: "2026-11-01T23:30:00.000Z" });
+      const rows = ctx.ledger.list(SHOP);
+      // Sunday 23:59 Lagos: this week holds Sunday's sale only.
+      const sundayNight = profitForPeriod(rows, "week", { now: Date.UTC(2026, 10, 1, 22, 59, 0) });
+      assert.deepEqual([sundayNight.from, sundayNight.to], ["2026-10-26", "2026-11-01"]);
+      assert.equal(sundayNight.salesKobo, 1000000);
+      // One minute later, Monday 00:00 Lagos: a new week holds Monday's sale only.
+      const mondayMorning = profitForPeriod(rows, "week", { now: Date.UTC(2026, 10, 1, 23, 0, 0) });
+      assert.deepEqual([mondayMorning.from, mondayMorning.to], ["2026-11-02", "2026-11-08"]);
+      assert.equal(mondayMorning.salesKobo, 2000000);
+    } finally {
+      teardown(ctx);
+    }
+  });
+});
+
 describe("expenses listing", () => {
   it("lists effective expenses in the period with a category breakdown", () => {
     const ctx = setup();

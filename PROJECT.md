@@ -101,3 +101,25 @@ Not started: Alert Guard, offline notes queue (`occurred_at`), notebook photo im
 - No automated tests for real model accuracy: every suite uses the mock; `smoke-live.mjs` and the audio probes are manual, spoken-note accuracy unmeasured.
 - Which Baseten model is configured and its live agreement rate are unmeasured (value sits in `.env.local`, never opened).
 - Web `check:build` / `check:copy` / `check:images` were not run here; confirm they are green and the app runs clean without `MOCK_CONTRACT`.
+
+## 10. Route contract
+
+GET /profit?period=today|week|month|year (default today)
+→ { "period": string, "from": "YYYY-MM-DD", "to": "YYYY-MM-DD", "salesKobo": int, "collectedKobo": int, "cogsKobo": int, "expensesKobo": int, "estimatedProfitKobo": int, "itemsWithoutCost": int, "series": [{ "label": string, "salesKobo": int, "cogsKobo": int, "expensesKobo": int, "profitKobo": int }] }
+
+GET /products
+→ { "products": [{ "id": int, "name": string, "unit": string|null, "sellPriceKobo": int|null, "costPriceKobo": int|null, "stockOnHand": int, "lowStock": bool }] }
+
+POST /products/:id
+← { "sellPriceKobo"?: int ≥ 0, "costPriceKobo"?: int ≥ 0 } (at least one)
+→ { "product": { "id": int, "name": string, "unit": string|null, "sellPriceKobo": int|null, "costPriceKobo": int|null, "stockOnHand": int, "lowStock": bool } }
+
+GET /customers
+→ { "customers": [{ "id": int|null, "name": string, "phone": string|null, "owedKobo": int, "lastActivityAt": string|null }] }
+
+POST /customers
+← { "name": string, "phone"?: string, "consent"?: true } (phone requires consent: true)
+→ { "customer": { "id": int, "name": string, "phone": string|null, "owedKobo": int, "lastActivityAt": string|null } }
+
+POST /customers/:id/clear-phone
+→ { "customer": { "id": int, "name": string, "phone": null, "owedKobo": int, "lastActivityAt": string|null } }

@@ -225,6 +225,25 @@ describe("product stock from the ledger", () => {
       teardown(ctx);
     }
   });
+
+  it("lowStock flips exactly at 3 units; oversold stock is low", () => {
+    const ctx = setup();
+    try {
+      ctx.products.ensure({ shopId: SHOP_A, name: "edge-ok", unit: "bag" });
+      ctx.products.ensure({ shopId: SHOP_A, name: "edge-low", unit: "bag" });
+      ctx.products.ensure({ shopId: SHOP_A, name: "oversold", unit: "bag" });
+      ctx.ledger.append({ shopId: SHOP_A, type: "restock", amountKobo: 400000, customer: SHOP_A, item: "edge-ok", quantity: 4, unit: "bag" });
+      ctx.ledger.append({ shopId: SHOP_A, type: "restock", amountKobo: 300000, customer: SHOP_A, item: "edge-low", quantity: 3, unit: "bag" });
+      ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 500000, customer: "Ada", item: "oversold", quantity: 5, unit: "bag" });
+      const rows = withStock(ctx.products.listByShop(SHOP_A), ctx.ledger.list(SHOP_A));
+      const byName = new Map(rows.map((r) => [r.name, r]));
+      assert.deepEqual([byName.get("edge-ok").stockOnHand, byName.get("edge-ok").lowStock], [4, false]);
+      assert.deepEqual([byName.get("edge-low").stockOnHand, byName.get("edge-low").lowStock], [3, true]);
+      assert.deepEqual([byName.get("oversold").stockOnHand, byName.get("oversold").lowStock], [-5, true]);
+    } finally {
+      teardown(ctx);
+    }
+  });
 });
 
 describe("products routes", () => {
