@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { ArrowDownLeft, Check, Filter, PackagePlus, Pencil, RotateCcw, ScrollText, ShieldAlert, ShieldCheck, ShoppingBag } from "lucide-react";
-import { correctEntry, friendlyError, getLedger } from "../api.js";
+import { friendlyError, getLedger, proposeCorrection } from "../api.js";
 import { dayLabel, formatKobo, itemText, nairaInput, parseNaira, plural, timeLabel, typeLabel } from "../format.js";
+import { fixableEntryId, supersededById } from "../ledger.js";
 import { Button, Card, EmptyState, ErrorState, Field, IconCircle, Pill, ScreenHeader, Sheet, Skeleton, cx, rise, useLoad } from "../ui.jsx";
-import { inputClass } from "./ConfirmCard.jsx";
+import ConfirmCard, { inputClass } from "./ConfirmCard.jsx";
 
 // Icon and tint for each entry type.
 const KIND = {
@@ -18,24 +19,44 @@ const KIND = {
 const norm = (v) => String(v ?? "").trim().toLowerCase();
 const isSaleOf = (e, f) => e.type === "sale" && norm(e.item) === f.item && (norm(e.unit) || null) === (f.unit ?? null);
 
-// The id of the entry that replaced this one, or null. Newer servers send
-// correctedById; otherwise the corrects_id links say the same.
-const supersededBy = (e, all) => (e.correctedById !== undefined ? e.correctedById : all.find((x) => x.corrects_id === e.id)?.id ?? null);
-
 // Saved entries grouped by day, newest first, under the hash-chain check
 // from GET /ledger. `intent.item` (from "Margin lost") shows only the sales
-// of that item until "Show all". "Fix this entry" adds a correction entry
-// (POST /ledger/:id/correct); saved entries are never edited.
+// of that item until "Show all". "Fix this entry" shows only on the latest
+// uncorrected entry; it proposes a correction (POST /correct-last) and the
+// trader confirms it on Record's card. Saved entries are never edited.
 export default function LedgerScreen({ shop, intent, onGo }) {
   const { data, error, loading, reload } = useLoad(getLedger);
   const [only, setOnly] = useState(intent?.item ? intent : null);
-  const [fixing, setFixing] = useState(null); // entry
+  const [fix, setFix] = useState(null); // { entry, proposal } — the fix being written
   const [shown, setShown] = useState(null); // kept while the sheet slides away
   const [added, setAdded] = useState(null); // the correction just added
 
   function openFix(e) {
-    setShown(e);
-    setFixing(e);
+    const next = { entry: e, proposal: null };
+    setShown(next);
+    setFix(next);
+  }
+
+  function onProposed(proposal) {
+    const next = { entry: fix.entry, proposal };
+    setShown(next);
+    setFix(next);
+  }
+
+  // The card saved (or refused) the proposal. On save, find the new
+  // correction in a fresh ledger for the banner, then reload the list.
+  // Money, Debts and Reports reload themselves when opened: screens
+  // remount on every tab switch, and useLoad fetches on mount.
+  async function onFixed() {
+    const target = fix?.entry ?? shown?.entry;
+    setFix(null);
+    try {
+      const fresh = await getLedger();
+      setAdded(fresh.entries.find((e) => e.corrects_id === target?.id) ?? null);
+    } catch {
+      setAdded(null);
+    }
+    reload();
   }
 
   return (
@@ -58,25 +79,27 @@ export default function LedgerScreen({ shop, intent, onGo }) {
           onGo={onGo}
         />
       )}
-      <Sheet open={!!fixing} onClose={() => setFixing(null)} title="Fix this entry">
-        {shown && (
-          <FixForm
-            key={shown.id}
-            entry={shown}
-            shop={shop}
-            onDone={(entry) => {
-              setAdded(entry);
-              setFixing(null);
-              reload();
-            }}
-          />
-        )}
+      <Sheet open={!!fix} onClose={() => setFix(null)} title={fix?.proposal ? "Check before you save" : "Fix this entry"}>
+        {shown &&
+          (shown.proposal ? (
+            <ConfirmCard
+              proposal={shown.proposal}
+              shopId={shop.id}
+              onUpdate={onProposed}
+              onFinish={(result) => (result.kind === "saved" ? onFixed() : setFix(null))}
+              onStartOver={() => setFix(null)}
+            />
+          ) : (
+            <FixForm key={shown.entry.id} entry={shown.entry} shop={shop} onProposed={onProposed} />
+          ))}
       </Sheet>
     </section>
   );
 }
 
 function LedgerBody({ entries, all, verify, only, onShowAll, added, onFix, shop, onGo }) {
+  // One fixable row in the whole shop, from the full list (not the filter).
+  const fixableId = fixableEntryId(all);
   // Group newest first by Lagos day.
   const days = [];
   for (const e of [...entries].reverse()) {
@@ -139,7 +162,7 @@ function LedgerBody({ entries, all, verify, only, onShowAll, added, onFix, shop,
               {d.rows.map((e) => {
                 const [icon, tone] = KIND[e.type] ?? [ScrollText, "slate"];
                 const what = itemText(e);
-                const replaced = supersededBy(e, all) != null;
+                const replaced = supersededById(e, all) != null;
                 const fixes = e.corrects_id != null ? all.find((x) => x.id === e.corrects_id) : null;
                 return (
                   <li key={e.id} data-part="entry-row" data-kind={e.type} data-corrected={replaced} className="grid gap-0.5 py-2.5">
@@ -166,7 +189,7 @@ function LedgerBody({ entries, all, verify, only, onShowAll, added, onFix, shop,
                       <span className="text-[0.8125rem] font-semibold text-muted">
                         {replaced ? <Pill tone="slate">Corrected</Pill> : fixes ? `Corrects #${fixes.seq}` : ""}
                       </span>
-                      {!replaced && (
+                      {e.id === fixableId && (
                         <button
                           data-part="fix-entry"
                           onClick={() => onFix(e)}
@@ -189,8 +212,9 @@ function LedgerBody({ entries, all, verify, only, onShowAll, added, onFix, shop,
 }
 
 // The fix sheet. Fields start as the entry is; only what the trader changes
-// is sent, with a reason. The result is a new correction entry.
-function FixForm({ entry, shop, onDone }) {
+// is proposed, with a reason. Nothing is saved here: the proposal goes to
+// Record's card, and the correction lands only on Save.
+function FixForm({ entry, shop, onProposed }) {
   const goods = entry.type === "sale" || entry.type === "restock" || (entry.type === "correction" && !!entry.item);
   const start = {
     amount: nairaInput(entry.amount_kobo),
@@ -227,10 +251,11 @@ function FixForm({ entry, shop, onDone }) {
     setBusy(true);
     setError(null);
     try {
-      const res = await correctEntry(entry.id, { ...changes, reason: reason.trim() });
-      onDone(res.entry);
+      onProposed(await proposeCorrection({ entryId: entry.id, ...changes, reason: reason.trim() }));
     } catch (err) {
-      setError(friendlyError(err));
+      // 400s are validation the form missed; everything else has its own
+      // plain sentence. Never raw error text.
+      setError(err?.status === 400 ? "Check the details: plain numbers, amount above zero." : friendlyError(err));
     } finally {
       setBusy(false);
     }
@@ -277,10 +302,10 @@ function FixForm({ entry, shop, onDone }) {
         </p>
       )}
       <Button size="lg" disabled={!ready} aria-describedby="fix-why">
-        {busy ? "Adding…" : "Add correction"}
+        {busy ? "Checking…" : "Check fix"}
       </Button>
       <p id="fix-why" className="-mt-2 text-center text-sm text-muted">
-        {!changed ? "Change at least one detail above." : !reason.trim() ? "Give a reason to add the correction." : "Nothing is deleted or edited."}
+        {!changed ? "Change at least one detail above." : !reason.trim() ? "Give a reason to fix the entry." : "Next: check the card, then tap Save."}
       </p>
     </form>
   );

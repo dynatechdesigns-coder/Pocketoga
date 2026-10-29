@@ -4,7 +4,9 @@
 
 // Dev: "/api" is forwarded to http://localhost:3000 by vite.config.js.
 // Production: set VITE_API_BASE at build time (e.g. https://api.example.com).
-const API_BASE = (import.meta.env.VITE_API_BASE ?? "/api").replace(/\/$/, "");
+// The `?.` keeps this module importable from plain node (the web checks),
+// where import.meta.env does not exist.
+const API_BASE = (import.meta.env?.VITE_API_BASE ?? "/api").replace(/\/$/, "");
 
 // The shop scripts/seed-demo.mjs fills with fake data.
 export const DEMO_SHOP_ID = "demo";
@@ -168,6 +170,16 @@ export function correctEntry(id, changes) {
   return newRoute("POST", `/ledger/${encodeURIComponent(id)}/correct`, changes);
 }
 
+// POST /correct-last { entryId?, amountKobo?, customer?, item?, quantity?,
+//   unit?, reason } -> 201 { proposal }. Proposes a correction of the shop's
+// latest entry; the trader confirms it with POST /confirm/:id like any other
+// proposal. Omitted values inherit the original; explicit null clears item,
+// quantity and unit. Always pass entryId so a newer entry landing mid-tap
+// fails loudly instead of fixing the wrong entry.
+export async function proposeCorrection(changes) {
+  return (await request("POST", "/correct-last", changes)).proposal;
+}
+
 // Turns any error into one plain sentence for the trader.
 export function friendlyError(err) {
   if (!(err instanceof ApiError)) return "Something went wrong. Please try again.";
@@ -178,10 +190,15 @@ export function friendlyError(err) {
       // "that product belongs to another shop": say which thing it was.
       return /^that (product|customer) /i.test(err.message) ? err.message.charAt(0).toUpperCase() + err.message.slice(1) + "." : "This note belongs to another shop.";
     case 404:
-      return err.message === "not built"
-        ? "This part needs the newer PocketOga server, which is still being built."
-        : "We could not find that. Please try again.";
+      if (err.message === "not built") return "This part needs the newer PocketOga server, which is still being built.";
+      // POST /correct-last on an empty shop.
+      if (/no entries to correct/i.test(err.message)) return "There is nothing to correct yet.";
+      return "We could not find that. Please try again.";
     case 409:
+      // POST /correct-last and confirming one: the entry was fixed
+      // elsewhere, or a newer entry landed first.
+      if (/already corrected/i.test(err.message)) return "This entry was already corrected.";
+      if (/latest/i.test(err.message)) return "A newer entry came in first. Only the latest entry can be fixed.";
       return err.message.includes("confirmed")
         ? "This note is already saved. To change it, record a new note."
         : "This note was rejected. Please record it again.";

@@ -12,7 +12,8 @@
     "dev:mock": "node scripts/dev-mock.mjs",
     "check:build": "node scripts/check-no-mock.mjs",
     "check:copy": "node scripts/check-landing-copy.mjs",
-    "check:images": "node scripts/check-landing-images.mjs"
+    "check:images": "node scripts/check-landing-images.mjs",
+    "check:fix": "node scripts/check-ledger-fix.mjs"
   },
   "dependencies": {
     "lucide-react": "0.468.0",
