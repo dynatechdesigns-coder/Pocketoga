@@ -20,7 +20,7 @@
      brand gradient (primary -> accent) = money in;
      amber = money owed;
      coral (rose) = losses: margin lost, overdue, broken promises, tamper;
-     teal = kept and verified, nothing else.
+     teal = kept and verified, and the estimated-profit result on Reports.
      Light values are tuned for outdoor sunlight: near-white surfaces, ink
      text, strong borders, no faint grey for anything that matters. */
   --color-primary: #2e1a7a; /* deep violet */

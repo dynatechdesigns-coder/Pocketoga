@@ -129,7 +129,8 @@ async function newRoute(method, path, body) {
 const periodQuery = (period) => `?period=${encodeURIComponent(period)}`;
 
 // GET /profit?period=today|week|month|year -> { period, from, to, salesKobo,
-//   collectedKobo, cogsKobo, expensesKobo, estimatedProfitKobo, itemsWithoutCost,
+//   collectedKobo, cogsKobo, expensesKobo, estimatedProfitKobo (signed),
+//   result: profit|loss|break_even, resultKobo (>= 0), owedKobo, missing_cost_items,
 //   series[]: { label, salesKobo, cogsKobo, expensesKobo, profitKobo } }
 export function getProfit(period) {
   return newRoute("GET", "/profit" + periodQuery(period));

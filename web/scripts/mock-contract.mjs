@@ -129,6 +129,8 @@ function profit(period, shop) {
   const salesKobo = sum("salesKobo");
   const cogsKobo = sum("cogsKobo");
   const expensesKobo = sum("expensesKobo");
+  const net = salesKobo - cogsKobo - expensesKobo;
+  const noCost = shop.products.filter((p) => p.costPriceKobo == null).length;
   return {
     period,
     from: bk.from,
@@ -137,8 +139,12 @@ function profit(period, shop) {
     collectedKobo: percentOf(salesKobo, COLLECTED_PERCENT[period]),
     cogsKobo,
     expensesKobo,
-    estimatedProfitKobo: salesKobo - cogsKobo - expensesKobo,
-    itemsWithoutCost: shop.products.filter((p) => p.costPriceKobo == null).length,
+    estimatedProfitKobo: net,
+    result: net > 0 ? "profit" : net < 0 ? "loss" : "break_even",
+    resultKobo: Math.abs(net),
+    owedKobo: Math.max(0, salesKobo - percentOf(salesKobo, COLLECTED_PERCENT[period])),
+    itemsWithoutCost: noCost,
+    missing_cost_items: noCost,
     series,
   };
 }

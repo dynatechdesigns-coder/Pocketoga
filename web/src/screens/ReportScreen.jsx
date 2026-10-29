@@ -52,8 +52,16 @@ export default function ReportScreen({ shop, onGo }) {
 
 const CHART_TITLE = { today: "Estimated profit by hour", week: "Estimated profit by day", month: "Estimated profit by day", year: "Estimated profit by month" };
 
+// What the result card says for each `result` the server sends. The sign comes
+// from the word, never from a minus: resultKobo is always zero or more.
+const RESULT = {
+  profit: { label: "Estimated profit", card: "bg-teal-soft text-teal-ink border-teal" },
+  loss: { label: "Estimated loss", card: "bg-coral-soft text-coral-ink border-coral" },
+  break_even: { label: "Break even", card: "bg-slate text-ink border-line" },
+};
+
 function ProfitBody({ p, period, busy, onGo }) {
-  const loss = p.estimatedProfitKobo < 0;
+  const r = RESULT[p.result] ?? RESULT.break_even;
   return (
     <div className={cx("grid gap-4 transition-opacity", busy && "opacity-60")} aria-busy={busy}>
       <div className="grid grid-cols-2 gap-3">
@@ -63,35 +71,35 @@ function ProfitBody({ p, period, busy, onGo }) {
         <Tile part="expenses" icon={Receipt} tone="slate" label="Expenses" kobo={p.expensesKobo} />
       </div>
 
-      {/* Money in, so the brand gradient; a loss is coral. */}
-      <article
-        data-part="profit"
-        className={cx(
-          "grid gap-1 rounded-3xl p-5",
-          loss ? "border-[1.5px] border-coral bg-coral-soft text-coral-ink" : "bg-hero text-white shadow-lift"
-        )}
-      >
-        <p className="font-semibold">Estimated profit</p>
-        <p data-part="profit-figure" className="text-[2.25rem] leading-tight font-extrabold tracking-tight tabular-nums [overflow-wrap:anywhere]">
-          {formatKobo(p.estimatedProfitKobo)}
-        </p>
-        <p className="text-sm font-medium">Sales minus cost of goods and expenses. Collected is not part of this.</p>
-        {p.itemsWithoutCost > 0 && (
-          <button
-            data-part="no-cost"
-            onClick={() => onGo("products")}
-            className={cx(
-              "mt-2 inline-flex min-h-12 items-center justify-between gap-2 rounded-2xl px-4 text-left text-sm font-bold [&_svg]:size-5 [&_svg]:shrink-0",
-              loss ? "bg-card text-coral-ink" : "bg-frost text-white"
-            )}
-          >
-            <span>
-              No cost record for {plural(p.itemsWithoutCost, "item")}, so {p.itemsWithoutCost === 1 ? "its" : "their"} cost is not counted. Add cost prices
-            </span>
-            <ChevronRight aria-hidden="true" />
-          </button>
-        )}
-      </article>
+      {/* The result and what is still owed, side by side. Profit is teal (the
+          one success colour), a loss is coral; owed money is amber. */}
+      <div className="grid grid-cols-[3fr_2fr] gap-3">
+        <article data-part="profit" data-result={p.result} className={cx("grid content-start gap-1 rounded-3xl border-[1.5px] p-4", r.card)}>
+          <p className="text-sm font-bold">{r.label}</p>
+          <p data-part="profit-figure" className={cx(figure, "text-[clamp(1.125rem,5.6vw,2rem)]")}>
+            {formatKobo(p.resultKobo)}
+          </p>
+          <p className="text-xs font-medium">Sales minus cost of goods and expenses.</p>
+        </article>
+        <article data-part="owed" className="grid content-start gap-1 rounded-3xl border-[1.5px] border-amber bg-amber-soft p-4 text-amber-ink">
+          <p className="text-sm font-bold">Owed to you</p>
+          <p data-part="owed-figure" className={cx(figure, "text-[clamp(1rem,4.6vw,1.5rem)]")}>
+            {formatKobo(p.owedKobo)}
+          </p>
+          <p className="text-xs font-medium">Sold, not yet paid.</p>
+        </article>
+      </div>
+
+      {p.missing_cost_items > 0 && (
+        <button
+          data-part="no-cost"
+          onClick={() => onGo("products")}
+          className="inline-flex min-h-12 items-center justify-between gap-2 rounded-2xl border-[1.5px] border-amber bg-amber-soft px-4 py-2 text-left text-sm font-bold text-amber-ink [&_svg]:size-5 [&_svg]:shrink-0"
+        >
+          <span>Cost missing for {plural(p.missing_cost_items, "item")}, so this may be too high</span>
+          <ChevronRight aria-hidden="true" />
+        </button>
+      )}
 
       <Card as="article" className="grid min-w-0 grid-cols-1 gap-3">
         <h3 className="font-extrabold">{CHART_TITLE[period]}</h3>
