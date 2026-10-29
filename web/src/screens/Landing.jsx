@@ -17,20 +17,20 @@ import Footer from "../landing/Footer.jsx";
 // Motion is gentle and stops with prefers-reduced-motion.
 const DEMO_SHOP = { id: DEMO_SHOP_ID, name: "Mama Nkechi Provisions", demo: true };
 
-export default function Landing({ onOpen }) {
+export default function Landing({ onOpen, onLogin }) {
   const demo = () => onOpen(DEMO_SHOP);
   return (
     <div data-part="landing" className="overflow-x-clip bg-surface text-ink">
-      <Nav onDemo={demo} />
+      <Nav onDemo={demo} onLogin={onLogin} />
       <main>
-        <Hero onDemo={demo} />
+        <Hero onDemo={demo} onLogin={onLogin} />
         <Market />
         <HowItWorks />
         <WhatsAppWeb />
         <Features />
         <Shops />
         <Trust />
-        <FinalCta onDemo={demo} />
+        <FinalCta onDemo={demo} onLogin={onLogin} />
       </main>
       <Footer onDemo={demo} />
     </div>

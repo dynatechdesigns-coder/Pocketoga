@@ -1,4 +1,5 @@
-import { Check, Eye, HandCoins } from "lucide-react";
+import { Check, Eye, HandCoins, MessageCircle } from "lucide-react";
+import { WHATSAPP_LINK } from "../config.js";
 import { Button, cx, rise } from "../ui.jsx";
 import { hasImage } from "./images.js";
 import { Container, IconTile, Photo, Pill } from "./parts.jsx";
@@ -12,7 +13,7 @@ const TICKS = ["Works with voice notes", "Pidgin and English", "Nothing saved wi
 // gently: one over the awning at the top left, one just below the photo. So
 // nothing covers her face, her phone or the goods on the counter. The photo
 // is the only image that loads before the visitor scrolls.
-export default function Hero({ onDemo }) {
+export default function Hero({ onDemo, onLogin }) {
   const photo = hasImage("hero-trader");
   return (
     <section
@@ -43,14 +44,25 @@ export default function Hero({ onDemo }) {
               Try the demo shop
             </Button>
             <Button
-              as="a"
-              data-part="hero-whatsapp"
+              data-part="hero-login"
               variant="outline"
               size="lg"
               className="sm:w-auto sm:min-w-52 hover:-translate-y-0.5"
-              href="#whatsapp"
+              onClick={onLogin}
             >
-              See it on WhatsApp
+              Open my shop
+            </Button>
+            <Button
+              as="a"
+              data-part="hero-whatsapp"
+              variant="quiet"
+              size="lg"
+              className="sm:w-auto sm:min-w-52 hover:-translate-y-0.5"
+              href={WHATSAPP_LINK}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <MessageCircle aria-hidden="true" /> Start on WhatsApp
             </Button>
           </div>
           <ul className="flex flex-wrap gap-x-5 gap-y-2" data-part="ticks">

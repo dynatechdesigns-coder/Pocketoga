@@ -57,7 +57,7 @@ export default function SettingsScreen({ shop, onExit }) {
       )}
 
       <Button variant="quiet" onClick={onExit}>
-        <LogOut aria-hidden="true" /> Leave this shop
+        <LogOut aria-hidden="true" /> {shop.demo ? "Leave the demo" : "Log out"}
       </Button>
     </section>
   );

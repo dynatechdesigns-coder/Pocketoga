@@ -12,17 +12,22 @@ const API_BASE = (import.meta.env?.VITE_API_BASE ?? "/api").replace(/\/$/, "");
 export const DEMO_SHOP_ID = "demo";
 
 let shopId = null;
+let token = null;
 
-// Called once a shop is open. All requests are made as this shop.
-export function setShop(id) {
+// Called once a shop is open. All requests are made as this shop; a real shop
+// also carries its session token. The demo shop is public and sends none.
+export function setShop(id, sessionToken = null) {
   shopId = id;
+  token = id === DEMO_SHOP_ID ? null : sessionToken;
 }
 
-// Today the server only wants the shop name in x-shop-id. Real auth (a token,
-// a session cookie) goes here later.
 function authHeaders() {
-  return { "x-shop-id": shopId };
+  return { "x-shop-id": shopId, ...(token ? { Authorization: `Bearer ${token}` } : {}) };
 }
+
+// Fired when the server turns a real shop's token away (expired or revoked);
+// Root listens and sends the trader back to the login.
+export const SESSION_ENDED = "pocketoga:session-ended";
 
 // An error the UI can show: `status` is the HTTP code (0 = no connection).
 export class ApiError extends Error {
@@ -45,8 +50,41 @@ async function request(method, path, body) {
     throw new ApiError(0, "network");
   }
   const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (res.status === 401 && shopId !== DEMO_SHOP_ID) window.dispatchEvent(new Event(SESSION_ENDED));
+    throw new ApiError(res.status, data.error ?? `server error ${res.status}`);
+  }
+  return data;
+}
+
+// --- Login ---------------------------------------------------------------------
+
+// POST /session { shop, code } (no headers) -> 201 { token, shop_id, expires_at }
+// 400 missing field; 401 wrong, used or expired code; 429 too many wrong guesses.
+export async function login(shop, code) {
+  let res;
+  try {
+    res = await fetch(API_BASE + "/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shop, code }),
+    });
+  } catch {
+    throw new ApiError(0, "network");
+  }
+  const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(res.status, data.error ?? `server error ${res.status}`);
   return data;
+}
+
+// DELETE /session (Bearer) -> { revoked: true }. Best effort: the trader is
+// logged out on this device whether or not the server could be reached.
+export async function logout(sessionToken) {
+  try {
+    await fetch(API_BASE + "/session", { method: "DELETE", headers: { Authorization: `Bearer ${sessionToken}` } });
+  } catch {
+    // offline: the token still expires on its own
+  }
 }
 
 // --- Voice-to-confirm loop ---------------------------------------------------

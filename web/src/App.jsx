@@ -48,7 +48,7 @@ export default function App({ shop, onExit }) {
   const [more, setMore] = useState(false);
 
   // Tell the API layer which shop we are, before any screen makes a call.
-  setShop(shop.id);
+  setShop(shop.id, shop.token);
 
   // Screens move between tabs with go("debts") or go("debts", "chase").
   function go(next, nextIntent = null) {

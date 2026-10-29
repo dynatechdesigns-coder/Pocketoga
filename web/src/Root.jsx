@@ -1,30 +1,81 @@
-import { Suspense, lazy, useState } from "react";
-import { loadShop, saveShop } from "./shop.js";
+import { Suspense, lazy, useEffect, useState } from "react";
+import { SESSION_ENDED, logout } from "./api.js";
+import { hasSession, loadShop, saveShop } from "./shop.js";
 import Landing from "./screens/Landing.jsx";
+import LoginScreen from "./screens/LoginScreen.jsx";
 import AccuracyPage from "./screens/AccuracyPage.jsx";
 
 // The signed-in app is its own chunk: a visitor who only reads the landing
 // page never downloads the screens.
 const App = lazy(() => import("./App.jsx"));
 
-// Not signed in: the landing page. Signed in: the app.
+const ENDED = "Your login ended. Send dashboard on WhatsApp for a new code.";
+
+// A real shop is kept only while its session is live; the demo needs none.
+const loadLive = () => {
+  const shop = loadShop();
+  return hasSession(shop) ? shop : null;
+};
+
+// Not signed in: the landing page, or the login at /login. Signed in: the app.
 export default function Root() {
-  const [shop, setShop] = useState(loadShop);
+  const [shop, setShop] = useState(loadLive);
+  const [onLogin, setOnLogin] = useState(() => location.pathname === "/login");
+  const [notice, setNotice] = useState("");
+
+  function go(login) {
+    history.pushState(null, "", login ? "/login" : "/");
+    setOnLogin(login);
+    window.scrollTo(0, 0);
+  }
 
   function open(next) {
     saveShop(next);
     setShop(next);
+    setNotice("");
+    if (location.pathname !== "/") history.replaceState(null, "", "/");
   }
 
   function exit() {
+    if (shop && !shop.demo) logout(shop.token);
     saveShop(null);
     setShop(null);
+    setOnLogin(false);
+    history.replaceState(null, "", "/");
     window.scrollTo(0, 0);
   }
 
+  useEffect(() => {
+    const onPop = () => setOnLogin(location.pathname === "/login");
+    // The server turned the token away: back to the login, with a reason.
+    const onEnded = () => {
+      saveShop(null);
+      setShop(null);
+      setNotice(ENDED);
+      history.replaceState(null, "", "/login");
+      setOnLogin(true);
+    };
+    // The token's own expiry, checked while the app sits open.
+    const timer = setInterval(() => {
+      const current = loadShop();
+      if (current && !current.demo && !hasSession(current)) onEnded();
+    }, 30000);
+    window.addEventListener("popstate", onPop);
+    window.addEventListener(SESSION_ENDED, onEnded);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("popstate", onPop);
+      window.removeEventListener(SESSION_ENDED, onEnded);
+    };
+  }, []);
+
   // The accuracy page is planned; until it exists this path shows a placeholder.
   if (location.pathname === "/accuracy") return <AccuracyPage />;
-  if (!shop) return <Landing onOpen={open} />;
+  // Nothing from a real shop renders without a live session.
+  if (!hasSession(shop)) {
+    if (onLogin) return <LoginScreen notice={notice} onLoggedIn={open} onBack={() => go(false)} />;
+    return <Landing onOpen={open} onLogin={() => go(true)} />;
+  }
   return (
     <Suspense fallback={<div role="status" aria-label="Loading" className="min-h-dvh" />}>
       <App shop={shop} onExit={exit} />

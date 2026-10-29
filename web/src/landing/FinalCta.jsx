@@ -5,7 +5,7 @@ import { Container, Photo } from "./parts.jsx";
 
 // The last call: the market lane as a wide banner, darkened on the side where
 // the words sit (below them on phones, beside them on wide screens).
-export default function FinalCta({ onDemo }) {
+export default function FinalCta({ onDemo, onLogin }) {
   const photo = hasImage("market-lane");
   return (
     <section aria-labelledby="cta-h" className="bg-cream py-16 md:py-24">
@@ -35,9 +35,14 @@ export default function FinalCta({ onDemo }) {
             <h2 id="cta-h" className="text-[2rem] leading-tight font-extrabold tracking-tight text-white md:text-[2.75rem]">
               Your shop. Your money. In your pocket.
             </h2>
-            <Button variant="light" size="lg" className="w-full hover:-translate-y-0.5 sm:w-auto sm:min-w-56" onClick={onDemo}>
-              Try the demo shop
-            </Button>
+            <div className="grid gap-3 sm:flex sm:flex-wrap">
+              <Button variant="light" size="lg" className="hover:-translate-y-0.5 sm:w-auto sm:min-w-56" onClick={onDemo}>
+                Try the demo shop
+              </Button>
+              <Button variant="frost" size="lg" className="hover:-translate-y-0.5 sm:w-auto sm:min-w-56" onClick={onLogin}>
+                Open my shop
+              </Button>
+            </div>
           </div>
         </Reveal>
       </Container>
