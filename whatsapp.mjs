@@ -187,6 +187,7 @@ export function buildWhatsAppContext(deps, env = deps.env ?? process.env) {
     proposals: deps.proposals,
     promises: getPromiseStore(deps),
     products: deps.products ?? null,
+    secondOpinions: deps.secondOpinions ?? null,
     model: deps.model,
     nowMs: deps.nowMs ?? Date.now(),
     config,
@@ -521,6 +522,7 @@ async function handleIncomingMessage(message, ctx) {
         proposals: ctx.proposals,
         model: ctx.model,
         ledger: ctx.ledger,
+        secondOpinions: ctx.secondOpinions,
       });
       await sendCard(ctx, sender, proposal, shopId);
     } else if (message?.type === "audio") {
@@ -532,7 +534,7 @@ async function handleIncomingMessage(message, ctx) {
       let got;
       try {
         got = await withWavFromMedia(ctx, mediaId, async (wavPath) =>
-          propose(shopId, { audioPath: wavPath }, { proposals: ctx.proposals, model: ctx.model, ledger: ctx.ledger })
+          propose(shopId, { audioPath: wavPath }, { proposals: ctx.proposals, model: ctx.model, ledger: ctx.ledger, secondOpinions: ctx.secondOpinions })
         );
       } catch (err) {
         ctx.log(`audio download failed: ${err?.message ?? err}`);

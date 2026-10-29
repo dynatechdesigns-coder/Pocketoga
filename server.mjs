@@ -13,6 +13,7 @@ import { customerDebts, chaseForShop } from "./debts.mjs";
 import { moneyLeakReport } from "./leak.mjs";
 import { ProductStore, withStock, toProductJson } from "./products.mjs";
 import { CustomerStore, describeCustomers, normalizePhone } from "./customers.mjs";
+import { SecondOpinionStore } from "./secondopinion.mjs";
 import { createModelClient } from "./model.mjs";
 import { propose, confirmProposal, fixProposal, rejectProposal, getProposal } from "./voice.mjs";
 import {
@@ -340,9 +341,9 @@ export async function handleVoiceRequest(req, res, deps) {
   return send(res, 404, { error: "not found" });
 }
 
-export function createVoiceServer({ ledger, proposals, promises, products, customers, model }) {
+export function createVoiceServer({ ledger, proposals, promises, products, customers, secondOpinions, model }) {
   return createServer((req, res) => {
-    handleVoiceRequest(req, res, { ledger, proposals, promises, products, customers, model }).catch((err) => {
+    handleVoiceRequest(req, res, { ledger, proposals, promises, products, customers, secondOpinions, model }).catch((err) => {
       if (!res.headersSent) send(res, err.status ?? 500, { error: err.message ?? "internal error" });
     });
   });
@@ -359,19 +360,19 @@ export async function handleWebhookOnlyRequest(req, res, deps) {
   return handleWebhookRoute(req, res, url, deps);
 }
 
-export function createWebhookServer({ ledger, proposals, promises, products, customers, model }) {
+export function createWebhookServer({ ledger, proposals, promises, products, customers, secondOpinions, model }) {
   return createServer((req, res) => {
-    handleWebhookOnlyRequest(req, res, { ledger, proposals, promises, products, customers, model }).catch((err) => {
+    handleWebhookOnlyRequest(req, res, { ledger, proposals, promises, products, customers, secondOpinions, model }).catch((err) => {
       if (!res.headersSent) send(res, err.status ?? 500, { error: err.message ?? "internal error" });
     });
   });
 }
 
 // Builds every dependency the HTTP handlers need — real model client,
-// ledger, proposals, promises, products, customers — without opening any
-// listening socket. The entry point calls this and then listens; tests
-// call it with a fake env so a missing import or undefined dependency
-// fails the suite.
+// ledger, proposals, promises, products, customers, second opinions —
+// without opening any listening socket. The entry point calls this and
+// then listens; tests call it with a fake env so a missing import or
+// undefined dependency fails the suite.
 export function buildDeps(env = process.env) {
   const db = new DatabaseSync(env.LEDGER_DB ?? "pocketoga.db");
   return {
@@ -381,6 +382,7 @@ export function buildDeps(env = process.env) {
     promises: new PromiseStore(db),
     products: new ProductStore(db),
     customers: new CustomerStore(db),
+    secondOpinions: new SecondOpinionStore(db),
     model: createModelClient({ apiKey: env.META_API_KEY ?? null }),
     env,
   };

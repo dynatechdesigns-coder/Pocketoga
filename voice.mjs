@@ -6,6 +6,7 @@ import { extname } from "node:path";
 import { parseNaira, formatKobo } from "./money.mjs";
 import { escapeMd } from "./messages.mjs";
 import { resolvePromiseDate } from "./promises.mjs";
+import { runSecondOpinion, SECOND_OPINION_TIMEOUT_MS } from "./secondopinion.mjs";
 
 export const PROPOSAL_TTL_MS = 30 * 60 * 1000;
 export const ENTRY_TYPES = ["sale", "payment", "restock"];
@@ -501,7 +502,20 @@ function confusedEnvelope(heard) {
 
 // --- Proposal operations ---------------------------------------------------
 
-export async function propose(shopId, input, { proposals, model, ledger = null, now = Date.now() }) {
+export async function propose(
+  shopId,
+  input,
+  {
+    proposals,
+    model,
+    ledger = null,
+    now = Date.now(),
+    secondOpinions = null,
+    secondOpinionFetch = fetch,
+    secondOpinionEnv = process.env,
+    secondOpinionTimeoutMs = SECOND_OPINION_TIMEOUT_MS,
+  }
+) {
   if (!shopId || typeof shopId !== "string") throw voiceError(400, "shopId is required");
   if (!proposals || !model) throw new Error("propose needs { proposals, model }");
   const norm = normalizeInput(input);
@@ -515,15 +529,55 @@ export async function propose(shopId, input, { proposals, model, ledger = null, 
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     const c = confusedEnvelope(fallbackHeard);
-    return toProposal(proposals.create({ shopId, envelope: c.envelope, heard: c.heard, question: c.question }));
+    const confused = proposals.create({ shopId, envelope: c.envelope, heard: c.heard, question: c.question });
+    if (secondOpinions) {
+      secondOpinions.record({ proposalId: confused.id, agreed: "no_second_opinion", differingFields: [], latencyMs: 0 });
+    }
+    return toProposal(confused);
   }
   const { heard, question, questionedNames, ...envelope } = checkModelOutput(raw, shopId, {
     existingCustomers: shopCustomers(ledger, shopId),
     now,
   });
-  return toProposal(
-    proposals.create({ shopId, envelope, heard, question, nameChecked: questionedNames.length > 0 ? questionedNames : null })
-  );
+  // Second opinion: a second model re-reads the heard text and plain code
+  // compares. Disagreement adds one code-built flag (the question when the
+  // proposal has none, so the card asks once); entries are never touched.
+  // Without the stats store the feature is off entirely, so legacy callers
+  // never call out. The check itself never throws.
+  let finalQuestion = question;
+  let second = { agreed: "no_second_opinion", differingFields: [], latencyMs: 0 };
+  if (secondOpinions) {
+    second = await runSecondOpinion({
+      heardText: heard,
+      entries: envelope.entries,
+      promise: envelope.promise ?? null,
+      shopId,
+      now,
+      fetchFn: secondOpinionFetch,
+      env: secondOpinionEnv,
+      timeoutMs: secondOpinionTimeoutMs,
+    });
+    if (second.line) {
+      envelope.flags = [...envelope.flags, second.line];
+      if (!finalQuestion) finalQuestion = second.line;
+    }
+  }
+  const row = proposals.create({
+    shopId,
+    envelope,
+    heard,
+    question: finalQuestion,
+    nameChecked: questionedNames.length > 0 ? questionedNames : null,
+  });
+  if (secondOpinions) {
+    secondOpinions.record({
+      proposalId: row.id,
+      agreed: second.agreed,
+      differingFields: second.differingFields,
+      latencyMs: second.latencyMs,
+    });
+  }
+  return toProposal(row);
 }
 
 // The per-shop check every proposal-scoped operation goes through.

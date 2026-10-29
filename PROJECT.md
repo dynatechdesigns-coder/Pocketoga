@@ -8,7 +8,7 @@ Plain code checks every proposal and the trader taps confirm before anything is 
 
 ## 2. Built and tested
 
-`npm test` runs 10 suites (`ledger`, `money`, `voice`, `whatsapp`, `messages`, `debts`, `server`, `products`, `customers`, `corrections`): 198 tests, all passing. Real files:
+`npm test` runs 11 suites (`ledger`, `money`, `voice`, `whatsapp`, `messages`, `debts`, `server`, `products`, `customers`, `corrections`, `secondopinion`): 215 tests, all passing. Real files:
 
 - `ledger.mjs` — per-shop append-only hash chain: per-shop `seq` from 1, `prev_hash` links, integer kobo only, nullable item/quantity/unit. SHA-256 over a JSON array of the hashed fields; SQL triggers abort UPDATE/DELETE; `verifyChain`/`verify` report the first broken entry. Corrections are new entries via `appendCorrection` (same shop, `corrects_id` link). Reasons live in `corrections_log`, never in the ledger.
 - `proposals.mjs` — drafts live here, never in the ledger: one row per note (`entries_json`, `heard`, `question`, `recorded_ids`, `name_checked`).
@@ -20,6 +20,7 @@ Plain code checks every proposal and the trader taps confirm before anything is 
 - `messages.mjs` — every user-facing WhatsApp string: clean cards (Save/Fix/Reject) and needs-checking cards (Fix/Reject, arithmetic, question once), usual-price note, saved replies, debt/chase/balance/report/stock renders, 1024-char cap, markdown escaping.
 - `debts.mjs` — balances (oldest-first allocation, corrections respected), chase ranking, Lagos-day helpers. `promises.mjs` — promise store, code-resolved due dates, kept/broken resolution, kept-rate. `leak.mjs` — Money Leak Report (owed, 30-day overdue, broken promises, shortfalls, below-cost margin, today's totals).
 - `products.mjs` — products catalog (auto-created on confirm, trader-set prices, stock computed from the ledger, low at ≤3). `customers.mjs` — customers directory (phones + consent, never in the ledger).
+- `secondopinion.mjs` — second-opinion check: a Baseten text model re-reads the note's heard text (same prompt as primary, note text only, 6 s timeout) and plain code compares types, customers, kobo amounts, quantity, unit, price basis and promise; disagreement adds one code-built flag, never changes entries. Agreement stats live in `second_opinions` (not the ledger). Skipped silently without `BASETEN_API_KEY`/`BASETEN_MODEL`.
 - `web/` — React PWA (`App.jsx`, `Home.jsx`, `RecordScreen.jsx`, `ConfirmCard.jsx`, `LedgerScreen.jsx`, `api.js`, `localLedger.js`, `money.js`, `sha256.js`, `wav.js`): record/type notes, confirm card, ledger with chain banner, demo shop with fake data, device ledger mirror, mic audio to WAV, `/api` proxy to the backend.
 - Helpers: `preview-messages.mjs`, `preview-debts.mjs`, `smoke-live.mjs` (manual propose-only run), `tamper-demo.mjs`, `audio-test*.mjs`/`baseten-test.mjs` (manual model probes). `test-notes.md` is the manual test log.
 
@@ -86,7 +87,7 @@ Shapes: `proposal` is `{ id, shop_id, status, heard, question, created_at, entri
 
 ## 7. How to run
 
-- Backend: `node server.mjs` (env: `PORT` default 3000, `WEBHOOK_PORT` default 3001, `LEDGER_DB` default `pocketoga.db`, `META_API_KEY` for the real model).
+- Backend: `node server.mjs` (env: `PORT` default 3000, `WEBHOOK_PORT` default 3001, `LEDGER_DB` default `pocketoga.db`, `META_API_KEY` for the real model, `BASETEN_API_KEY` + `BASETEN_MODEL` for the second opinion).
 - Web app: `cd web && npm install && npm run dev` (uses `/api` to localhost:3000, or set `VITE_API_BASE`; `BACKEND_URL` moves the proxy target).
 - Tests: `npm test`.
 - Tunnel: point it at port 3001 (webhook listener) only, never at the main server.

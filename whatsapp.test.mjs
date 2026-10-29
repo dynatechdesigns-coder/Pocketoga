@@ -8,6 +8,7 @@ import { Ledger } from "./ledger.mjs";
 import { ProposalStore } from "./proposals.mjs";
 import { PromiseStore } from "./promises.mjs";
 import { ProductStore } from "./products.mjs";
+import { SecondOpinionStore } from "./secondopinion.mjs";
 import { WhatsAppStore, drainWhatsAppJobs } from "./whatsapp.mjs";
 import { createMockModelClient } from "./model.mjs";
 import { handleVoiceRequest, handleWebhookOnlyRequest, createWebhookServer } from "./server.mjs";
@@ -126,6 +127,7 @@ function setup(modelHandler, opts = {}) {
   const proposals = new ProposalStore(db);
   const promises = new PromiseStore(db);
   const products = new ProductStore(db);
+  const secondOpinions = new SecondOpinionStore(db);
   const whatsapp = new WhatsAppStore(db);
   const model = createMockModelClient(modelHandler);
   const fetch = makeFetch();
@@ -137,6 +139,7 @@ function setup(modelHandler, opts = {}) {
     proposals,
     promises,
     products,
+    secondOpinions,
     model,
     whatsapp,
     fetch,
