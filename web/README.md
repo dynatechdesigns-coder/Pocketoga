@@ -103,7 +103,7 @@ serving `dist/` needs to send `index.html` for unknown paths so that address wor
 ## The landing page
 
 `src/screens/Landing.jsx` shows when no shop is open. It only lists the sections; each one is a component in `src/landing/`
-(`Nav`, `Hero`, `Market`, `HowItWorks`, `WhatsAppWeb`, `Features`, `Shops`, `Trust`, `Proof`, `FinalCta`, `Footer`), built from
+(`Nav`, `Hero`, `Market`, `HowItWorks`, `WhatsAppWeb`, `Features`, `Shops`, `Trust`, `FinalCta`, `Footer`), built from
 shared pieces in `parts.jsx` (`Section`, `Pill`, `IconTile`, `Photo`, `ImageCard`, `CardRow`). Copy is plain trader language,
 sections alternate white and warm cream with one deep violet section (Trust), and the violet-to-blue gradient stays the
 primary button colour.
@@ -127,7 +127,8 @@ off screen, and the hash chain draws and then shows a change being caught. With 
 and shows its final state.
 
 Alert Guard and offline notes are not built yet (`../PROJECT.md`, section 5), so the landing page doesn't mention them. The
-privacy note and the accuracy page are placeholders. There is no link to a WhatsApp number: the bot runs on a test number, so
+privacy note and the accuracy page are placeholders: Trust ends with a plain "Accuracy results will be published here." line, and
+the footer's Accuracy link goes to the "coming soon" page. There is no link to a WhatsApp number: the bot runs on a test number, so
 "See it on WhatsApp" scrolls to the demo instead.
 
 ## Look and feel

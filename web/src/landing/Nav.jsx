@@ -100,7 +100,13 @@ export default function Nav({ onDemo }) {
             )}
           </div>
           <ThemeToggle />
-          <Button data-part="nav-demo" variant="gradient" size="sm" className="w-auto whitespace-nowrap max-[399px]:px-3" onClick={onDemo}>
+          <Button
+            data-part="nav-demo"
+            variant="gradient"
+            size="sm"
+            className="w-auto whitespace-nowrap max-[399px]:px-3 max-[399px]:text-sm"
+            onClick={onDemo}
+          >
             Try the demo shop
           </Button>
         </div>

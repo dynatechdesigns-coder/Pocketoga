@@ -7,9 +7,11 @@ import { PhoneScreen, WebMoney } from "./WhatsAppWeb.jsx";
 const TICKS = ["Works with voice notes", "Pidgin and English", "Nothing saved without your OK"];
 
 // First screen: the promise on the left; on the right the trader photo with a
-// soft marigold shape behind it, the app's Money screen overlapping its lower
-// corner, and two small chips that bob gently. The photo is the only image
-// that loads before the visitor scrolls.
+// soft marigold shape behind it. The app's Money screen hangs off its top
+// right corner (over the blurred market behind her) and two small chips bob
+// gently: one over the awning at the top left, one just below the photo. So
+// nothing covers her face, her phone or the goods on the counter. The photo
+// is the only image that loads before the visitor scrolls.
 export default function Hero({ onDemo }) {
   const photo = hasImage("hero-trader");
   return (
@@ -17,12 +19,12 @@ export default function Hero({ onDemo }) {
       aria-labelledby="hero-h"
       className="overflow-x-clip bg-surface pt-8 pb-20 md:flex md:min-h-[calc(100svh-4rem)] md:items-center md:pt-14 md:pb-24"
     >
-      <Container className="grid items-center gap-14 md:grid-cols-[1.05fr_0.95fr] md:gap-12">
+      <Container className="grid items-center gap-14 lg:grid-cols-[1fr_1.15fr] lg:gap-14">
         <div className="grid content-start justify-items-start gap-6">
           <Pill {...rise(0)}>Built for Nigerian market traders</Pill>
-          <h1 id="hero-h" {...rise(1, "text-[2.375rem] leading-[1.08] font-extrabold tracking-tight md:text-[3.75rem]")}>
+          <h1 id="hero-h" {...rise(1, "text-[2.375rem] leading-[1.08] font-extrabold tracking-tight md:text-[3.75rem] lg:text-[4.25rem]")}>
             Know where your shop{" "}
-            <span className="relative isolate whitespace-nowrap after:absolute after:inset-x-0 after:bottom-[0.06em] after:-z-10 after:h-[0.28em] after:rounded-full after:bg-marigold/55 after:content-['']">
+            <span className="relative isolate whitespace-nowrap after:absolute after:inset-x-0 after:bottom-[0.06em] after:-z-10 after:h-[0.28em] after:rounded-full after:bg-marigold/55 dark:after:bg-marigold/30 after:content-['']">
               money
             </span>{" "}
             dey go
@@ -64,7 +66,7 @@ export default function Hero({ onDemo }) {
         </div>
 
         {photo && (
-          <div data-part="hero-visual" className="relative isolate mx-auto w-full max-w-[560px] md:mr-0">
+          <div data-part="hero-visual" className="relative isolate mx-auto w-full max-w-[560px] md:mr-0 lg:max-w-[640px]">
             {/* A soft marigold shape and a small sunset dot behind the photo. */}
             <span
               aria-hidden="true"
@@ -75,15 +77,15 @@ export default function Hero({ onDemo }) {
             <Photo
               slot="hero-trader"
               eager
-              className="aspect-square object-[28%_center] md:aspect-[4/3] md:object-center"
+              className="aspect-square object-[28%_center] md:aspect-[5/4] md:object-center"
               alt="A trader in a head wrap checks her phone at her stall, among sacks of rice and crates of eggs."
             />
 
-            {/* The app's Money screen, small, over the lower corner. */}
+            {/* The app's Money screen, small, hanging off the top right corner. */}
             <div
               aria-hidden="true"
               data-part="hero-phone"
-              className="absolute -bottom-10 -left-1 h-[173px] w-[131px] md:-bottom-12 md:-left-9 md:h-[206px] md:w-[156px]"
+              className="absolute -top-8 -right-2 h-[173px] w-[131px] md:-top-12 md:-right-6 md:h-[206px] md:w-[156px]"
             >
               <div className="w-[312px] origin-top-left scale-[0.42] md:scale-50">
                 <PhoneScreen height={400}>
@@ -92,10 +94,10 @@ export default function Hero({ onDemo }) {
               </div>
             </div>
 
-            <Chip className="top-4 -right-1 md:top-5 md:right-auto md:-left-8" icon={HandCoins} tone="marigold">
+            <Chip className="-top-4 left-2 md:-top-5 md:-left-8" icon={HandCoins} tone="marigold">
               Ada owes ₦20,000
             </Chip>
-            <Chip className="top-[38%] -right-1 [animation-delay:-3s] md:top-[46%] md:-right-6" icon={Eye} tone="sunset">
+            <Chip className="top-full right-3 mt-3 [animation-delay:-3s] md:right-8" icon={Eye} tone="sunset">
               3 things need your eye
             </Chip>
           </div>
@@ -105,7 +107,7 @@ export default function Hero({ onDemo }) {
   );
 }
 
-// A small white card floating over the photo; bobs slowly (static with
+// A small white card floating around the photo; bobs slowly (static with
 // reduced motion). Decorative: the same facts are told in the sections below.
 function Chip({ icon, tone, className, children }) {
   return (

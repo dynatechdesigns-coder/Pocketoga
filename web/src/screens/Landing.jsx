@@ -7,7 +7,6 @@ import WhatsAppWeb from "../landing/WhatsAppWeb.jsx";
 import Features from "../landing/Features.jsx";
 import Shops from "../landing/Shops.jsx";
 import Trust from "../landing/Trust.jsx";
-import Proof from "../landing/Proof.jsx";
 import FinalCta from "../landing/FinalCta.jsx";
 import Footer from "../landing/Footer.jsx";
 
@@ -31,7 +30,6 @@ export default function Landing({ onOpen }) {
         <Features />
         <Shops />
         <Trust />
-        <Proof />
         <FinalCta onDemo={demo} />
       </main>
       <Footer onDemo={demo} />

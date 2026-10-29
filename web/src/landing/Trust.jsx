@@ -10,31 +10,35 @@ const POINTS = [
 ];
 
 // The deep violet section: who decides, and the hash chain showing a change
-// being caught. The section is a dark-colour island (see Section tone).
+// being caught. Two equal columns, both centred on the same line, so neither
+// hangs below the other. The section is a dark-colour island (see Section tone).
 export default function Trust() {
   return (
     <Section id="trust" tone="violet" title="The AI suggests. You decide.">
-      <div className="grid gap-10 lg:grid-cols-[1fr_1.05fr] lg:items-center lg:gap-14">
-        <ul className="grid gap-7">
+      <div className="grid gap-10 lg:grid-cols-2 lg:items-stretch lg:gap-16">
+        <ul className="grid content-center gap-8">
           {POINTS.map(([Icon, title, text], i) => (
-            <Reveal as="li" key={title} delay={i * 80} className="flex gap-4">
+            <Reveal as="li" key={title} delay={i * 80} className="flex gap-5">
               <span
                 aria-hidden="true"
-                className="grid size-12 shrink-0 place-items-center rounded-2xl bg-white/10 text-marigold [&_svg]:size-6"
+                className="grid size-14 shrink-0 place-items-center rounded-2xl bg-white/10 text-marigold [&_svg]:size-7"
               >
                 <Icon strokeWidth={2} />
               </span>
-              <div className="grid gap-1">
-                <h3 className="text-xl font-extrabold text-white">{title}</h3>
-                <p className="max-w-[48ch] text-[1.0625rem] leading-relaxed text-white/85">{text}</p>
+              <div className="grid gap-1.5">
+                <h3 className="text-2xl leading-snug font-extrabold text-white">{title}</h3>
+                <p className="max-w-[44ch] text-[1.125rem] leading-relaxed text-white/90">{text}</p>
               </div>
             </Reveal>
           ))}
         </ul>
-        <Reveal delay={120}>
+        <Reveal delay={120} className="lg:h-full">
           <ChainDemo />
         </Reveal>
       </div>
+      <Reveal as="p" data-part="accuracy-note" className="mt-12 border-t border-white/15 pt-6 text-[1.125rem] text-white/90">
+        Accuracy results will be published here.
+      </Reveal>
     </Section>
   );
 }

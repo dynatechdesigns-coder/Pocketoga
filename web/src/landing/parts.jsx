@@ -60,6 +60,12 @@ export function Pill({ tone = "sunset", icon: Icon, className, children }) {
 }
 
 // A lucide icon on a soft warm tile.
+const TILE_SIZES = {
+  lg: "size-14 [&_svg]:size-7", // 56px
+  md: "size-12 [&_svg]:size-6",
+  sm: "size-9 rounded-xl [&_svg]:size-[18px]",
+};
+
 export function IconTile({ icon: Icon, tone = "sunset", size = "md" }) {
   return (
     <span
@@ -67,7 +73,7 @@ export function IconTile({ icon: Icon, tone = "sunset", size = "md" }) {
       className={cx(
         "grid shrink-0 place-items-center rounded-2xl",
         tone === "sunset" ? "bg-sunset-soft text-sunset-ink" : "bg-marigold-soft text-marigold-ink",
-        size === "md" ? "size-12 [&_svg]:size-6" : "size-9 rounded-xl [&_svg]:size-[18px]",
+        TILE_SIZES[size],
       )}
     >
       <Icon strokeWidth={2} />
@@ -152,7 +158,7 @@ export function ImageCard({ slot, alt, caption, aspect = "4 / 5", rounded = "lg"
 // from md up. The row can take keyboard focus so it can be scrolled with arrow
 // keys.
 const GRID_COLS = { 2: "md:grid-cols-2", 3: "md:grid-cols-3", 4: "md:grid-cols-4" };
-export function CardRow({ label, cols = 4, children }) {
+export function CardRow({ label, cols = 4, className, children }) {
   return (
     <div
       role="group"
@@ -164,6 +170,7 @@ export function CardRow({ label, cols = 4, children }) {
         "md:mx-0 md:grid md:snap-none md:overflow-visible md:px-0 md:pb-0",
         GRID_COLS[cols],
         "*:w-[72%] *:shrink-0 *:snap-start sm:*:w-[44%] md:*:w-auto",
+        className,
       )}
     >
       {children}

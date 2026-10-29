@@ -33,7 +33,7 @@ export default function HowItWorks() {
       <ol className="grid gap-12 md:grid-cols-3 md:gap-8">
         {STEPS.map(([slot, title, text, alt], i) => (
           <Reveal as="li" key={title} delay={i * 90} className="grid content-start gap-4">
-            <Photo slot={slot} alt={alt} aspect="4 / 3" />
+            <Photo slot={slot} alt={alt} className="aspect-[16/10] md:aspect-[4/3]" />
             <div className="flex items-center gap-3">
               <span
                 aria-hidden="true"
