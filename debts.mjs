@@ -119,7 +119,9 @@ export function customerDebts(rows, { now = Date.now() } = {}) {
 }
 
 // Per-sale oldest-first allocation: every effective sale with its unpaid
-// remainder and age in days. Same pool rules as customerDebts.
+// remainder and age in days. Same pool rules as customerDebts. Each line
+// also carries the row's id, item, quantity and unit so the /sales view can
+// show what was sold, not just the money.
 export function allocatedSales(rows, { now = Date.now() } = {}) {
   const today = lagosDay(now);
   const live = effectiveEntries(rows);
@@ -143,7 +145,11 @@ export function allocatedSales(rows, { now = Date.now() } = {}) {
       const applied = Math.min(s.amount_kobo, pool);
       pool -= applied;
       out.push({
+        id: s.id,
         customer: g.customer,
+        item: s.item ?? null,
+        quantity: Number.isInteger(s.quantity) ? s.quantity : null,
+        unit: s.unit ?? null,
         amountKobo: s.amount_kobo,
         paidKobo: applied,
         remainingKobo: s.amount_kobo - applied,

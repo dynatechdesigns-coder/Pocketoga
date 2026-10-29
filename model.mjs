@@ -26,11 +26,11 @@ Reply with JSON only, exactly this shape:
   "question": "a short clarifying question, or null"
 }
 Rules:
-- Entry types are only: sale (goods sold), payment (money received), restock (stock bought), expense (money spent). A sale with part payment is TWO entries: a sale for the full total and a payment for what was paid.
+- Entry types are only: sale (goods sold), payment (money received), purchase (stock bought), expense (money spent). A sale with part payment is TWO entries: a sale for the full total and a payment for what was paid.
 - "k" means thousand naira ("15k" = 15000). "remain 3k" means a 3000 naira remainder is still owed.
 - amountNaira and every totals leg are whole naira integers, never negative. amountPhrase is the trader's exact words for that amount. Fill totals only when the note states total, paid and remainder figures.
 - priceBasis says whether amountNaira is per item ("each"), for the whole lot ("total"), or "unclear" when the note does not say. "15k each" is each; a payment or an expense is always a total. Never guess: use "unclear".
-- An expense carries its category in item (one of: transport, rent, power, wages, stock-related, other), the payee in customer (or null when the shop itself paid), the whole-naira amount in amountNaira, priceBasis "total", and quantity and unit null.
+- An expense carries its category in item (one of: transport, rent, power, fuel, data, wages, stock-related, other), the payee in customer (or null when the shop itself paid), the whole-naira amount in amountNaira, priceBasis "total", and quantity and unit null.
 - promise captures when the trader says a customer will pay ("she go pay Friday", "he promise 20k by month end"): the customer name, the trader's exact day-words in datePhrase, and amountNaira (whole naira, or null when no amount is said). Never resolve the day into a date yourself; plain code does that. Null when the note states no promise.
 - quantity is a positive integer count of items, or null when the note has none.
 - unit is the container or count word in singular form, separate from item: "2 bags of rice" is item "rice", unit "bag", quantity 2; "3 tins of milk" is item "milk", unit "tin", quantity 3. Null when the note names none.
@@ -42,6 +42,13 @@ const FIX_SUFFIX =
 
 function badJson(message) {
   return Object.assign(new Error(message), { code: "MODEL_BAD_JSON" });
+}
+
+// The trader's shortcut tap, passed to the model as a likely type only —
+// never an order. Plain code re-checks the classification afterwards and
+// says so on the card when the note clearly says something else.
+function hintSentence(hint) {
+  return `Likely type: ${hint} (the trader tapped it first). Classify each entry by what they actually said — if they clearly said something else, use that.`;
 }
 
 function apiError(message) {
@@ -78,7 +85,7 @@ export function createModelClient({
   timeoutMs = 60000,
 } = {}) {
   return {
-    async complete({ text = null, audio = null, image = null, prior = null, system = null }) {
+    async complete({ text = null, audio = null, image = null, prior = null, system = null, hint = null }) {
       if (!apiKey) throw apiError("META_API_KEY is not set");
       if (audio && image) throw new Error("complete takes audio or image, not both");
       const isAudio = !!audio;
@@ -93,14 +100,14 @@ export function createModelClient({
         ];
       } else if (isAudio) {
         userContent = [
-          { type: "text", text: "Listen to this trader voice note and extract the bookkeeping JSON." },
+          { type: "text", text: `Listen to this trader voice note and extract the bookkeeping JSON.${hint ? ` ${hintSentence(hint)}` : ""}` },
           { type: "input_audio", input_audio: { data: audio.data, format: audio.format } },
         ];
       } else if (prior) {
         userContent =
-          `Previous proposal:\n${JSON.stringify(prior)}\n\nTrader correction: ${text}\n\nReturn the revised JSON.`;
+          `Previous proposal:\n${JSON.stringify(prior)}\n\nTrader correction: ${text}\n\nReturn the revised JSON.${hint ? `\n\n${hintSentence(hint)}` : ""}`;
       } else {
-        userContent = text;
+        userContent = hint ? `${text}\n\n${hintSentence(hint)}` : text;
       }
       let res;
       try {

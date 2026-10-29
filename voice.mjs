@@ -7,12 +7,23 @@ import { parseNaira, formatKobo } from "./money.mjs";
 import { escapeMd } from "./messages.mjs";
 import { resolvePromiseDate } from "./promises.mjs";
 import { runSecondOpinion, SECOND_OPINION_TIMEOUT_MS } from "./secondopinion.mjs";
+import { stockLevels, productKey } from "./products.mjs";
+import { costBasisByProduct, costBasisKey } from "./profit.mjs";
 
 export const PROPOSAL_TTL_MS = 30 * 60 * 1000;
+// Types stored in the ledger. The model, hints and forms say "purchase";
+// code normalizes it to "restock" before anything is checked or stored, so
+// the chain never sees a new type and the hash rules do not change.
 export const ENTRY_TYPES = ["sale", "payment", "restock", "expense"];
+export const HINT_TYPES = ["sale", "payment", "purchase", "expense"];
+export function normalizeEntryType(type) {
+  const t = typeof type === "string" ? type.trim().toLowerCase() : "";
+  if (t === "purchase") return "restock";
+  return ENTRY_TYPES.includes(t) ? t : null;
+}
 // Expense categories, stored in the item field. Anything the model sends
 // that is not on this list becomes "other" in pickExpenseCategory.
-export const EXPENSE_CATEGORIES = ["transport", "rent", "power", "wages", "stock-related", "other"];
+export const EXPENSE_CATEGORIES = ["transport", "rent", "power", "wages", "stock-related", "fuel", "data", "other"];
 export const PRICE_BASES = ["each", "total", "unclear"];
 // Words that mean a price is per item. Checked against the note when the
 // model claims the amount is a total.
@@ -55,6 +66,10 @@ export function toProposal(row) {
     correctionOf: env.correctionOf ?? null,
     correctionReason: env.correctionReason ?? null,
     photoCheck: env.photoCheck ?? null,
+    effects: env.effects ?? [],
+    source: row.source ?? null,
+    hint: env.hint ?? null,
+    hintNote: env.hintNote ?? null,
   };
 }
 
@@ -106,8 +121,9 @@ function checkLeg(naira, phrase, label, flags, notes, required = false) {
 function checkEntry(rawEntry, index, shopId, flags, notes, heard) {
   const label = `entry ${index + 1}`;
   const e = rawEntry && typeof rawEntry === "object" ? rawEntry : {};
-  if (!ENTRY_TYPES.includes(e.type)) {
-    flags.push(`${label}: unknown type "${String(e.type)}" (want sale, payment, restock or expense)`);
+  const type = normalizeEntryType(e.type);
+  if (!type) {
+    flags.push(`${label}: unknown type "${String(e.type)}" (want sale, payment, purchase, restock or expense)`);
     return null;
   }
   const { naira, kobo, phrase } = checkLeg(e.amountNaira, e.amountPhrase, label, flags, notes, true);
@@ -120,10 +136,10 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard) {
 
   let customer = cleanText(e.customer);
   if (!customer) {
-    if (e.type === "restock") {
+    if (type === "restock") {
       customer = shopId; // stock moves into the shop itself
       notes.push(`${label}: no supplier given, recorded for the shop`);
-    } else if (e.type === "expense") {
+    } else if (type === "expense") {
       customer = shopId; // the shop itself paid
       notes.push(`${label}: no payee given, recorded for the shop`);
     } else {
@@ -159,7 +175,7 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard) {
   }
 
   // Payments store money only: no item, quantity or unit reaches the ledger.
-  if (e.type === "payment") {
+  if (type === "payment") {
     if (basis === "each") {
       flags.push(`${label}: a payment is a total, not an each-price`);
       basis = "total";
@@ -172,14 +188,14 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard) {
     }
   }
 
-  if (e.type === "restock") {
+  if (type === "restock") {
     if (item === null) flags.push(`${label}: restock needs an item`);
     if (e.quantity === null || e.quantity === undefined) flags.push(`${label}: restock needs a quantity`);
   }
 
   // Expenses store money and a category only: quantity and unit never reach
   // the ledger, the amount is always a total, and code picks the category.
-  if (e.type === "expense") {
+  if (type === "expense") {
     if (basis === "each") {
       flags.push(`${label}: an expense is a total, not an each-price`);
       basis = "total";
@@ -191,12 +207,12 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard) {
     }
     item = pickExpenseCategory(e.item);
   }
-  if (e.type === "sale" && item !== null && (e.quantity === null || e.quantity === undefined)) {
+  if (type === "sale" && item !== null && (e.quantity === null || e.quantity === undefined)) {
     flags.push(`${label}: how many ${item}? quantity is missing`);
   }
 
   // The note says per-item but the model read a total: do not trust it.
-  if (basis === "total" && e.type !== "payment") {
+  if (basis === "total" && type !== "payment") {
     const match = `${heard ?? ""} ${phrase ?? ""}`.match(EACH_WORDS);
     if (match) {
       flags.push(`${label}: note says "${match[0].toLowerCase()}" but the amount was read as a total`);
@@ -226,7 +242,7 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard) {
   }
 
   return {
-    type: e.type,
+    type,
     customer,
     item,
     quantity,
@@ -417,6 +433,101 @@ function checkSimilarNames(entries, shopId, existingCustomers, checkedNames, fla
   }
 }
 
+// Similar-product check: each sale/restock item against the shop's catalog.
+// An exact (name, unit) match is clean; a near name with the same unit asks
+// the trader once ("...or say new product"). Questioned items are collected
+// into questioned as "item:<name>" so they never collide with customer
+// names in the same skip-list. Skipped entirely without a catalog.
+function checkSimilarProducts(entries, catalog, checkedNames, flags, questioned) {
+  if (!catalog || catalog.length === 0) return;
+  const checked = new Set((checkedNames ?? []).map((n) => normalizeName(n)));
+  const stored = (catalog ?? [])
+    .filter((p) => p && normalizeName(p.name))
+    .map((p) => ({ name: p.name.trim(), norm: normalizeName(p.name), unit: normalizeName(p.unit ?? "") }));
+  const asked = new Set();
+  for (const e of entries) {
+    if ((e.type !== "sale" && e.type !== "restock") || !e.item) continue;
+    const norm = normalizeName(e.item);
+    const key = `item:${norm}`;
+    if (!norm || checked.has(key) || asked.has(norm)) continue;
+    const unit = normalizeName(e.unit ?? "");
+    if (stored.some((s) => s.norm === norm && s.unit === unit)) continue;
+    const match = stored.find((s) => s.unit === unit && namesSimilar(norm, s.norm));
+    if (match) {
+      asked.add(norm);
+      questioned.push(key);
+      flags.push(`Is *${escapeMd(e.item.trim())}* the same product as *${escapeMd(match.name)}*? Send the right name, or say new product.`);
+    }
+  }
+}
+
+// Where one checked entry lands, in the trader's words. Payments reduce
+// what customers owe, so they land in Debts.
+export const ENTRY_DESTINATIONS = { sale: "Sales", payment: "Debts", restock: "Products", expense: "Expenses" };
+
+// Per-entry effects, computed by code from the shop's own rows and catalog:
+// the destination view, the stock movement (running across entries, so two
+// lines for one product chain correctly), and whether a sale's cost is
+// unknown (no trader price and no purchase history). Empty without rows,
+// so callers without a ledger simply show no effect lines.
+export function computeEffects(entries, { rows = null, catalog = null } = {}) {
+  if (!Array.isArray(entries) || entries.length === 0 || !rows) return [];
+  const levels = new Map(stockLevels(rows));
+  const basis = costBasisByProduct(rows);
+  const traderCosts = new Map();
+  for (const p of catalog ?? []) {
+    if (p && p.cost_price_kobo != null) traderCosts.set(costBasisKey(p.name, p.unit), p.cost_price_kobo);
+  }
+  return entries.map((e) => {
+    const effect = {
+      destination: ENTRY_DESTINATIONS[e.type] ?? null,
+      stockBefore: null,
+      stockAfter: null,
+      stockItem: null,
+      stockUnit: null,
+      negativeStock: false,
+      costUnknown: false,
+    };
+    if ((e.type !== "sale" && e.type !== "restock") || !e.item || !Number.isInteger(e.quantity)) return effect;
+    const before = levels.get(productKey(e.item, e.unit)) ?? 0;
+    const after = before + (e.type === "restock" ? e.quantity : -e.quantity);
+    levels.set(productKey(e.item, e.unit), after);
+    effect.stockBefore = before;
+    effect.stockAfter = after;
+    effect.stockItem = e.item;
+    effect.stockUnit = e.unit ?? null;
+    effect.negativeStock = after < 0;
+    if (e.type === "sale") {
+      const b = basis.get(costBasisKey(e.item, e.unit));
+      effect.costUnknown = traderCosts.get(costBasisKey(e.item, e.unit)) == null && (!b || b.qty <= 0);
+    }
+    return effect;
+  });
+}
+
+// Trader words for stored types: the ledger says restock, the trader tapped
+// purchase.
+const TYPE_WORDS = { sale: "sale", payment: "payment", restock: "purchase", expense: "expense" };
+
+function withArticle(word) {
+  return `${/^[aeiou]/i.test(word) ? "an" : "a"} ${word}`;
+}
+
+// The hint-mismatch sentence for the card: the note clearly says something
+// other than the tapped hint, so code says so and classifies as heard.
+// Null when the hint is absent, unknown, or matches at least one entry.
+export function hintMismatchNote(hint, entries) {
+  if (!hint || !Array.isArray(entries) || entries.length === 0) return null;
+  const want = normalizeEntryType(hint);
+  if (!want || entries.some((e) => e && e.type === want)) return null;
+  const said = withArticle(TYPE_WORDS[want]);
+  if (entries.length === 1 && TYPE_WORDS[entries[0]?.type]) {
+    const heardWord = TYPE_WORDS[entries[0].type];
+    return `You said this was ${said}, but it sounds like ${withArticle(heardWord)}. Saving it as ${withArticle(heardWord)}.`;
+  }
+  return `You said this was ${said}, but it sounds like something else. Saving each entry as heard.`;
+}
+
 // Distinct customer names already in the shop's own ledger. Empty when no
 // ledger was supplied, so those callers skip the similar-name check.
 function shopCustomers(ledger, shopId) {
@@ -467,8 +578,14 @@ function checkPromise(rawPromise, flags, nowMs) {
 }
 
 // Runs every check on raw model output. Missing or ambiguous input stays
-// pending with a clarifying question; nothing is ever guessed.
-export function checkModelOutput(raw, shopId, { existingCustomers = [], checkedNames = [], now = Date.now() } = {}) {
+// pending with a clarifying question; nothing is ever guessed. ledgerRows
+// and catalog are optional: without rows there are no effect lines, without
+// a catalog there is no similar-product check.
+export function checkModelOutput(
+  raw,
+  shopId,
+  { existingCustomers = [], checkedNames = [], now = Date.now(), ledgerRows = null, catalog = null } = {}
+) {
   const flags = [];
   const notes = [];
   const questionedNames = [];
@@ -482,6 +599,7 @@ export function checkModelOutput(raw, shopId, { existingCustomers = [], checkedN
   const totals = checkTotals(raw.totals, flags, notes);
   checkStatedRemainder(heard, entries, flags);
   checkSimilarNames(entries, shopId, existingCustomers, checkedNames, flags, questionedNames);
+  checkSimilarProducts(entries, catalog, checkedNames, flags, questionedNames);
   const promise = checkPromise(raw.promise, flags, now);
   if (entries.length === 0 && flags.length === 0) {
     flags.push("no entries to record");
@@ -489,7 +607,8 @@ export function checkModelOutput(raw, shopId, { existingCustomers = [], checkedN
   let question = cleanText(raw.question);
   if (question) flags.push(`needs clarification: ${question}`);
   if (!question && flags.length > 0) question = `Abeg check am: ${flags.join("; ")}`;
-  return { version: 1, entries, totals, flags, notes, heard, question, questionedNames, promise };
+  const effects = computeEffects(entries, { rows: ledgerRows, catalog });
+  return { version: 1, entries, totals, flags, notes, heard, question, questionedNames, promise, effects };
 }
 
 // --- Input handling --------------------------------------------------------
@@ -534,6 +653,18 @@ function confusedEnvelope(heard) {
 
 // --- Proposal operations ---------------------------------------------------
 
+// Customer names from already-read rows (same rule as shopCustomers,
+// without listing twice).
+function customersOf(rows) {
+  const seen = new Set();
+  for (const r of rows ?? []) {
+    if (typeof r.customer === "string" && r.customer.trim() && !seen.has(r.customer)) {
+      seen.add(r.customer);
+    }
+  }
+  return [...seen];
+}
+
 export async function propose(
   shopId,
   input,
@@ -541,6 +672,8 @@ export async function propose(
     proposals,
     model,
     ledger = null,
+    products = null,
+    hint = null,
     now = Date.now(),
     secondOpinions = null,
     secondOpinionFetch = fetch,
@@ -550,27 +683,41 @@ export async function propose(
 ) {
   if (!shopId || typeof shopId !== "string") throw voiceError(400, "shopId is required");
   if (!proposals || !model) throw new Error("propose needs { proposals, model }");
+  if (hint !== null && hint !== undefined && !HINT_TYPES.includes(String(hint).trim().toLowerCase())) {
+    throw voiceError(400, `unknown hint "${String(hint)}" (want sale, payment, purchase or expense)`);
+  }
+  const cleanHint = hint === null || hint === undefined ? null : String(hint).trim().toLowerCase();
   const norm = normalizeInput(input);
   const fallbackHeard = norm.kind === "text" ? norm.text : "(voice note)";
+  const source = norm.kind === "audio" ? "voice" : "text";
   let raw;
   try {
-    raw = norm.kind === "text" ? await model.complete({ text: norm.text }) : await model.complete({ audio: norm.audio });
+    raw =
+      norm.kind === "text"
+        ? await model.complete({ text: norm.text, ...(cleanHint ? { hint: cleanHint } : null) })
+        : await model.complete({ audio: norm.audio, ...(cleanHint ? { hint: cleanHint } : null) });
   } catch (err) {
     if (!isBadJson(err)) throw err; // transport/API errors propagate; nothing stored
     raw = null;
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     const c = confusedEnvelope(fallbackHeard);
-    const confused = proposals.create({ shopId, envelope: c.envelope, heard: c.heard, question: c.question });
+    const confused = proposals.create({ shopId, envelope: c.envelope, heard: c.heard, question: c.question, source });
     if (secondOpinions) {
       secondOpinions.record({ proposalId: confused.id, agreed: "no_second_opinion", differingFields: [], latencyMs: 0 });
     }
     return toProposal(confused);
   }
+  const ledgerRows = ledger && typeof ledger.list === "function" ? ledger.list(shopId) : null;
+  const catalog = products && typeof products.listByShop === "function" ? products.listByShop(shopId) : null;
   const { heard, question, questionedNames, ...envelope } = checkModelOutput(raw, shopId, {
-    existingCustomers: shopCustomers(ledger, shopId),
+    existingCustomers: customersOf(ledgerRows),
     now,
+    ledgerRows,
+    catalog,
   });
+  envelope.hint = cleanHint;
+  envelope.hintNote = hintMismatchNote(cleanHint, envelope.entries);
   // Second opinion: a second model re-reads the heard text and plain code
   // compares. Disagreement adds one code-built flag (the question when the
   // proposal has none, so the card asks once); entries are never touched.
@@ -600,6 +747,7 @@ export async function propose(
     heard,
     question: finalQuestion,
     nameChecked: questionedNames.length > 0 ? questionedNames : null,
+    source,
   });
   if (secondOpinions) {
     secondOpinions.record({
@@ -609,6 +757,122 @@ export async function propose(
       latencyMs: second.latencyMs,
     });
   }
+  return toProposal(row);
+}
+
+// --- Form path ---------------------------------------------------------------
+//
+// Structured fields straight into a proposal, with no model call. The same
+// checkModelOutput, effects, confirm card and confirm flow apply, so the
+// returned proposal object is identical in shape to the voice path's.
+// Present-but-wrong input is a plain 400; absent-but-needed input becomes a
+// clarifying question, exactly like the voice path. Nothing here touches
+// the ledger.
+export function proposeFromForm(shopId, fields, { proposals, ledger = null, products = null, now = Date.now() } = {}) {
+  if (!proposals) throw new Error("proposeFromForm needs { proposals }");
+  if (!shopId || typeof shopId !== "string") throw voiceError(400, "shopId is required");
+  const f = fields && typeof fields === "object" ? fields : null;
+  if (!f) throw voiceError(400, "form fields are required");
+  const type = normalizeEntryType(f.type);
+  if (!type) throw voiceError(400, `type must be one of sale, payment, purchase or expense (got "${String(f.type)}")`);
+
+  const hasTotal = f.amountNaira !== undefined && f.amountNaira !== null;
+  const hasEach = f.unitCostNaira !== undefined && f.unitCostNaira !== null;
+  if (hasTotal && hasEach) throw voiceError(400, "give the total amount or the unit cost, not both");
+  if (!hasTotal && !hasEach) throw voiceError(400, "an amount is required: amountNaira or unitCostNaira");
+  const figure = hasTotal ? f.amountNaira : f.unitCostNaira;
+  const figureName = hasTotal ? "amountNaira" : "unitCostNaira";
+  if (typeof figure !== "number" || !Number.isInteger(figure) || figure < 0) {
+    throw voiceError(400, `${figureName} must be a whole non-negative number (naira)`);
+  }
+  if (hasEach && (type === "payment" || type === "expense")) {
+    throw voiceError(400, "unit cost only applies to a sale or a purchase");
+  }
+  const quantity = f.quantity ?? null;
+  if (quantity !== null && (!Number.isInteger(quantity) || quantity <= 0)) {
+    throw voiceError(400, "quantity must be a positive integer");
+  }
+  if (hasEach && quantity === null) throw voiceError(400, "unitCostNaira needs a quantity");
+  if (quantity !== null && type === "payment") throw voiceError(400, "a payment has no quantity");
+  if (quantity !== null && type === "expense") throw voiceError(400, "an expense has no quantity");
+  const unit = f.unit ?? null;
+  if (unit !== null && (typeof unit !== "string" || !unit.trim())) throw voiceError(400, "unit must be text");
+  if (unit !== null && type === "payment") throw voiceError(400, "a payment has no unit");
+  if (unit !== null && type === "expense") throw voiceError(400, "an expense has no unit");
+  const customer = f.customer ?? null;
+  if (customer !== null && (typeof customer !== "string" || !customer.trim())) throw voiceError(400, "customer must be text");
+  const item = f.item ?? null;
+  if (item !== null && (typeof item !== "string" || !item.trim())) throw voiceError(400, "item must be text");
+  const category = f.category ?? null;
+  if (category !== null && type !== "expense") throw voiceError(400, "category only applies to an expense");
+  if (category !== null && (typeof category !== "string" || !category.trim())) throw voiceError(400, "category must be text");
+  const paid = f.amountPaidNaira ?? null;
+  if (paid !== null && type !== "sale") throw voiceError(400, "amount paid only applies to a sale");
+  if (paid !== null && (!Number.isInteger(paid) || paid < 0)) {
+    throw voiceError(400, "amountPaidNaira must be a whole non-negative number (naira)");
+  }
+  const note = f.note ?? null;
+  if (note !== null && typeof note !== "string") throw voiceError(400, "note must be text");
+
+  const cleanCustomer = customer && customer.trim() ? customer.trim() : null;
+  const cleanItem =
+    type === "expense"
+      ? category && category.trim()
+        ? category.trim()
+        : null
+      : item && item.trim()
+        ? item.trim()
+        : null;
+  const main = {
+    type,
+    customer: cleanCustomer,
+    item: cleanItem,
+    quantity,
+    unit: unit && unit.trim() ? unit.trim() : null,
+    amountNaira: figure,
+    amountPhrase: String(figure),
+    priceBasis: hasEach ? "each" : "total",
+  };
+  const entries = [main];
+  if (paid !== null) {
+    entries.push({
+      type: "payment",
+      customer: cleanCustomer,
+      item: null,
+      quantity: null,
+      unit: null,
+      amountNaira: paid,
+      amountPhrase: String(paid),
+      priceBasis: "total",
+    });
+  }
+  const heardAuto = [
+    "Form:",
+    TYPE_WORDS[type],
+    cleanCustomer,
+    cleanItem,
+    quantity !== null ? `${quantity}${main.unit ? ` ${main.unit}` : ""}` : null,
+    String(figure),
+  ]
+    .filter((x) => x !== null && x !== undefined && x !== "")
+    .join(" ");
+  const ledgerRows = ledger && typeof ledger.list === "function" ? ledger.list(shopId) : null;
+  const catalog = products && typeof products.listByShop === "function" ? products.listByShop(shopId) : null;
+  const { heard: checkedHeard, question, questionedNames, ...envelope } = checkModelOutput(
+    { heard: cleanText(note) ?? heardAuto, entries, totals: null, promise: null, question: null },
+    shopId,
+    { existingCustomers: customersOf(ledgerRows), now, ledgerRows, catalog }
+  );
+  envelope.hint = null;
+  envelope.hintNote = null;
+  const row = proposals.create({
+    shopId,
+    envelope,
+    heard: checkedHeard,
+    question,
+    nameChecked: questionedNames.length > 0 ? questionedNames : null,
+    source: "form",
+  });
   return toProposal(row);
 }
 
@@ -724,6 +988,7 @@ export function proposeCorrection(shopId, entryId, values, { proposals, ledger, 
     envelope: correctionEnvelope(entry, target, cleanReason),
     heard: heard ?? cleanReason,
     question: null,
+    source: "form",
   });
   return toProposal(row);
 }
@@ -766,6 +1031,7 @@ export async function proposeCorrectionFromText(shopId, entryId, text, { proposa
     envelope: correctionEnvelope(entry, target, cleanReason, { flags: checked.flags, notes: checked.notes }),
     heard: checked.heard,
     question: checked.question,
+    source: "text",
   });
   return toProposal(row);
 }
@@ -909,7 +1175,7 @@ export function confirmProposal(proposalId, shopId, { proposals, ledger, promise
 
 // Re-proposes using the previous proposal plus the trader's correction.
 // Renews the proposal clock. Never touches confirmed proposals.
-export async function fixProposal(proposalId, shopId, correctionText, { proposals, model, ledger = null, now = Date.now() }) {
+export async function fixProposal(proposalId, shopId, correctionText, { proposals, model, ledger = null, products = null, now = Date.now() }) {
   if (!proposals || !model) throw new Error("fixProposal needs { proposals, model }");
   if (!correctionText || typeof correctionText !== "string" || !correctionText.trim()) {
     throw voiceError(400, "correction text is required");
@@ -934,7 +1200,18 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
   const priorCorrection = { correctionOf: prior.correctionOf ?? null, correctionReason: prior.correctionReason ?? null };
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     const msg = "I no understand the correction — abeg talk am again.";
-    const envelope = { version: 1, entries: prior.entries, totals: prior.totals, flags: [msg], notes: prior.notes, promise: prior.promise ?? null, ...priorCorrection };
+    const envelope = {
+      version: 1,
+      entries: prior.entries,
+      totals: prior.totals,
+      flags: [msg],
+      notes: prior.notes,
+      promise: prior.promise ?? null,
+      effects: prior.effects ?? [],
+      hint: prior.hint ?? null,
+      hintNote: prior.hintNote ?? null,
+      ...priorCorrection,
+    };
     const updated = proposals.update(row.id, {
       status: "pending",
       envelope,
@@ -946,12 +1223,19 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
     return toProposal(updated);
   }
   const priorChecked = Array.isArray(prior.name_checked) ? prior.name_checked : [];
+  const ledgerRows = ledger && typeof ledger.list === "function" ? ledger.list(shopId) : null;
+  const catalog = products && typeof products.listByShop === "function" ? products.listByShop(shopId) : null;
   const checked = checkModelOutput(raw, shopId, {
-    existingCustomers: shopCustomers(ledger, shopId),
+    existingCustomers: customersOf(ledgerRows),
     checkedNames: priorChecked,
     now,
+    ledgerRows,
+    catalog,
   });
   const merged = [...new Set([...priorChecked, ...checked.questionedNames])];
+  // The hint describes how the note started, so it survives fixes; the
+  // mismatch sentence is recomputed against the revised entries.
+  const hint = prior.hint ?? null;
   const updated = proposals.update(row.id, {
     status: "pending",
     envelope: {
@@ -961,6 +1245,9 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
       flags: checked.flags,
       notes: prior.correctionOf == null ? checked.notes : [`corrects entry ${prior.correctionOf}`, ...checked.notes],
       promise: checked.promise,
+      effects: checked.effects,
+      hint,
+      hintNote: hintMismatchNote(hint, checked.entries),
       ...priorCorrection,
     },
     heard: checked.heard !== "(no transcript)" ? checked.heard : `${prior.heard}\nTrader: ${correctionText.trim()}`,

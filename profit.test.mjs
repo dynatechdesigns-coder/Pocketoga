@@ -163,9 +163,15 @@ describe("expense entries", () => {
   it("unknown categories become other; a missing payee becomes the shop", async () => {
     const ctx = setup();
     try {
-      const fuel = await proposeExpense(ctx, expenseReading({}, { item: "fuel" }));
-      assert.deepEqual(fuel.flags, []);
-      assert.equal(fuel.entries[0].item, "other");
+      const repairs = await proposeExpense(ctx, expenseReading({}, { item: "repairs" }));
+      assert.deepEqual(repairs.flags, []);
+      assert.equal(repairs.entries[0].item, "other");
+
+      for (const known of ["fuel", "data"]) {
+        const kept = await proposeExpense(ctx, expenseReading({}, { item: known }));
+        assert.deepEqual(kept.flags, []);
+        assert.equal(kept.entries[0].item, known);
+      }
 
       const capped = await proposeExpense(ctx, expenseReading({}, { item: "  Transport " }));
       assert.equal(capped.entries[0].item, "transport");

@@ -10,7 +10,8 @@ Meta Global AI Developer Hackathon, Indie track. Submission planned for the even
 
 - The AI only proposes. Plain code checks every number. The trader confirms every entry. Nothing is saved without a tap.
 - Append-only ledger: per-shop chain, `seq` from 1, `prev_hash` links, SHA-256 over `HASHED_FIELDS` (exact, in order): `["shop_id", "seq", "type", "amount_kobo", "customer", "item", "quantity", "unit", "created_at", "corrects_id", "prev_hash"]`. SQL triggers abort UPDATE/DELETE.
-- Money in integer kobo, never floats. Proposal entry types: sale, payment, restock, expense. Stored corrections use type `correction`. No `debt` type exists.
+- Money in integer kobo, never floats. Proposal entry types: sale, payment, restock, expense. The model, hints and forms say `purchase`; code normalizes it to `restock` before anything is checked or stored. Stored corrections use type `correction`. No `debt` type exists.
+- Record once: voice, text, hint and form all run the same propose, check and confirm flow. Every proposal carries a `source` (voice, text, form) and code-computed `effects` (destination view, stock movement, cost unknown); ledger rows look identical whatever the path.
 - Corrections are new entries (`corrects_id` link, same shop); reasons live in `corrections_log`, never in the ledger or hash.
 - Confirm is idempotent (`alreadyConfirmed`); proposals expire after 30 minutes.
 - Passwordless login: WhatsApp `dashboard` issues a one-time code (hash stored, 10-minute expiry, one use, 5 per number per hour); the code exchanges for a shop-scoped session token (expiring, revocable); every non-demo route needs a live token for exactly that shop; the demo shop stays public.
@@ -22,18 +23,18 @@ Backend: Node ESM (`.mjs`), `node:http`, `node:sqlite`, `node:crypto`, `node:tes
 
 - `ledger.mjs` — append-only chain, `verify`/`verifyChain`, `appendCorrection`, `recordCorrectionReason`.
 - `proposals.mjs` — draft proposals; drafts never touch the ledger.
-- `voice.mjs` — propose/fix/confirm/reject/get; model-output validation, price basis (`each`/`total`/`unclear`), stated-remainder and similar-name checks.
+- `voice.mjs` — propose/fix/confirm/reject/get plus `proposeFromForm` (no model call); model-output validation, price basis (`each`/`total`/`unclear`), stated-remainder, similar-name and similar-product checks, hint handling, code-computed effects.
 - `money.mjs` — `parseNaira` (15k, N2,500, number words), `nairaToKobo`, `formatKobo`.
 - `model.mjs` — Meta API client (text, audio, image) plus the mock client all tests use.
 - `photos.mjs` — photo pipeline and Alert Guard checks, plus the `payment_checks` store (extracted fields only, never raw photos).
 - `whatsapp.mjs` — webhook processing, commands, voice notes, Save/Fix/Reject buttons, dedupe, allow-list.
 - `server.mjs` — main API plus webhook-only listener; `buildDeps(env)` wires stores without sockets.
 - `auth.mjs` — `AuthStore`: login codes (hash, expiry, one use, rate limits) and sessions (verify, revoke).
-- `messages.mjs` — every user-facing WhatsApp string (cards, debts, chase, report, stock, profit, expenses).
+- `messages.mjs` — every user-facing WhatsApp string (cards with destinations and effect lines, debts, chase, report, stock, profit, expenses).
 - `debts.mjs` — balances (oldest-first), chase ranking, Lagos-day helpers. `promises.mjs` — promise store, code-resolved dates, kept/broken. `leak.mjs` — Money Leak Report, including unconfirmed transfers.
 - `products.mjs` — catalog (auto-created on confirm, trader-set prices, stock from ledger, low at ≤3). `customers.mjs` — directory (phones + consent, never in the ledger).
 - `secondopinion.mjs` — Baseten re-read of the note plus code comparison; stats in `second_opinions`.
-- `profit.mjs` — profit and expenses per period (Lagos time), weighted-average COGS, bucketed series.
+- `profit.mjs` — profit and expenses per period (Lagos time), weighted-average COGS (`costBasisByProduct`, shared with the catalog), bucketed series.
 - `scripts/gen-landing.mjs` — generates the 12 landing photos with Muse Image. `scripts/optimize-landing.mjs` — resizes/re-encodes them to ≤200 KB (originals kept in `_originals/`).
 - Helpers: `preview-messages.mjs`, `preview-debts.mjs`, `preview-profit.mjs` (print cards in terminal); `smoke-live.mjs` (manual propose-only run); `tamper-demo.mjs` (local verify demo); `audio-test*.mjs`, `baseten-test.mjs` (manual model probes); `note*.wav` (sample audio for the probes). `test-notes.md` is the manual test log.
 
@@ -47,18 +48,20 @@ Main server only, except `/webhook` (served on both ports). Every route except `
 
 | Route | Request → response | Tests |
 |---|---|---|
-| POST `/propose` | `{ text }` or `{ audioBase64, audioFormat }` → 201 `{ proposal }` | voice |
+| POST `/propose` | `{ text, hint? }` or `{ audioBase64, audioFormat, hint? }` (hint: sale/payment/purchase/expense, likely type only) → 201 `{ proposal }` | voice, entries |
+| POST `/propose-form` | structured fields (no model call) → 201 `{ proposal }` (same object as `/propose`) | entries |
 | POST `/confirm/:id` | — → `{ proposal, recordedIds, alreadyConfirmed }` | voice |
 | POST `/fix/:id` | `{ correctionText }` (or `{ text }`) → `{ proposal }` | voice |
 | POST `/reject/:id` | — → `{ proposal }` | voice |
 | GET `/proposals/:id` | — → `{ proposal }` | voice |
 | GET `/ledger` | — → `{ entries, verify }` (entries gain `correctedById`, `correctionReason`) | voice, corrections |
-| POST `/ledger/:id/correct` | `{ amountKobo?, customer?, item?, quantity?, unit?, reason }` (reason required) → `{ entry, verify }` | corrections |
+| POST `/ledger/:id/correct` | `{ amountKobo?, customer?, item?, quantity?, unit?, reason }` (reason required) → `{ entry, verify }` (advanced: writes without propose/confirm) | corrections |
 | POST `/correct-last` | `{ entryId?, amountKobo?, customer?, item?, quantity?, unit?, reason }` → 201 `{ proposal }` (proposes a correction of the latest entry; confirm to record) | corrections |
 | POST `/photo-checks` | `{ photoBase64, photoFormat }` → 201 `{ proposal }` (classifies the photo and runs Alert Guard; confirm records a payment check, never the ledger) | photos |
 | GET `/debts` | — → `{ debts, chase }` | whatsapp, corrections |
 | GET `/promises` | — → `{ promises }` | whatsapp |
 | GET `/report` | — → `{ report }` | server, whatsapp, corrections |
+| GET `/sales` | — → `{ sales }` (per sale: customer, item, quantity, unit, amount, paid, owed) | entries |
 | GET `/products` | — → `{ products }` | products |
 | POST `/products/:id` | `{ sellPriceKobo?, costPriceKobo? }` (whole kobo ≥ 0, at least one) → `{ product }` | products |
 | GET `/customers` | — → `{ customers }` | customers |
@@ -71,27 +74,27 @@ Main server only, except `/webhook` (served on both ports). Every route except `
 | GET `/webhook` | Meta handshake query → challenge text | server, whatsapp |
 | POST `/webhook` | signed Meta payload → `{ ok: true }` (work runs after responding) | whatsapp |
 
-Shapes: `proposal` is `{ id, shop_id, status, heard, question, created_at, entries, totals, flags, notes, recorded_ids, name_checked, promise, correctionOf, correctionReason, photoCheck }` (`correctionOf`/`correctionReason` set only on correction proposals, `photoCheck` only on photo proposals, where `recorded_ids` is `{ paymentCheckId }`); entry is `{ id, shop_id, seq, prev_hash, entry_hash, type, amount_kobo, customer, item, quantity, unit, corrects_id, created_at }`; `verify` is `{ ok, count, shopId }`; `product` is `{ id, name, unit, sellPriceKobo, costPriceKobo, stockOnHand, lowStock }`; `customer` is `{ id, name, phone, owedKobo, lastActivityAt }`.
+Shapes: `proposal` is `{ id, shop_id, status, heard, question, created_at, entries, totals, flags, notes, recorded_ids, name_checked, promise, correctionOf, correctionReason, photoCheck, effects, source, hint, hintNote }` (`correctionOf`/`correctionReason` set only on correction proposals, `photoCheck` only on photo proposals, where `recorded_ids` is `{ paymentCheckId }`; `effects` is per-entry `{ destination, stockBefore, stockAfter, stockItem, stockUnit, negativeStock, costUnknown }`; `source` is voice/text/form); entry is `{ id, shop_id, seq, prev_hash, entry_hash, type, amount_kobo, customer, item, quantity, unit, corrects_id, created_at }`; `verify` is `{ ok, count, shopId }`; `product` is `{ id, name, unit, sellPriceKobo, costPriceKobo, costSource, stockOnHand, lowStock }` (`costSource`: trader/purchases/unknown); `customer` is `{ id, name, phone, owedKobo, lastActivityAt }`.
 
 ## 5. WhatsApp
 
 - Main server on `PORT` (default 3000, local only); webhook-only listener on `WEBHOOK_PORT` (default 3001, 404s everything but `/webhook`). Tunnel points at 3001 only. `WEBHOOK_PUBLIC_ONLY=1` hides non-webhook routes from tunnelled traffic.
 - POST signature: HMAC-SHA256 over the raw body compared (timing-safe) with `x-hub-signature-256`, secret `WHATSAPP_APP_SECRET`. GET handshake via `WHATSAPP_VERIFY_TOKEN`. Replies via Graph API (`WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`).
 - Only `WHATSAPP_ALLOWED_NUMBERS` (comma-separated) are served; anyone else gets a not-registered reply. Each sender maps to a shop (`wa-` + 16 hash chars). Duplicate deliveries are deduped; secrets and full numbers are masked in logs.
-- Exact commands, matched before the note flow (case-insensitive): `who owes`, `chase`, `report`, `stock`, `profit`, `profit week`, `profit month`, `balance <name>` — all answered without the model — plus `fix last <text>`, which reads the corrected note with the model and shows a correction card with Save/Fix/Reject (bare `fix last` explains the usage), and `dashboard`, which texts back a one-time login code (10-minute expiry, one use, 5 per number per hour).
+- Exact commands, matched before the note flow (case-insensitive): `who owes`, `chase`, `report`, `stock`, `profit`, `profit week`, `profit month`, `expenses`, `balance <name>` — all answered without the model — plus `fix last <text>`, which reads the corrected note with the model and shows a correction card with Save/Fix/Reject (bare `fix last` explains the usage), and `dashboard`, which texts back a one-time login code (10-minute expiry, one use, 5 per number per hour).
 - Voice notes: media is downloaded immediately, converted with ffmpeg to 16 kHz mono WAV, then sent to the audio model; clear fallback messages when ffmpeg or conversion fails. Text/voice notes get proposal cards with Save/Fix/Reject buttons; per-sender fix state tracks what Fix refers to.
 - Photos: the trader sends a JPG/PNG; Alert Guard classifies it, extracts fields and runs code checks, then shows a result card ("warning signs found" / "no warning signs found") with Save/Fix/Reject. Save records an unconfirmed transfer plus a follow-up card with the "I saw it in my bank" button (four buttons can't fit one WhatsApp card); the tap marks it confirmed. Fix on a photo card asks for the photo again. Never "verified".
 
 ## 6. Models
 
-- Meta Model API (`https://api.meta.ai/v1`, key `META_API_KEY`): `muse-spark-1.3` for text extraction, `muse-spark-1.2` for audio input (`input_audio` WAV part), `muse-spark-1.3` for photos (`image_url` part, JSON contract in `PHOTO_SYSTEM_PROMPT`): the model classifies the photo type and extracts fields, code runs every check. `reasoning_effort: minimal`, JSON-only replies. All suites use the mock client.
+- Meta Model API (`https://api.meta.ai/v1`, key `META_API_KEY`): `muse-spark-1.3` for text extraction, `muse-spark-1.2` for audio input (`input_audio` WAV part), `muse-spark-1.3` for photos (`image_url` part, JSON contract in `PHOTO_SYSTEM_PROMPT`): the model classifies the photo type and extracts fields, code runs every check. `reasoning_effort: minimal`, JSON-only replies. The prompt's types are sale/payment/purchase/expense and its expense categories include fuel and data; an optional hint rides along as a likely type only. All suites use the mock client.
 - Second opinion: a Baseten text model (`BASETEN_API_KEY` + `BASETEN_MODEL`, `https://inference.baseten.co/v1/chat/completions`) re-reads the note's heard text with the same prompt (6 s timeout); plain code compares types, customers, amounts, quantity, unit, price basis, promise and expense category. Disagreement adds one code-built flag, never changes entries; stats go to `second_opinions`; skipped silently without keys.
 - Landing photos: Muse Image (`muse-image-1.0`, `POST /v1/images/generations`, webp out). `scripts/gen-landing.mjs` generates 12 shots (key from `META_API_KEY`); `scripts/optimize-landing.mjs` fits each under 200 KB.
 
 ## 7. Status
 
-Built and tested: the whole backend above plus all 23 routes, incl. passwordless login (`dashboard` code → session token, demo public). `npm test`: 320 pass, 0 fail, 61 suites, on 29 Oct 2026. Manual log (`test-notes.md` sessions 1–3): typed notes, phone web tests, WhatsApp text + voice; fixes landed for price basis, unit column, payment items, stated-remainder and similar-name checks. Web app: all screens, correction UI, demo seeding, landing page with photo slots.
-Built but needing a check: web against the real backend without the dev mock (mock still covers profit/expenses/products/customers/correct; `check:build` guards production); second-opinion live accuracy; spoken-note accuracy (hand-tested only); Alert Guard live photo accuracy (mock-tested only); `audio-test.mjs` predates the current audio path; landing `shop-*` photos and the optimizer run (8 of 12 photos present on 29 Oct).
+Built and tested: the whole backend above plus all 25 routes, incl. passwordless login (`dashboard` code → session token, demo public) and the record-once flow (voice/text/hint/form → one propose/check/confirm; `/sales`; `expenses` command; catalog unit cost from purchases with trader override). `npm test`: 357 pass, 0 fail, 71 suites, on 29 Oct 2026. Manual log (`test-notes.md` sessions 1–3): typed notes, phone web tests, WhatsApp text + voice; fixes landed for price basis, unit column, payment items, stated-remainder and similar-name checks. Web app: all screens, correction UI, demo seeding, landing page with photo slots.
+Built but needing a check: web `check:copy` is red until `whatsappDemo.js` CARD_TEXT gains the card's new `→ Sales`/`→ Debts` destinations (bot side done); web against the real backend without the dev mock (mock still covers profit/expenses/products/customers/correct; `check:build` guards production); second-opinion live accuracy; spoken-note accuracy (hand-tested only); Alert Guard live photo accuracy (mock-tested only); `audio-test.mjs` predates the current audio path; landing `shop-*` photos and the optimizer run (8 of 12 photos present on 29 Oct).
 Not started: web login screen (backend sessions ready; web still opens shops by name); offline notes queue (`occurred_at`), notebook photo import, accuracy numbers and red-team report (`/accuracy` is a "coming soon" placeholder).
 
 ## 8. Working rules
@@ -135,7 +138,18 @@ POST /customers/:id/clear-phone
 
 POST /correct-last
 ← { "entryId"?: int, "amountKobo"?: int ≥ 0, "customer"?: string, "item"?: string|null, "quantity"?: int|null, "unit"?: string|null, "reason": string }
-→ 201 { "proposal": { "id": int, "shop_id": string, "status": "pending", "heard": string, "question": string|null, "created_at": string, "entries": [{ "type": string, "customer": string, "item": string|null, "quantity": int|null, "unit": string|null, "priceBasis": "total", "amountNaira": int|null, "amountKobo": int, "amountPhrase": string|null, "eachNaira": null, "eachKobo": null }], "totals": null, "flags": [], "notes": string[], "recorded_ids": null, "name_checked": null, "promise": null, "correctionOf": int, "correctionReason": string } }
+→ 201 { "proposal": { "id": int, "shop_id": string, "status": "pending", "heard": string, "question": string|null, "created_at": string, "entries": [{ "type": string, "customer": string, "item": string|null, "quantity": int|null, "unit": string|null, "priceBasis": "total", "amountNaira": int|null, "amountKobo": int, "amountPhrase": string|null, "eachNaira": null, "eachKobo": null }], "totals": null, "flags": [], "notes": string[], "recorded_ids": null, "name_checked": null, "promise": null, "correctionOf": int, "correctionReason": string, "effects": [], "source": "form", "hint": null, "hintNote": null } }
+
+POST /propose
+← { "text": string, "hint"?: "sale"|"payment"|"purchase"|"expense" } or { "audioBase64": string, "audioFormat": "wav"|"mp3", "hint"?: "sale"|"payment"|"purchase"|"expense" }
+→ 201 { "proposal": { "id": int, "shop_id": string, "status": "pending", "heard": string, "question": string|null, "created_at": string, "entries": [{ "type": "sale"|"payment"|"restock"|"expense", "customer": string|null, "item": string|null, "quantity": int|null, "unit": string|null, "priceBasis": "each"|"total"|"unclear", "amountNaira": int|null, "amountKobo": int|null, "amountPhrase": string|null, "eachNaira": int|null, "eachKobo": int|null }], "totals": object|null, "flags": string[], "notes": string[], "recorded_ids": null, "name_checked": string[]|null, "promise": object|null, "correctionOf": null, "correctionReason": null, "photoCheck": null, "effects": [{ "destination": "Sales"|"Debts"|"Products"|"Expenses"|null, "stockBefore": int|null, "stockAfter": int|null, "stockItem": string|null, "stockUnit": string|null, "negativeStock": bool, "costUnknown": bool }], "source": "voice"|"text", "hint": string|null, "hintNote": string|null } }
+
+POST /propose-form
+← { "type": "sale"|"payment"|"purchase"|"expense", "amountNaira"?: int ≥ 0, "unitCostNaira"?: int ≥ 0 (exactly one amount; unit cost needs quantity, sale/purchase only), "customer"?: string, "item"?: string, "quantity"?: int > 0, "unit"?: string, "category"?: string (expense only), "amountPaidNaira"?: int ≥ 0 (sale only, adds a payment entry), "note"?: string }
+→ 201 { "proposal": (same object as POST /propose, with "source": "form") }
+
+GET /sales
+→ { "sales": [{ "id": int, "customer": string, "item": string|null, "quantity": int|null, "unit": string|null, "amountKobo": int, "paidKobo": int, "owedKobo": int, "ageDays": int, "createdAt": string }] }
 
 POST /photo-checks
 ← { "photoBase64": string, "photoFormat": "png"|"jpg"|"jpeg" }

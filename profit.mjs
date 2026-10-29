@@ -46,14 +46,18 @@ function normStock(value) {
   return String(value ?? "").trim().toLowerCase();
 }
 
+// Cost-basis key for one (item, unit): lowercased, null units group
+// together. Same grouping as the leak report.
+export function costBasisKey(item, unit) {
+  return `${normStock(item)}|${normStock(unit)}`;
+}
+
 // (item, unit) key for cost attribution; null when the row cannot be
-// attributed (no item or no usable quantity). Same grouping as the leak
-// report: lowercased, null units group together.
+// attributed (no item or no usable quantity).
 function stockKey(row) {
   if (!Number.isInteger(row.quantity) || row.quantity <= 0) return null;
-  const item = normStock(row.item);
-  if (!item) return null;
-  return `${item}|${normStock(row.unit)}`;
+  if (!normStock(row.item)) return null;
+  return costBasisKey(row.item, row.unit);
 }
 
 function emptyBucket(label) {
@@ -76,6 +80,26 @@ function rowBucket(period, stamp) {
   return lagosDay(stamp);
 }
 
+// All-time restock cost basis per (item, unit): key -> { qty, kobo }.
+// October sales run on September stock, so the basis ignores periods.
+// Shared by profit (COGS) and the products catalog (unit cost from
+// purchases); one grouping, no drift between the two.
+export function costBasisByProduct(ledgerRows) {
+  const rows = ledgerRows ?? [];
+  const basis = new Map();
+  for (const r of effectiveEntries(rows)) {
+    if (stockKind(r, rows) !== "restock") continue;
+    if (!Number.isInteger(r.amount_kobo)) continue;
+    const key = stockKey(r);
+    if (!key) continue;
+    const b = basis.get(key) ?? { qty: 0, kobo: 0 };
+    b.qty += r.quantity;
+    b.kobo += r.amount_kobo;
+    basis.set(key, b);
+  }
+  return basis;
+}
+
 // Profit for a period: sales and payments recorded inside from..to (Lagos),
 // cost of goods from the all-time weighted restock average per item and
 // unit, expenses recorded inside the period. Sales without restock history
@@ -96,19 +120,7 @@ export function profitForPeriod(ledgerRows, period, { now = Date.now() } = {}) {
   const live = effectiveEntries(rows);
   const byId = new Map(rows.map((r) => [r.id, r]));
 
-  // Restock cost basis over ALL history — October sales run on September
-  // stock. Key -> { qty, kobo }.
-  const basis = new Map();
-  for (const r of live) {
-    if (stockKind(r, rows) !== "restock") continue;
-    if (!Number.isInteger(r.amount_kobo)) continue;
-    const key = stockKey(r);
-    if (!key) continue;
-    const b = basis.get(key) ?? { qty: 0, kobo: 0 };
-    b.qty += r.quantity;
-    b.kobo += r.amount_kobo;
-    basis.set(key, b);
-  }
+  const basis = costBasisByProduct(rows);
 
   const buckets = new Map(bucketLabels(period, from, to).map((label) => [label, emptyBucket(label)]));
   let salesKobo = 0;

@@ -285,7 +285,7 @@ describe("products routes", () => {
       assert.equal(out.status, 200);
       assert.deepEqual(out.json, {
         products: [
-          { id: rice.id, name: "rice", unit: "bag", sellPriceKobo: 1500000, costPriceKobo: 1200000, stockOnHand: 6, lowStock: false },
+          { id: rice.id, name: "rice", unit: "bag", sellPriceKobo: 1500000, costPriceKobo: 1200000, costSource: "trader", stockOnHand: 6, lowStock: false },
         ],
       });
 

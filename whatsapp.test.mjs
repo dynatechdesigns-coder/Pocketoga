@@ -845,6 +845,42 @@ describe("debt commands (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", () =
     }
   });
 
+  it("parses expenses exactly", () => {
+    assert.deepEqual(parseCommand("expenses"), { name: "expenses", period: "today" });
+    assert.deepEqual(parseCommand("  EXPENSES! "), { name: "expenses", period: "today" });
+    assert.equal(parseCommand("expense"), null);
+    assert.equal(parseCommand("my expenses"), null);
+  });
+
+  it("expenses answers today's totals by category without calling the model", async () => {
+    const calls = [];
+    const ctx = setup(
+      async (req) => {
+        calls.push(req);
+        return WA_PART;
+      },
+      { nowMs: NOW }
+    );
+    try {
+      const shop = shopOf(ctx);
+      ctx.ledger.append({ shopId: shop, type: "expense", amountKobo: 500000, customer: "NEPA", item: "power", createdAt: daysAgo(0) });
+      ctx.ledger.append({ shopId: shop, type: "expense", amountKobo: 200000, customer: shop, item: "fuel", createdAt: daysAgo(0) });
+      ctx.ledger.append({ shopId: shop, type: "expense", amountKobo: 99999900, customer: shop, item: "rent", createdAt: daysAgo(1) });
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "expenses")]));
+      assert.equal(calls.length, 0);
+      const reply = sends(ctx).at(-1).body;
+      assert.equal(reply.type, "text");
+      assert.match(reply.text.body, /Expenses today/);
+      assert.match(reply.text.body, /Total \*₦7,000\*/);
+      assert.match(reply.text.body, /Power \*₦5,000\*/);
+      assert.match(reply.text.body, /Fuel \*₦2,000\*/);
+      assert.ok(!reply.text.body.includes("Rent"), reply.text.body);
+      assert.ok(reply.text.body.length <= 1024);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
   it("profit answers today, week and month without calling the model", async () => {
     const calls = [];
     const ctx = setup(

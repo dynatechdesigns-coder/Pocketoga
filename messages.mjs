@@ -73,10 +73,15 @@ export function friendlyErrorText(err) {
 // WhatsApp has no backslash escape, so formatting characters inside
 // user/model text are swapped for fullwidth lookalikes that render almost
 // the same but can never open or close *bold* / _italic_ / ~strike~ / `mono`.
+// Whitespace runs collapse to one space so a hostile newline in a name or
+// item cannot forge extra card lines.
 const MD_SWAP = { "*": "＊", _: "＿", "~": "～", "`": "｀" };
 
 export function escapeMd(text) {
-  return String(text ?? "").replace(/[*_~`]/g, (ch) => MD_SWAP[ch]);
+  return String(text ?? "")
+    .replace(/[*_~`]/g, (ch) => MD_SWAP[ch])
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function boldAmount(kobo) {
@@ -126,14 +131,19 @@ function expenseBody(e) {
   return `${escapeMd(category)}: ${boldAmount(e.amountKobo)}`;
 }
 
+// Where each entry lands, in the trader's words; every card line names it.
+const ENTRY_DESTINATIONS = { sale: "Sales", payment: "Debts", restock: "Products", expense: "Expenses" };
+
 // One proposal entry as a card line. In multi-customer cards every line is
-// prefixed with its customer; otherwise the header already names them.
+// prefixed with its customer; otherwise the header already names them. Each
+// line ends with the view the entry lands in ("→ Sales").
 function entryLine(e, prefixCustomer) {
   const pre = prefixCustomer && e.customer ? `*${escapeMd(e.customer)}*: ` : "";
-  if (e.type === "payment") return `${pre}${EMOJI.payment} Paid: ${boldAmount(e.amountKobo)}`;
-  if (e.type === "restock") return `${pre}${EMOJI.restock} ${restockBody(e)}`;
-  if (e.type === "expense") return `${pre}${EMOJI.expense} ${expenseBody(e)}`;
-  return `${pre}${saleBody(e)}`;
+  const dest = ENTRY_DESTINATIONS[e.type] ? ` → ${ENTRY_DESTINATIONS[e.type]}` : "";
+  if (e.type === "payment") return `${pre}${EMOJI.payment} Paid: ${boldAmount(e.amountKobo)}${dest}`;
+  if (e.type === "restock") return `${pre}${EMOJI.restock} ${restockBody(e)}${dest}`;
+  if (e.type === "expense") return `${pre}${EMOJI.expense} ${expenseBody(e)}${dest}`;
+  return `${pre}${saleBody(e)}${e.type === "sale" ? dest : ""}`;
 }
 
 function multipleCustomers(entries) {
@@ -272,13 +282,14 @@ function mismatchLine(flag) {
 
 // Similar-name flags carry code-added *bold* around the two names. The names
 // are escaped again here (idempotent for code-built flags) so a forged shape
-// with raw markdown still cannot break card formatting.
-const SAME_PERSON_RE = /^Is \*(.+?)\* the same person as \*(.+?)\*\? Send the right name, or say new customer\.$/;
+// with raw markdown still cannot break card formatting. Person and product
+// flags share the shape.
+const SAME_PERSON_RE = /^Is \*(.+?)\* the same (person|product) as \*(.+?)\*\? Send the right name, or say new (customer|product)\.$/;
 
 function renderCheckLine(text) {
   const match = SAME_PERSON_RE.exec(text);
   if (match) {
-    return `Is *${escapeMd(match[1])}* the same person as *${escapeMd(match[2])}*? Send the right name, or say new customer.`;
+    return `Is *${escapeMd(match[1])}* the same ${match[2]} as *${escapeMd(match[3])}*? Send the right name, or say new ${match[4]}.`;
   }
   return escapeMd(text);
 }
@@ -331,6 +342,37 @@ function correctionLine(proposal) {
     : `Fixes entry #${proposal.correctionOf}`;
 }
 
+// Stock movements and cost unknowns from the proposal's code-computed
+// effects ("Rice stock 10 → 8 bags", "Rice: cost unknown."). Display only:
+// a negative landing warns but never blocks — the trader decides.
+function effectLines(proposal) {
+  const out = [];
+  for (const fx of proposal.effects ?? []) {
+    if (!fx) continue;
+    if (
+      Number.isInteger(fx.stockBefore) &&
+      Number.isInteger(fx.stockAfter) &&
+      typeof fx.stockItem === "string" &&
+      fx.stockItem
+    ) {
+      const unit = fx.stockUnit ? ` ${pluralUnit(fx.stockAfter, escapeMd(fx.stockUnit))}` : "";
+      let line = `${escapeMd(fx.stockItem)} stock ${fx.stockBefore} → ${fx.stockAfter}${unit}`;
+      if (fx.negativeStock) line += " — stock would go negative";
+      out.push(line);
+    }
+    if (fx.costUnknown && typeof fx.stockItem === "string" && fx.stockItem) {
+      out.push(`${escapeMd(fx.stockItem)}: cost unknown.`);
+    }
+  }
+  return out;
+}
+
+// The hint-mismatch sentence, when the note clearly said something other
+// than the tapped hint. Code-built from fixed words; escaped anyway.
+function hintLine(proposal) {
+  return typeof proposal.hintNote === "string" && proposal.hintNote ? escapeMd(proposal.hintNote) : null;
+}
+
 function renderCleanCard(proposal, { existing = [], shopId = null, products = [], heardMax = MAX_HEARD_CHARS }) {
   const multi = multipleCustomers(proposal.entries);
   const entries = proposal.entries.map((e) => entryLine(e, multi)).join("\n");
@@ -338,6 +380,8 @@ function renderCleanCard(proposal, { existing = [], shopId = null, products = []
     correctionLine(proposal),
     cardHeader(proposal, shopId),
     entries,
+    effectLines(proposal).join("\n"),
+    hintLine(proposal),
     usualPriceLines(proposal.entries, products).join("\n"),
     promiseCardLine(proposal.promise),
     owesLines(proposal, existing, shopId, " after saving").join("\n"),
@@ -354,6 +398,8 @@ function renderCheckCard(proposal, { products = [], heardMax = MAX_HEARD_CHARS }
     `${EMOJI.check} *Check this one*`,
     correctionLine(proposal),
     arithmetic,
+    effectLines(proposal).join("\n"),
+    hintLine(proposal),
     usualPriceLines(proposal.entries, products).join("\n"),
     dedupeChecks(proposal).join("\n"),
     heardLine(proposal.heard, heardMax),
@@ -607,6 +653,29 @@ export function renderProfit(profit) {
   if (Number.isInteger(missing) && missing > 0) {
     lines.push(`cost missing for ${missing} items, so this may be too high`);
   }
+  return fitBody(lines.join("\n"));
+}
+
+const EXPENSE_TITLES = { today: "Expenses today", week: "Expenses this week", month: "Expenses this month", year: "Expenses this year" };
+
+// Expenses for a period: the total, every category, then the five newest
+// lines. Same view as GET /expenses.
+export function renderExpenses(view, period = "today") {
+  const title = EXPENSE_TITLES[period] ?? "Expenses";
+  const list = view?.expenses ?? [];
+  const total = list.reduce((t, e) => t + (Number.isInteger(e.amountKobo) ? e.amountKobo : 0), 0);
+  const lines = [`${EMOJI.expense} *${title}*`, `Total *${formatKobo(total)}*`];
+  for (const c of view?.byCategory ?? []) {
+    const raw = typeof c.category === "string" && c.category ? c.category : "other";
+    lines.push(`${escapeMd(raw[0].toUpperCase() + raw.slice(1))} *${formatKobo(c.amountKobo ?? 0)}*`);
+  }
+  const recent = list.slice(-5).reverse();
+  for (const e of recent) {
+    const raw = typeof e.category === "string" && e.category ? e.category : "other";
+    const who = e.payee ? ` (${escapeMd(e.payee)})` : "";
+    lines.push(`${escapeMd(raw[0].toUpperCase() + raw.slice(1))}: *${formatKobo(e.amountKobo ?? 0)}*${who}`);
+  }
+  if (list.length === 0) lines.push("No expenses recorded.");
   return fitBody(lines.join("\n"));
 }
 

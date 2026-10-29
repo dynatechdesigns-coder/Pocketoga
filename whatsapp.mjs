@@ -17,7 +17,7 @@ import { customerDebts, chaseForShop, lagosDay } from "./debts.mjs";
 import { PromiseStore, refreshPromises, keptRate } from "./promises.mjs";
 import { moneyLeakReport } from "./leak.mjs";
 import { withStock } from "./products.mjs";
-import { profitForPeriod } from "./profit.mjs";
+import { profitForPeriod, expensesForPeriod } from "./profit.mjs";
 import {
   NOT_REGISTERED,
   FFMPEG_MISSING,
@@ -56,6 +56,7 @@ import {
   renderReport,
   renderStock,
   renderProfit,
+  renderExpenses,
   renderPhotoSaved,
   waButton,
 } from "./messages.mjs";
@@ -234,9 +235,9 @@ function normCustomerName(name) {
   return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-// Exact debt, stock and profit commands, matched before any model call:
-// "who owes", "chase", "report", "stock", "profit", "profit week",
-// "profit month", "balance <name>", "fix last" and "dashboard"
+// Exact debt, stock, profit and expenses commands, matched before any model
+// call: "who owes", "chase", "report", "stock", "profit", "profit week",
+// "profit month", "expenses", "balance <name>", "fix last" and "dashboard"
 // (case-insensitive, trailing punctuation ignored). "fix last <text>"
 // carries the corrected note; bare "fix last" gets usage help. Anything
 // else returns null and flows to the model as a note.
@@ -251,6 +252,7 @@ export function parseCommand(text) {
   if (lower === "profit") return { name: "profit", period: "today" };
   if (lower === "profit week") return { name: "profit", period: "week" };
   if (lower === "profit month") return { name: "profit", period: "month" };
+  if (lower === "expenses") return { name: "expenses", period: "today" };
   if (lower === "fix last") return { name: "fixlast" };
   if (lower === "dashboard") return { name: "dashboard" };
   const m = /^balance\s+(.+)$/i.exec(clean);
@@ -323,6 +325,10 @@ async function handleDebtCommand(ctx, sender, shopId, cmd) {
   }
   if (cmd.name === "profit") {
     await sendText(ctx, sender, renderProfit(profitForPeriod(rows, cmd.period, { now: ctx.nowMs })));
+    return;
+  }
+  if (cmd.name === "expenses") {
+    await sendText(ctx, sender, renderExpenses(expensesForPeriod(rows, cmd.period, { now: ctx.nowMs }), cmd.period));
     return;
   }
   if (cmd.name === "dashboard") {
@@ -572,6 +578,7 @@ async function handleCorrection(ctx, sender, shopId, fixProposalId, message) {
         proposals: ctx.proposals,
         model: ctx.model,
         ledger: ctx.ledger,
+        products: ctx.products,
       });
       ctx.store.clearFixState(sender);
       await sendCard(ctx, sender, revised, shopId);
@@ -617,7 +624,7 @@ async function handleCorrection(ctx, sender, shopId, fixProposalId, message) {
       return;
     }
     try {
-      const revised = await fixProposal(fixProposalId, shopId, heard, { proposals: ctx.proposals, model: ctx.model, ledger: ctx.ledger });
+      const revised = await fixProposal(fixProposalId, shopId, heard, { proposals: ctx.proposals, model: ctx.model, ledger: ctx.ledger, products: ctx.products });
       ctx.store.clearFixState(sender);
       await sendCard(ctx, sender, revised, shopId);
     } catch (err) {
@@ -678,6 +685,7 @@ async function handleIncomingMessage(message, ctx) {
         proposals: ctx.proposals,
         model: ctx.model,
         ledger: ctx.ledger,
+        products: ctx.products,
         secondOpinions: ctx.secondOpinions,
       });
       await sendCard(ctx, sender, proposal, shopId);
@@ -690,7 +698,7 @@ async function handleIncomingMessage(message, ctx) {
       let got;
       try {
         got = await withWavFromMedia(ctx, mediaId, async (wavPath) =>
-          propose(shopId, { audioPath: wavPath }, { proposals: ctx.proposals, model: ctx.model, ledger: ctx.ledger, secondOpinions: ctx.secondOpinions })
+          propose(shopId, { audioPath: wavPath }, { proposals: ctx.proposals, model: ctx.model, ledger: ctx.ledger, products: ctx.products, secondOpinions: ctx.secondOpinions })
         );
       } catch (err) {
         ctx.log(`audio download failed: ${err?.message ?? err}`);

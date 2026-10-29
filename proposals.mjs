@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS proposals (
   question TEXT,
   created_at TEXT NOT NULL,
   recorded_ids TEXT,
-  name_checked TEXT
+  name_checked TEXT,
+  source TEXT CHECK (source IS NULL OR source IN ('voice','text','form'))
 );
 CREATE INDEX IF NOT EXISTS idx_proposals_shop ON proposals(shop_id);
 `;
@@ -36,19 +37,26 @@ export class ProposalStore {
     if (!columns.includes("name_checked")) {
       this.db.exec("ALTER TABLE proposals ADD COLUMN name_checked TEXT");
     }
+    // Databases created before the source label get it now; old rows keep
+    // NULL (unknown path, ledger-identical either way).
+    if (!columns.includes("source")) {
+      this.db.exec("ALTER TABLE proposals ADD COLUMN source TEXT CHECK (source IS NULL OR source IN ('voice','text','form'))");
+    }
   }
 
   // envelope: { version, entries, totals, flags, notes } (plain-code checks).
-  create({ shopId, status = "pending", envelope, heard, question = null, createdAt = null, recordedIds = null, nameChecked = null }) {
+  // source names the entry path (voice, text, form); photo checks predate
+  // it and pass nothing.
+  create({ shopId, status = "pending", envelope, heard, question = null, createdAt = null, recordedIds = null, nameChecked = null, source = null }) {
     if (!shopId || typeof shopId !== "string") throw new Error("shopId is required");
     const stamp = createdAt ?? new Date().toISOString();
     const result = this.db
       .prepare(
         `INSERT INTO proposals
-           (shop_id, status, entries_json, heard, question, created_at, recorded_ids, name_checked)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+           (shop_id, status, entries_json, heard, question, created_at, recorded_ids, name_checked, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(shopId, status, JSON.stringify(envelope), heard, question, stamp, recordedIds ? JSON.stringify(recordedIds) : null, nameChecked ? JSON.stringify(nameChecked) : null);
+      .run(shopId, status, JSON.stringify(envelope), heard, question, stamp, recordedIds ? JSON.stringify(recordedIds) : null, nameChecked ? JSON.stringify(nameChecked) : null, source ?? null);
     return this.get(Number(result.lastInsertRowid));
   }
 

@@ -5,6 +5,7 @@
 // catalog can never drift from the chain.
 import { DatabaseSync } from "node:sqlite";
 import { effectiveEntries, stockKind } from "./debts.mjs";
+import { costBasisByProduct, costBasisKey } from "./profit.mjs";
 
 // Stock at or below this many units counts as low.
 export const LOW_STOCK_AT = 3;
@@ -129,11 +130,19 @@ export function stockLevels(rows) {
 }
 
 // Catalog rows with computed stockOnHand (0 when nothing moved) and lowStock.
+// The unit cost resolves in three steps, all in code: the trader's own
+// price when set, else the weighted-average purchase cost from the ledger,
+// else null ("unknown"). costSource names which one it is.
 export function withStock(products, rows) {
   const levels = stockLevels(rows ?? []);
+  const basis = costBasisByProduct(rows ?? []);
   return (products ?? []).map((p) => {
     const stockOnHand = levels.get(productKey(p.name, p.unit)) ?? 0;
-    return { ...p, stockOnHand, lowStock: stockOnHand <= LOW_STOCK_AT };
+    const b = basis.get(costBasisKey(p.name, p.unit));
+    const avgCost = b && b.qty > 0 ? Math.round(b.kobo / b.qty) : null;
+    const costPriceKobo = p.cost_price_kobo ?? avgCost ?? null;
+    const costSource = p.cost_price_kobo != null ? "trader" : avgCost != null ? "purchases" : "unknown";
+    return { ...p, stockOnHand, lowStock: stockOnHand <= LOW_STOCK_AT, costPriceKobo, costSource };
   });
 }
 
@@ -144,7 +153,8 @@ export function toProductJson(p) {
     name: p.name,
     unit: p.unit,
     sellPriceKobo: p.sell_price_kobo,
-    costPriceKobo: p.cost_price_kobo,
+    costPriceKobo: p.costPriceKobo ?? p.cost_price_kobo ?? null,
+    costSource: p.costSource ?? (p.cost_price_kobo != null ? "trader" : "unknown"),
     stockOnHand: p.stockOnHand ?? 0,
     lowStock: p.lowStock ?? true,
   };

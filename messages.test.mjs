@@ -36,6 +36,7 @@ import {
   customerOwedKobo,
   renderProposalCard,
   renderSavedReply,
+  renderExpenses,
 } from "./messages.mjs";
 
 // Fake fixtures only. Golden tests pin the exact trader-facing text.
@@ -90,7 +91,7 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p, { existing: [], shopId: SHOP });
     assert.equal(
       card.text,
-      `🛒 *Ada*\n\n2 bags of rice × ₦15,000 = *₦30,000*\n\n⚖️ Ada owes *₦30,000* after saving\n\n_"Ada buy rice 2 bags, na 15k each."_`
+      `🛒 *Ada*\n\n2 bags of rice × ₦15,000 = *₦30,000* → Sales\n\n⚖️ Ada owes *₦30,000* after saving\n\n_"Ada buy rice 2 bags, na 15k each."_`
     );
     assert.deepEqual(
       card.buttons.map((b) => b.reply.id),
@@ -116,7 +117,7 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p, { existing: HISTORY, shopId: SHOP });
     assert.equal(
       card.text,
-      `🛒 *Ada*\n\n2 bags of rice: *₦15,000*\n💵 Paid: *₦10,000*\n\n⚖️ Ada owes *₦20,000* after saving\n\n_"Ada buy rice 2 bags, na 15k. She pay 10k, remain 5k."_`
+      `🛒 *Ada*\n\n2 bags of rice: *₦15,000* → Sales\n💵 Paid: *₦10,000* → Debts\n\n⚖️ Ada owes *₦20,000* after saving\n\n_"Ada buy rice 2 bags, na 15k. She pay 10k, remain 5k."_`
     );
   });
 
@@ -198,7 +199,7 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p);
     assert.equal(
       card.text,
-      `⚠️ *Check this one*\n\n2 bags of rice: *₦15,000*\n💵 Paid: *₦10,000*\nTotal: *₦15,000*\nPaid: *₦10,000*\nRemainder: *₦4,000*\n\n₦15,000 − ₦10,000 = ₦5,000, but you said ₦4,000 remain. Which one na correct?\n\n_"Ada buy rice 2 bags, na 15k. She pay 10k, remain 4k."_`
+      `⚠️ *Check this one*\n\n2 bags of rice: *₦15,000* → Sales\n💵 Paid: *₦10,000* → Debts\nTotal: *₦15,000*\nPaid: *₦10,000*\nRemainder: *₦4,000*\n\n₦15,000 − ₦10,000 = ₦5,000, but you said ₦4,000 remain. Which one na correct?\n\n_"Ada buy rice 2 bags, na 15k. She pay 10k, remain 4k."_`
     );
     assert.deepEqual(
       card.buttons.map((b) => b.reply.id),
@@ -217,7 +218,7 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p);
     assert.equal(
       card.text,
-      `⚠️ *Check this one*\n\n2 bags of rice × ₦15,000 = *₦30,000*\n💵 Paid: *₦10,000*\n\n₦30,000 − ₦10,000 = ₦20,000, but you said ₦5,000 remain. Which one na correct?\n\n_"Ada buy rice 2 bags, na 15k each. She pay 10k, remain 5k."_`
+      `⚠️ *Check this one*\n\n2 bags of rice × ₦15,000 = *₦30,000* → Sales\n💵 Paid: *₦10,000* → Debts\n\n₦30,000 − ₦10,000 = ₦20,000, but you said ₦5,000 remain. Which one na correct?\n\n_"Ada buy rice 2 bags, na 15k each. She pay 10k, remain 5k."_`
     );
     assert.deepEqual(
       card.buttons.map((b) => b.reply.id),
@@ -240,7 +241,7 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p);
     assert.equal(
       card.text,
-      `⚠️ *Check this one*\n\n2 bags of rice: *₦15,000*\n💵 Paid: *₦10,000*\nTotal: *₦15,000*\nPaid: *₦10,000*\nRemainder: *₦4,000*\n\n₦15,000 − ₦10,000 = ₦5,000, but you said ₦4,000 remain. Which one na correct?\n\n_"Ada buy rice 2 bags, na 15k. She pay 10k, remain 4k."_`
+      `⚠️ *Check this one*\n\n2 bags of rice: *₦15,000* → Sales\n💵 Paid: *₦10,000* → Debts\nTotal: *₦15,000*\nPaid: *₦10,000*\nRemainder: *₦4,000*\n\n₦15,000 − ₦10,000 = ₦5,000, but you said ₦4,000 remain. Which one na correct?\n\n_"Ada buy rice 2 bags, na 15k. She pay 10k, remain 4k."_`
     );
     assert.ok(!card.text.includes("which total correct?"));
   });
@@ -255,7 +256,7 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p, { existing: [], shopId: SHOP });
     assert.equal(
       card.text,
-      `🛒 *Ada*\n\n*Ada*: 1 bag of rice: *₦8,000*\n*Bola*: 💵 Paid: *₦3,000*\n\n⚖️ Ada owes *₦8,000* after saving\n\n_"Ada buy rice 1 bag na 8k and Bola pay 3k for garri."_`
+      `🛒 *Ada*\n\n*Ada*: 1 bag of rice: *₦8,000* → Sales\n*Bola*: 💵 Paid: *₦3,000* → Debts\n\n⚖️ Ada owes *₦8,000* after saving\n\n_"Ada buy rice 1 bag na 8k and Bola pay 3k for garri."_`
     );
   });
 
@@ -269,7 +270,7 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p, { existing: [], shopId: SHOP });
     assert.equal(
       card.text,
-      `🛒 *Mama ＊Nkechi＊ ＿Best＿*\n\n2 tins of beans: *₦4,000*\n\n⚖️ Mama ＊Nkechi＊ ＿Best＿ owes *₦4,000* after saving\n\n_"Mama star buy beans 2 tins, na 4k."_`
+      `🛒 *Mama ＊Nkechi＊ ＿Best＿*\n\n2 tins of beans: *₦4,000* → Sales\n\n⚖️ Mama ＊Nkechi＊ ＿Best＿ owes *₦4,000* after saving\n\n_"Mama star buy beans 2 tins, na 4k."_`
     );
     assert.ok(!card.text.includes("*Nkechi*"));
     assert.ok(!card.text.includes("_Best_"));
@@ -513,5 +514,93 @@ describe("dashboard login card", () => {
 
   it("DASHBOARD_LIMIT asks the trader to wait an hour", () => {
     assert.equal(DASHBOARD_LIMIT, "Too many codes — try again in an hour.");
+  });
+});
+
+describe("entry effects and expenses (fake data)", () => {
+  it("clean card shows the stock movement under the entries", () => {
+    const p = proposal(50, {
+      heard: "sold rice",
+      entries: [saleEntry()],
+      totals: null,
+      question: null,
+    });
+    p.effects = [{
+      destination: "Sales", stockBefore: 10, stockAfter: 8,
+      stockItem: "rice", stockUnit: "bag", negativeStock: false, costUnknown: false,
+    }];
+    const card = renderProposalCard(p, { existing: [], shopId: SHOP });
+    assert.equal(
+      card.text,
+      `🛒 *Ada*\n\n2 bags of rice: *₦15,000* → Sales\n\nrice stock 10 → 8 bags\n\n⚖️ Ada owes *₦15,000* after saving\n\n_"sold rice"_`
+    );
+  });
+
+  it("negative stock warns and unknown cost is named, without blocking", () => {
+    const p = proposal(51, {
+      heard: "sold indomie",
+      entries: [saleEntry({ customer: "Chidi", item: "Indomie", unit: "carton", quantity: 3 })],
+      totals: null,
+      question: null,
+    });
+    p.effects = [{
+      destination: "Sales", stockBefore: 1, stockAfter: -2,
+      stockItem: "Indomie", stockUnit: "carton", negativeStock: true, costUnknown: true,
+    }];
+    const card = renderProposalCard(p, { existing: [], shopId: SHOP });
+    assert.match(card.text, /Indomie stock 1 → -2 cartons — stock would go negative/);
+    assert.match(card.text, /Indomie: cost unknown\./);
+    assert.deepEqual(
+      card.buttons.map((b) => b.reply.title),
+      ["Save", "Fix", "Reject"]
+    );
+  });
+
+  it("hint mismatch prints the code-built sentence", () => {
+    const p = proposal(52, {
+      heard: "sold rice",
+      entries: [saleEntry()],
+      totals: null,
+      question: null,
+    });
+    p.hint = "expense";
+    p.hintNote = "You said this was an expense, but it sounds like a sale. Saving it as a sale.";
+    const card = renderProposalCard(p, { existing: [], shopId: SHOP });
+    assert.match(card.text, /You said this was an expense, but it sounds like a sale\. Saving it as a sale\./);
+  });
+
+  it("product questions render bold like customer questions", () => {
+    const p = proposal(53, {
+      heard: "sold rise",
+      entries: [saleEntry({ item: "rise" })],
+      totals: null,
+      question: null,
+    });
+    p.flags = ["Is *rise* the same product as *rice*? Send the right name, or say new product."];
+    p.question = `Abeg check am: ${p.flags[0]}`;
+    const card = renderProposalCard(p);
+    assert.match(card.text, /Is \*rise\* the same product as \*rice\*\? Send the right name, or say new product\./);
+    assert.ok(!card.text.includes("＊rise＊"), card.text);
+  });
+
+  it("expenses reply names the total, categories and newest lines", () => {
+    const text = renderExpenses({
+      expenses: [
+        { id: 1, createdAt: "2026-10-28T09:00:00.000Z", category: "power", payee: "NEPA", amountKobo: 500000 },
+        { id: 2, createdAt: "2026-10-28T10:00:00.000Z", category: "fuel", payee: "test-shop", amountKobo: 200000 },
+      ],
+      byCategory: [
+        { category: "power", amountKobo: 500000 },
+        { category: "fuel", amountKobo: 200000 },
+      ],
+    }, "today");
+    assert.equal(
+      text,
+      `🧾 *Expenses today*\nTotal *₦7,000*\nPower *₦5,000*\nFuel *₦2,000*\nFuel: *₦2,000* (test-shop)\nPower: *₦5,000* (NEPA)`
+    );
+  });
+
+  it("expenses reply says plainly when there is nothing", () => {
+    assert.equal(renderExpenses({ expenses: [], byCategory: [] }, "today"), `🧾 *Expenses today*\nTotal *₦0*\nNo expenses recorded.`);
   });
 });

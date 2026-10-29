@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Ledger } from "./ledger.mjs";
 import { ProposalStore } from "./proposals.mjs";
 import { PromiseStore, refreshPromises } from "./promises.mjs";
-import { customerDebts, chaseForShop } from "./debts.mjs";
+import { customerDebts, chaseForShop, allocatedSales } from "./debts.mjs";
 import { moneyLeakReport } from "./leak.mjs";
 import { ProductStore, withStock, toProductJson } from "./products.mjs";
 import { CustomerStore, describeCustomers, normalizePhone } from "./customers.mjs";
@@ -19,7 +19,7 @@ import { SecondOpinionStore } from "./secondopinion.mjs";
 import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
 import { PhotoCheckStore } from "./photos.mjs";
 import { createModelClient } from "./model.mjs";
-import { propose, confirmProposal, fixProposal, rejectProposal, getProposal, proposeCorrection } from "./voice.mjs";
+import { propose, confirmProposal, fixProposal, rejectProposal, getProposal, proposeCorrection, proposeFromForm } from "./voice.mjs";
 import { proposePhotoCheck } from "./photos.mjs";
 import {
   verifyWhatsAppSignature,
@@ -211,7 +211,19 @@ export async function handleVoiceRequest(req, res, deps) {
         : body.audioBase64 !== undefined
           ? { audioBase64: body.audioBase64, audioFormat: body.audioFormat }
           : undefined;
-    const proposal = await propose(shopId, input, deps);
+    const hint = body && typeof body === "object" ? body.hint : undefined;
+    const proposal = await propose(shopId, input, { ...deps, hint: hint ?? null });
+    return send(res, 201, { proposal });
+  }
+
+  // Structured form fields into a proposal, with no model call. Same checks,
+  // effects, card and confirm flow as /propose, and the same proposal
+  // object, so the web reuses one confirm card. Nothing reaches the ledger
+  // until the trader confirms.
+  if (req.method === "POST" && parts.length === 1 && parts[0] === "propose-form") {
+    const body = await readBody(req);
+    const fields = body && typeof body === "object" ? body : {};
+    const proposal = proposeFromForm(shopId, fields, deps);
     return send(res, 201, { proposal });
   }
 
@@ -346,6 +358,24 @@ export async function handleVoiceRequest(req, res, deps) {
     const promises = deps.promises ? deps.promises.listByShop(shopId) : [];
     const paymentChecks = deps.photoChecks ? deps.photoChecks.listUnconfirmedByShop(shopId) : [];
     return send(res, 200, { report: moneyLeakReport(rows, promises, { paymentChecks }) });
+  }
+
+  // Every effective sale with oldest-first payment allocation: what was
+  // sold, for how much, what is paid and what is still owed. Read-only.
+  if (req.method === "GET" && parts.length === 1 && parts[0] === "sales") {
+    const sales = allocatedSales(deps.ledger.list(shopId), {}).map((s) => ({
+      id: s.id,
+      customer: s.customer,
+      item: s.item,
+      quantity: s.quantity,
+      unit: s.unit,
+      amountKobo: s.amountKobo,
+      paidKobo: s.paidKobo,
+      owedKobo: s.remainingKobo,
+      ageDays: s.ageDays,
+      createdAt: s.createdAt,
+    }));
+    return send(res, 200, { sales });
   }
 
   // Products catalog for the caller's own shop, with stock computed from
