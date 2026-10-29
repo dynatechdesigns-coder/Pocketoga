@@ -119,15 +119,14 @@ export default function Nav({ onDemo, onLogin }) {
             )}
           </div>
           <ThemeToggle className="max-[399px]:size-11" />
-          <Button
+          <button
+            type="button"
             data-part="nav-login"
-            variant="outline"
-            size="sm"
-            className="w-auto whitespace-nowrap max-sm:hidden"
             onClick={onLogin}
+            className="hidden min-h-12 items-center rounded-full px-3 font-extrabold whitespace-nowrap text-link no-underline hover:bg-ink/5 lg:inline-flex"
           >
             Open my shop
-          </Button>
+          </button>
           <Button
             data-part="nav-demo"
             variant="gradient"

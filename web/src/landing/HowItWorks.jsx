@@ -1,17 +1,15 @@
 import { cx } from "../ui.jsx";
 import { Reveal } from "./motion.jsx";
 import { Photo, Section } from "./parts.jsx";
-import VoicePhone from "./VoicePhone.jsx";
 
-// Step 1 is a coded phone, not a photo; steps 2 and 3 use these photo slots.
-export const STEP_SLOTS = ["hands-notebook", "shop-counter"];
+export const STEP_SLOTS = ["voice-note", "hands-notebook", "shop-counter"];
 
 const STEPS = [
   [
-    null,
+    "voice-note",
     "Send a voice note",
     "Say it the way you talk: who bought, how much, what they paid.",
-    "A WhatsApp-style chat on a phone. The trader sends a 7-second voice note. PocketOga replies: sold 2 bags of rice to Ada, ₦45,000, she owes ₦20,000, with Save, Fix and Reject buttons.",
+    "A trader holding a phone showing the PocketOga Record screen in a busy market",
   ],
   [
     "hands-notebook",
@@ -35,14 +33,11 @@ export default function HowItWorks() {
       <ol className="grid gap-12 md:grid-cols-3 md:gap-8">
         {STEPS.map(([slot, title, text, alt], i) => (
           <Reveal as="li" key={title} delay={i * 90} className="grid content-start gap-4">
-            {slot ? (
-              <Photo slot={slot} alt={alt} className="aspect-[16/10] md:aspect-[4/3]" />
-            ) : (
-              <>
-                <VoicePhone className="aspect-[16/10] w-full md:aspect-[4/3]" />
-                <p className="sr-only">{alt}</p>
-              </>
-            )}
+            <Photo
+              slot={slot}
+              alt={alt}
+              className={cx("aspect-[16/10] md:aspect-[4/3]", slot === "voice-note" && "object-[center_55%]")}
+            />
             <div className="flex items-center gap-3">
               <span
                 aria-hidden="true"

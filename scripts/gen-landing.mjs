@@ -63,10 +63,10 @@ const SHOTS = {
   "market-lane":
     "A busy market lane of stalls on both sides, traders and shoppers, warm late-afternoon light.",
   "voice-note":
-    "Realistic documentary photograph, medium close-up of a woman market trader in her 40s at her stall, " +
-    "holding a smartphone near her mouth while recording a voice note, mid-sentence, warm natural daylight, " +
-    "shallow depth of field, sharp focus on her face and hand, stall goods softly blurred behind her, " +
-    "the phone screen is not visible (seen from the side), no text, no logos, no watermarks, natural skin, authentic",
+    "Realistic documentary photograph, close-up of a hand holding a modern smartphone in the foreground, in a busy Nigerian open-air market, " +
+    "tomatoes, peppers, onions and vegetable stalls softly blurred behind, traders in colourful Ankara clothing far in the background, " +
+    "the phone is held upright and its screen is turned off, dark glass with a subtle reflection of the sky, sharp focus on the phone and fingers, " +
+    "warm natural daylight, shallow depth of field, natural skin, authentic, no text, no logos, no watermarks",
   "shop-provision":
     "The inside of a small provision store, shelves of plain unbranded tins, sachets, " +
     "noodles and bottled drinks, a counter in front.",
@@ -128,7 +128,7 @@ async function generate(name, apiKey) {
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
     } catch (err) {
-      lastError = `request failed: ${err.message}`.slice(0, 300);
+      lastError = `request failed: ${err.message}${err?.cause ? ` (cause ${err.cause.code ?? "n/a"}: ${err.cause.message ?? err.cause})` : ""}`.slice(0, 400);
       break; // network/timeout: report and move on
     }
     if (res.ok) {
