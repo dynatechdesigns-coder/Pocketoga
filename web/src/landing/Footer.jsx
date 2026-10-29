@@ -27,9 +27,6 @@ export default function Footer({ onDemo }) {
           <button type="button" onClick={onDemo} className={LINK}>
             Try the demo shop
           </button>
-          <a href="/accuracy" className={LINK}>
-            Accuracy
-          </a>
           <a href="#privacy" className={LINK}>
             Privacy
           </a>
