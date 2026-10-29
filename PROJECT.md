@@ -62,7 +62,7 @@ Main server only, except `/webhook` (served on both ports). Every other route ne
 | GET `/customers` | — → `{ customers }` | customers |
 | POST `/customers` | `{ name, phone?, consent? }` (phone needs `consent: true`) → `{ customer }` | customers |
 | POST `/customers/:id/clear-phone` | — → `{ customer }` (phone gone, row kept) | customers |
-| GET `/profit?period=` | `today\|week\|month\|year` (missing reads as today) → `{ period, from, to, salesKobo, collectedKobo, cogsKobo, expensesKobo, estimatedProfitKobo, itemsWithoutCost, series }` | profit |
+| GET `/profit?period=` | `today\|week\|month\|year` (missing reads as today) → `{ period, from, to, salesKobo, collectedKobo, cogsKobo, expensesKobo, estimatedProfitKobo, result, resultKobo, owedKobo, itemsWithoutCost, missing_cost_items, series }` | profit |
 | GET `/expenses?period=` | same periods → `{ expenses, byCategory }` | profit |
 | GET `/webhook` | Meta handshake query → challenge text | server, whatsapp |
 | POST `/webhook` | signed Meta payload → `{ ok: true }` (work runs after responding) | whatsapp |
@@ -86,7 +86,7 @@ Shapes: `proposal` is `{ id, shop_id, status, heard, question, created_at, entri
 
 ## 7. Status
 
-Built and tested: the whole backend above plus all 21 routes. `npm test`: 291 pass, 0 fail, 53 suites, on 29 Oct 2026. Manual log (`test-notes.md` sessions 1–3): typed notes, phone web tests, WhatsApp text + voice; fixes landed for price basis, unit column, payment items, stated-remainder and similar-name checks. Web app: all screens, correction UI, demo seeding, landing page with photo slots.
+Built and tested: the whole backend above plus all 21 routes. `npm test`: 298 pass, 0 fail, 54 suites, on 29 Oct 2026. Manual log (`test-notes.md` sessions 1–3): typed notes, phone web tests, WhatsApp text + voice; fixes landed for price basis, unit column, payment items, stated-remainder and similar-name checks. Web app: all screens, correction UI, demo seeding, landing page with photo slots.
 Built but needing a check: web against the real backend without the dev mock (mock still covers profit/expenses/products/customers/correct; `check:build` guards production); second-opinion live accuracy; spoken-note accuracy (hand-tested only); Alert Guard live photo accuracy (mock-tested only); `audio-test.mjs` predates the current audio path; landing `shop-*` photos and the optimizer run (8 of 12 photos present on 29 Oct).
 Not started: offline notes queue (`occurred_at`), notebook photo import, accuracy numbers and red-team report (`/accuracy` is a "coming soon" placeholder).
 
@@ -110,7 +110,7 @@ Not started: offline notes queue (`occurred_at`), notebook photo import, accurac
 ## 10. Route contract
 
 GET /profit?period=today|week|month|year (default today)
-→ { "period": string, "from": "YYYY-MM-DD", "to": "YYYY-MM-DD", "salesKobo": int, "collectedKobo": int, "cogsKobo": int, "expensesKobo": int, "estimatedProfitKobo": int, "itemsWithoutCost": int, "series": [{ "label": string, "salesKobo": int, "cogsKobo": int, "expensesKobo": int, "profitKobo": int }] }
+→ { "period": string, "from": "YYYY-MM-DD", "to": "YYYY-MM-DD", "salesKobo": int, "collectedKobo": int, "cogsKobo": int, "expensesKobo": int, "estimatedProfitKobo": int (signed, never clamped), "result": "profit"|"loss"|"break_even", "resultKobo": int ≥ 0, "owedKobo": int ≥ 0 (period sales minus collected, floored at 0), "itemsWithoutCost": int, "missing_cost_items": int (distinct sold products with no cost price), "series": [{ "label": string, "salesKobo": int, "cogsKobo": int, "expensesKobo": int, "profitKobo": int }] }
 
 GET /products
 → { "products": [{ "id": int, "name": string, "unit": string|null, "sellPriceKobo": int|null, "costPriceKobo": int|null, "stockOnHand": int, "lowStock": bool }] }

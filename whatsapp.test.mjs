@@ -846,7 +846,9 @@ describe("debt commands (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", () =
       assert.match(reply.text.body, /Collected \*₦10,000\*/);
       assert.match(reply.text.body, /Cost of goods \*₦24,000\*/);
       assert.match(reply.text.body, /Expenses \*₦5,000\*/);
-      assert.match(reply.text.body, /Estimated profit \*₦11,000\*/);
+      assert.match(reply.text.body, /Profit: \*₦11,000\*/);
+      assert.match(reply.text.body, /Owed to you: \*₦30,000\*/);
+      assert.ok(!reply.text.body.includes("cost missing"), reply.text.body);
       assert.ok(reply.text.body.length <= 1024);
 
       await postWebhook(ctx, wrap([waText(FROM_A, mid(), "profit week")]));
@@ -856,6 +858,34 @@ describe("debt commands (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", () =
       await postWebhook(ctx, wrap([waText(FROM_A, mid(), "PROFIT MONTH!")]));
       assert.equal(calls.length, 0);
       assert.match(sends(ctx).at(-1).body.text.body, /\*Profit this month\*/);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("profit week reports a loss as Loss with a positive amount", async () => {
+    const calls = [];
+    const ctx = setup(
+      async (req) => {
+        calls.push(req);
+        return WA_PART;
+      },
+      { nowMs: NOW }
+    );
+    try {
+      const shop = shopOf(ctx);
+      const stamp = new Date(NOW).toISOString();
+      ctx.ledger.append({ shopId: shop, type: "restock", amountKobo: 6000000, customer: shop, item: "rice", quantity: 10, unit: "bag", createdAt: "2026-10-01T10:00:00.000Z" });
+      ctx.ledger.append({ shopId: shop, type: "sale", amountKobo: 4000000, customer: "Ada", item: "rice", quantity: 4, unit: "bag", createdAt: stamp });
+      ctx.ledger.append({ shopId: shop, type: "expense", amountKobo: 2500000, customer: "NEPA", item: "power", createdAt: stamp });
+
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "profit week")]));
+      assert.equal(calls.length, 0);
+      const body = sends(ctx).at(-1).body.text.body;
+      assert.match(body, /Loss: \*₦9,000\*/);
+      assert.ok(!body.includes("-₦"), body);
+      assert.match(body, /Owed to you: \*₦40,000\*/);
+      assert.ok(body.length <= 1024);
     } finally {
       await teardown(ctx);
     }

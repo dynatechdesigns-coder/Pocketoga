@@ -82,6 +82,14 @@ function rowBucket(period, stamp) {
 // for their item and unit are skipped from cogs and counted once each in
 // itemsWithoutCost; unattributed rows (no item or quantity) count sales
 // but no cogs, exactly like the leak report.
+//
+// The net result is signed integer kobo and is never clamped: a loss stays
+// negative. `result` names it ("profit", "loss", "break_even") and
+// `resultKobo` carries the same amount as a positive number for display.
+// `owedKobo` is this period's sales minus its collections, floored at zero:
+// money still owed to the trader, beside the profit. `missing_cost_items`
+// counts the distinct sold products with no cost price (same count as the
+// older `itemsWithoutCost`, kept for older readers).
 export function profitForPeriod(ledgerRows, period, { now = Date.now() } = {}) {
   const rows = ledgerRows ?? [];
   const { from, to } = periodRange(period, now);
@@ -137,6 +145,7 @@ export function profitForPeriod(ledgerRows, period, { now = Date.now() } = {}) {
     }
   }
   const series = [...buckets.values()].map((b) => ({ ...b, profitKobo: b.salesKobo - b.cogsKobo - b.expensesKobo }));
+  const estimatedProfitKobo = salesKobo - cogsKobo - expensesKobo;
   return {
     period,
     from,
@@ -145,8 +154,12 @@ export function profitForPeriod(ledgerRows, period, { now = Date.now() } = {}) {
     collectedKobo,
     cogsKobo,
     expensesKobo,
-    estimatedProfitKobo: salesKobo - cogsKobo - expensesKobo,
+    estimatedProfitKobo,
+    result: estimatedProfitKobo > 0 ? "profit" : estimatedProfitKobo < 0 ? "loss" : "break_even",
+    resultKobo: Math.abs(estimatedProfitKobo),
+    owedKobo: Math.max(0, salesKobo - collectedKobo),
     itemsWithoutCost: noCostKeys.size,
+    missing_cost_items: noCostKeys.size,
     series,
   };
 }

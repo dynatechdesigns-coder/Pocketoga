@@ -586,16 +586,22 @@ const PROFIT_TITLES = { today: "Profit today", week: "Profit this week", month: 
 export function renderProfit(profit) {
   const p = profit ?? {};
   const title = PROFIT_TITLES[p.period] ?? "Profit";
+  const net = Number.isInteger(p.estimatedProfitKobo) ? p.estimatedProfitKobo : 0;
+  const result = p.result ?? (net > 0 ? "profit" : net < 0 ? "loss" : "break_even");
+  const amount = Number.isInteger(p.resultKobo) ? p.resultKobo : Math.abs(net);
+  const owed = Number.isInteger(p.owedKobo) ? p.owedKobo : Math.max(0, (p.salesKobo ?? 0) - (p.collectedKobo ?? 0));
+  const missing = Number.isInteger(p.missing_cost_items) ? p.missing_cost_items : p.itemsWithoutCost;
   const lines = [
     `${EMOJI.payment} *${title}*`,
     `Sales *${formatKobo(p.salesKobo ?? 0)}*`,
     `Collected *${formatKobo(p.collectedKobo ?? 0)}*`,
     `Cost of goods *${formatKobo(p.cogsKobo ?? 0)}*`,
     `Expenses *${formatKobo(p.expensesKobo ?? 0)}*`,
-    `Estimated profit *${formatKobo(p.estimatedProfitKobo ?? 0)}*`,
+    result === "loss" ? `Loss: *${formatKobo(amount)}*` : `Profit: *${formatKobo(amount)}*`,
+    `Owed to you: *${formatKobo(owed)}*`,
   ];
-  if (Number.isInteger(p.itemsWithoutCost) && p.itemsWithoutCost > 0) {
-    lines.push(`No cost record for ${p.itemsWithoutCost} item${p.itemsWithoutCost === 1 ? "" : "s"}.`);
+  if (Number.isInteger(missing) && missing > 0) {
+    lines.push(`cost missing for ${missing} items, so this may be too high`);
   }
   return fitBody(lines.join("\n"));
 }

@@ -464,6 +464,106 @@ describe("profit maths", () => {
   });
 });
 
+describe("profit and loss results", () => {
+  const DAY = "2026-10-28T09:30:00.000Z"; // Lagos morning, "today" at NOW
+
+  function seed(ctx, rows) {
+    for (const r of rows) ctx.ledger.append({ shopId: SHOP, createdAt: DAY, ...r });
+    return profitForPeriod(ctx.ledger.list(SHOP), "today", { now: NOW });
+  }
+
+  function assertIntegers(out) {
+    for (const key of ["salesKobo", "collectedKobo", "cogsKobo", "expensesKobo", "estimatedProfitKobo", "resultKobo", "owedKobo", "missing_cost_items"]) {
+      assert.equal(Number.isInteger(out[key]), true, key);
+    }
+  }
+
+  it("a loss stays negative and names itself", () => {
+    const ctx = setup();
+    try {
+      const out = seed(ctx, [
+        { type: "restock", amountKobo: 1200000, customer: SHOP, item: "rice", quantity: 2, unit: "bag", createdAt: "2026-10-01T10:00:00.000Z" },
+        { type: "sale", amountKobo: 1000000, customer: "Ada", item: "rice", quantity: 2, unit: "bag" },
+        { type: "expense", amountKobo: 100000, customer: "NEPA", item: "power" },
+      ]);
+      assert.equal(out.estimatedProfitKobo, -300000);
+      assert.ok(out.estimatedProfitKobo < 0, "never clamped to zero");
+      assert.equal(out.result, "loss");
+      assert.equal(out.resultKobo, 300000);
+      assertIntegers(out);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("an exact break-even names itself with a zero amount", () => {
+    const ctx = setup();
+    try {
+      const out = seed(ctx, [
+        { type: "restock", amountKobo: 1200000, customer: SHOP, item: "rice", quantity: 2, unit: "bag", createdAt: "2026-10-01T10:00:00.000Z" },
+        { type: "sale", amountKobo: 1200000, customer: "Ada", item: "rice", quantity: 2, unit: "bag" },
+      ]);
+      assert.equal(out.estimatedProfitKobo, 0);
+      assert.equal(out.result, "break_even");
+      assert.equal(out.resultKobo, 0);
+      assertIntegers(out);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("a profit names itself with a positive amount", () => {
+    const ctx = setup();
+    try {
+      const out = seed(ctx, [
+        { type: "restock", amountKobo: 1000000, customer: SHOP, item: "rice", quantity: 2, unit: "bag", createdAt: "2026-10-01T10:00:00.000Z" },
+        { type: "sale", amountKobo: 1500000, customer: "Ada", item: "rice", quantity: 2, unit: "bag" },
+        { type: "expense", amountKobo: 100000, customer: "NEPA", item: "power" },
+      ]);
+      assert.equal(out.estimatedProfitKobo, 400000);
+      assert.equal(out.result, "profit");
+      assert.equal(out.resultKobo, 400000);
+      assertIntegers(out);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("missing cost counts distinct products, not units", () => {
+    const ctx = setup();
+    try {
+      const out = seed(ctx, [
+        { type: "sale", amountKobo: 1000000, customer: "Ada", item: "rice", quantity: 2, unit: "bag" },
+        { type: "sale", amountKobo: 200000, customer: "Ada", item: "rice", quantity: 1, unit: "bag" },
+        { type: "sale", amountKobo: 500000, customer: "Bola", item: "beans", quantity: 5, unit: "bag" },
+      ]);
+      assert.equal(out.missing_cost_items, 2);
+      assert.equal(out.itemsWithoutCost, 2);
+      assertIntegers(out);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("credit sales show as owed to you; over-collection floors at zero", () => {
+    const ctx = setup();
+    try {
+      seed(ctx, [
+        { type: "sale", amountKobo: 3000000, customer: "Ada" },
+        { type: "payment", amountKobo: 1000000, customer: "Ada" },
+      ]);
+      assert.equal(profitForPeriod(ctx.ledger.list(SHOP), "today", { now: NOW }).owedKobo, 2000000);
+      ctx.ledger.append({ shopId: SHOP, type: "payment", amountKobo: 5000000, customer: "Ada", createdAt: DAY });
+      const out = profitForPeriod(ctx.ledger.list(SHOP), "today", { now: NOW });
+      assert.equal(out.collectedKobo, 6000000);
+      assert.equal(out.owedKobo, 0);
+      assertIntegers(out);
+    } finally {
+      teardown(ctx);
+    }
+  });
+});
+
 describe("profit edge cases", () => {
   it("an empty shop reports zeros for every figure in every period", () => {
     for (const period of PROFIT_PERIODS) {
@@ -595,7 +695,7 @@ describe("profit and expenses routes", () => {
       assert.equal(out.status, 200);
       assert.deepEqual(
         Object.keys(out.json).sort(),
-        ["cogsKobo", "collectedKobo", "estimatedProfitKobo", "expensesKobo", "from", "itemsWithoutCost", "period", "salesKobo", "series", "to"]
+        ["cogsKobo", "collectedKobo", "estimatedProfitKobo", "expensesKobo", "from", "itemsWithoutCost", "missing_cost_items", "owedKobo", "period", "result", "resultKobo", "salesKobo", "series", "to"]
       );
       assert.equal(out.json.period, "today");
       assert.equal(out.json.salesKobo, 4000000);
@@ -603,7 +703,11 @@ describe("profit and expenses routes", () => {
       assert.equal(out.json.cogsKobo, 2400000);
       assert.equal(out.json.expensesKobo, 500000);
       assert.equal(out.json.estimatedProfitKobo, 1100000);
+      assert.equal(out.json.result, "profit");
+      assert.equal(out.json.resultKobo, 1100000);
+      assert.equal(out.json.owedKobo, 3000000);
       assert.equal(out.json.itemsWithoutCost, 0);
+      assert.equal(out.json.missing_cost_items, 0);
       assert.equal(out.json.series.length, 24);
       assert.deepEqual(Object.keys(out.json.series[0]).sort(), ["cogsKobo", "expensesKobo", "label", "profitKobo", "salesKobo"]);
 
@@ -678,27 +782,42 @@ describe("profit card", () => {
     cogsKobo: 2800000,
     expensesKobo: 500000,
     estimatedProfitKobo: 2900000,
+    result: "profit",
+    resultKobo: 2900000,
+    owedKobo: 4200000,
     itemsWithoutCost: 1,
+    missing_cost_items: 1,
     series: [],
   };
 
-  it("renders every figure with Sales, Collected, Cost of goods, Expenses, Estimated profit", () => {
+  it("renders every figure with Sales, Collected, Cost of goods, Expenses, Profit, Owed", () => {
     assert.equal(
       renderProfit(RESULT),
-      "💵 *Profit today*\nSales *₦62,000*\nCollected *₦20,000*\nCost of goods *₦28,000*\nExpenses *₦5,000*\nEstimated profit *₦29,000*\nNo cost record for 1 item."
+      "💵 *Profit today*\nSales *₦62,000*\nCollected *₦20,000*\nCost of goods *₦28,000*\nExpenses *₦5,000*\nProfit: *₦29,000*\nOwed to you: *₦42,000*\ncost missing for 1 items, so this may be too high"
     );
   });
 
   it("titles week and month cards and skips the cost line at zero", () => {
-    const week = renderProfit({ ...RESULT, period: "week", itemsWithoutCost: 0 });
+    const week = renderProfit({ ...RESULT, period: "week", itemsWithoutCost: 0, missing_cost_items: 0 });
     assert.match(week, /\*Profit this week\*/);
-    assert.ok(!week.includes("No cost record"), week);
-    assert.match(renderProfit({ ...RESULT, period: "month", itemsWithoutCost: 3 }), /No cost record for 3 items\./);
+    assert.ok(!week.includes("cost missing"), week);
+    assert.match(
+      renderProfit({ ...RESULT, period: "month", itemsWithoutCost: 3, missing_cost_items: 3 }),
+      /cost missing for 3 items, so this may be too high/
+    );
   });
 
-  it("stays short even with big numbers and a loss", () => {
-    const text = renderProfit({ ...RESULT, salesKobo: 100000000, collectedKobo: 0, cogsKobo: 90000000, expensesKobo: 20000000, estimatedProfitKobo: -10000000, itemsWithoutCost: 12 });
-    assert.match(text, /Estimated profit \*-₦100,000\*/);
+  it("a loss renders as Loss with a positive amount, never a negative profit", () => {
+    const text = renderProfit({ ...RESULT, salesKobo: 100000000, collectedKobo: 0, cogsKobo: 90000000, expensesKobo: 20000000, estimatedProfitKobo: -10000000, result: "loss", resultKobo: 10000000, owedKobo: 100000000, itemsWithoutCost: 12, missing_cost_items: 12 });
+    assert.match(text, /Loss: \*₦100,000\*/);
+    assert.ok(!text.includes("-₦"), text);
+    assert.ok(!/Profit:/.test(text), text);
     assert.ok(text.length <= MAX_BODY_CHARS, text.length);
+  });
+
+  it("break-even renders as zero profit", () => {
+    const text = renderProfit({ ...RESULT, estimatedProfitKobo: 0, result: "break_even", resultKobo: 0 });
+    assert.match(text, /Profit: \*₦0\*/);
+    assert.ok(!text.includes("-₦"), text);
   });
 });
