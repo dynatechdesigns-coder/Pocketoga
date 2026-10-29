@@ -16,8 +16,14 @@
 //
 // Usage (never runs automatically; run it yourself):
 //   node --env-file=.env.local scripts/gen-landing.mjs [name ...]
+//   node --env-file=.env.local scripts/gen-landing.mjs --only <name>
 // With no names, all twelve images are generated. Example:
 //   node --env-file=.env.local scripts/gen-landing.mjs hero-trader goods-rice
+// --only <name> regenerates that one slot and touches no other file.
+//
+// Each generated image is also saved untouched to photos/_originals/, the
+// folder optimize-landing.mjs compresses from, so a re-run of the optimizer
+// uses the new photo instead of restoring the old one.
 
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -31,6 +37,7 @@ const RETRIES_503 = 2; // extra attempts after the first, with backoff
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const OUT_DIR = path.join(ROOT, "web", "public", "landing", "photos");
+const ORIGINALS_DIR = path.join(OUT_DIR, "_originals");
 
 const STYLE =
   "Realistic documentary photograph, natural daylight, shallow depth of field, " +
@@ -56,8 +63,10 @@ const SHOTS = {
   "market-lane":
     "A busy market lane of stalls on both sides, traders and shoppers, warm late-afternoon light.",
   "voice-note":
-    "A hand holding a phone over a stall counter, the phone screen glowing, " +
-    "screen content blurred and unreadable.",
+    "Realistic documentary photograph, medium close-up of a woman market trader in her 40s at her stall, " +
+    "holding a smartphone near her mouth while recording a voice note, mid-sentence, warm natural daylight, " +
+    "shallow depth of field, sharp focus on her face and hand, stall goods softly blurred behind her, " +
+    "the phone screen is not visible (seen from the side), no text, no logos, no watermarks, natural skin, authentic",
   "shop-provision":
     "The inside of a small provision store, shelves of plain unbranded tins, sachets, " +
     "noodles and bottled drinks, a counter in front.",
@@ -86,7 +95,12 @@ const SIZES = {
   "shop-wholesale": "1536x1152", // landscape 4:3
 };
 
+// Slots whose prompt is complete as written. STYLE and RULES are not added:
+// they ask for faces small and out of focus, which would fight a sharp face.
+const FULL_PROMPT = new Set(["voice-note"]);
+
 function promptFor(name) {
+  if (FULL_PROMPT.has(name)) return SHOTS[name];
   return `${SHOTS[name]} ${STYLE} ${RULES}`;
 }
 
@@ -168,10 +182,22 @@ async function main() {
   const apiKey = process.env.META_API_KEY;
   if (!apiKey) {
     console.error("META_API_KEY is not set. Run with it in the environment, e.g.:");
-    console.error("  node --env-file=.env.local scripts/gen-landing.mjs [name ...]");
+    console.error("  node --env-file=.env.local scripts/gen-landing.mjs [--only <name> | name ...]");
     process.exit(2);
   }
-  const wanted = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  let wanted = args;
+  const onlyAt = args.findIndex((a) => a === "--only" || a.startsWith("--only="));
+  if (onlyAt !== -1) {
+    const inline = args[onlyAt].startsWith("--only=") ? args[onlyAt].slice("--only=".length) : null;
+    const slot = inline ?? args[onlyAt + 1];
+    const rest = args.filter((_, i) => i !== onlyAt && !(inline === null && i === onlyAt + 1));
+    if (!slot || slot.startsWith("--") || rest.length > 0) {
+      console.error("Usage: gen-landing.mjs --only <name>   (one slot, no other names)");
+      process.exit(2);
+    }
+    wanted = [slot];
+  }
   const unknown = wanted.filter((n) => !(n in SHOTS));
   if (unknown.length > 0) {
     console.error(`Unknown image name(s): ${unknown.join(", ")}`);
@@ -180,6 +206,7 @@ async function main() {
   }
   const names = wanted.length > 0 ? wanted : Object.keys(SHOTS);
   await mkdir(OUT_DIR, { recursive: true });
+  await mkdir(ORIGINALS_DIR, { recursive: true });
 
   const made = [];
   const failed = [];
@@ -188,6 +215,7 @@ async function main() {
     const file = path.join(OUT_DIR, `${name}.webp`);
     try {
       let buf = await generate(name, apiKey);
+      await writeFile(path.join(ORIGINALS_DIR, `${name}.webp`), buf); // untouched copy for the optimizer
       let over = false;
       if (buf.length > MAX_BYTES) {
         const fit = await fitUnderBudget(buf);
