@@ -10,3 +10,5 @@ dist/
 *.db-journal
 
 *.log
+
+web/public/landing/photos/_originals/

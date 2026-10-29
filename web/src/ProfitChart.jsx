@@ -42,11 +42,7 @@ export default function ProfitChart({ series, title }) {
 
   return (
     <div className="grid min-w-0 gap-3" data-part="chart">
-      <div
-        ref={box}
-        className="w-full min-w-0 overflow-hidden"
-        style={{ height: H + LABEL_H }}
-      >
+      <div ref={box} className="w-full min-w-0 overflow-hidden" style={{ height: H + LABEL_H }}>
         {width > 0 && (
           <svg
             width={width}
@@ -56,63 +52,30 @@ export default function ProfitChart({ series, title }) {
             className="block overflow-visible"
           >
             {/* Recessive guides: the zero line and the top value. */}
-            <line
-              x1="0"
-              x2={width}
-              y1={zero}
-              y2={zero}
-              className="stroke-line"
-              strokeWidth="1"
-            />
+            <line x1="0" x2={width} y1={zero} y2={zero} className="stroke-line" strokeWidth="1" />
             {series.map((s, i) => {
               const x = i * slot + (slot - barW) / 2;
               const v = s.profitKobo;
               const h = Math.abs(y(v) - zero);
               const up = v >= 0;
               return (
-                <g
-                  key={s.label}
-                  onClick={() => setPicked(i)}
-                  onMouseEnter={() => setPicked(i)}
-                  className="cursor-pointer"
-                >
+                <g key={s.label} onClick={() => setPicked(i)} onMouseEnter={() => setPicked(i)} className="cursor-pointer">
                   {/* Hit area larger than the bar. */}
-                  <rect
-                    x={i * slot}
-                    y="0"
-                    width={slot}
-                    height={H + LABEL_H}
-                    fill="transparent"
-                  />
+                  <rect x={i * slot} y="0" width={slot} height={H + LABEL_H} fill="transparent" />
                   {v !== 0 && (
                     <path
                       data-part="bar"
                       data-tone={up ? "profit" : "loss"}
                       d={bar(x, up ? zero - h : zero, barW, h, up)}
-                      className={cx(
-                        up ? "fill-accent" : "fill-coral",
-                        i === picked ? "opacity-100" : "opacity-80",
-                      )}
+                      className={cx(up ? "fill-accent" : "fill-coral", i === picked ? "opacity-100" : "opacity-80")}
                     />
                   )}
-                  {i === picked && (
-                    <rect
-                      x={i * slot + 1}
-                      y="0"
-                      width={slot - 2}
-                      height={H}
-                      rx="8"
-                      className="fill-ink/5"
-                    />
-                  )}
+                  {i === picked && <rect x={i * slot + 1} y="0" width={slot - 2} height={H} rx="8" className="fill-ink/5" />}
                   <text
                     x={i * slot + slot / 2}
                     y={H + 16}
                     textAnchor="middle"
-                    className={cx(
-                      "text-[11px]",
-                      i === picked ? "fill-ink font-bold" : "fill-muted",
-                    )}
+                    className={cx("text-[11px]", i === picked ? "fill-ink font-bold" : "fill-muted")}
                   >
                     {s.label}
                   </text>
@@ -124,11 +87,7 @@ export default function ProfitChart({ series, title }) {
       </div>
 
       {b && (
-        <div
-          data-part="chart-detail"
-          className="flex items-center gap-2"
-          aria-live="polite"
-        >
+        <div data-part="chart-detail" className="flex items-center gap-2" aria-live="polite">
           <button
             onClick={() => setPicked((picked - 1 + n) % n)}
             aria-label="Previous"
@@ -139,24 +98,13 @@ export default function ProfitChart({ series, title }) {
           <dl className="grid flex-1 grid-cols-2 gap-x-3 gap-y-0.5 text-sm">
             <dt className="col-span-2 font-extrabold text-ink">{b.label}</dt>
             <dt className="text-muted">Sales</dt>
-            <dd className="text-right font-bold tabular-nums">
-              {formatKobo(b.salesKobo)}
-            </dd>
+            <dd className="text-right font-bold tabular-nums">{formatKobo(b.salesKobo)}</dd>
             <dt className="text-muted">Cost of goods</dt>
-            <dd className="text-right font-bold tabular-nums">
-              {formatKobo(b.cogsKobo)}
-            </dd>
+            <dd className="text-right font-bold tabular-nums">{formatKobo(b.cogsKobo)}</dd>
             <dt className="text-muted">Expenses</dt>
-            <dd className="text-right font-bold tabular-nums">
-              {formatKobo(b.expensesKobo)}
-            </dd>
+            <dd className="text-right font-bold tabular-nums">{formatKobo(b.expensesKobo)}</dd>
             <dt className="text-muted">Est. profit</dt>
-            <dd
-              className={cx(
-                "text-right font-extrabold tabular-nums",
-                b.profitKobo < 0 && "text-coral-ink",
-              )}
-            >
+            <dd className={cx("text-right font-extrabold tabular-nums", b.profitKobo < 0 && "text-coral-ink")}>
               {formatKobo(b.profitKobo)}
             </dd>
           </dl>
@@ -203,15 +151,13 @@ export default function ProfitChart({ series, title }) {
 
 // The latest bucket with any trading, else the last one.
 function defaultPick(series) {
-  for (let i = series.length - 1; i >= 0; i--)
-    if (series[i].salesKobo || series[i].expensesKobo) return i;
+  for (let i = series.length - 1; i >= 0; i--) if (series[i].salesKobo || series[i].expensesKobo) return i;
   return Math.max(0, series.length - 1);
 }
 
 // A bar with 4px rounded ends away from the baseline, square at the baseline.
 function bar(x, y, w, h, up) {
   const r = Math.min(4, w / 2, h);
-  if (up)
-    return `M${x},${y + h} V${y + r} Q${x},${y} ${x + r},${y} H${x + w - r} Q${x + w},${y} ${x + w},${y + r} V${y + h} Z`;
+  if (up) return `M${x},${y + h} V${y + r} Q${x},${y} ${x + r},${y} H${x + w - r} Q${x + w},${y} ${x + w},${y + r} V${y + h} Z`;
   return `M${x},${y} V${y + h - r} Q${x},${y + h} ${x + r},${y + h} H${x + w - r} Q${x + w},${y + h} ${x + w},${y + h - r} V${y} Z`;
 }

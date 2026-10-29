@@ -50,6 +50,18 @@
   --color-field: #ffffff;
   --color-skeleton: #e6e8f0;
   --color-bezel: #12122a; /* phone frames on the landing page, both themes */
+
+  /* Landing page: white and warm cream sections, warm accents used sparingly.
+     Sunset and marigold are fills, shapes and icon tiles; text in those hues
+     uses the "-ink" shades. */
+  --color-surface: #ffffff;
+  --color-cream: #fff8f1;
+  --color-sunset: #ff7a45;
+  --color-sunset-soft: #ffe7da;
+  --color-sunset-ink: #a3360a;
+  --color-marigold: #ffb020;
+  --color-marigold-soft: #fff0cc;
+  --color-marigold-ink: #865300;
   --color-frost: rgba(18, 18, 42, 0.28); /* chips on the gradient: white text stays >= 6:1 */
   --color-backdrop: rgba(18, 18, 42, 0.5);
 
@@ -82,6 +94,11 @@
   --animate-rise: rise 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both;
   --animate-ring: ring 1.8s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
   --animate-pulse-soft: pulse-soft 1.4s ease-in-out infinite;
+  /* Landing page */
+  --animate-bob: bob 6s ease-in-out infinite;
+  --animate-typing: typing 1s ease-in-out infinite;
+  --animate-press: press 0.38s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  --animate-travel: travel 1s cubic-bezier(0.4, 0, 0.2, 1) both;
 
   @keyframes rise {
     from {
@@ -102,6 +119,48 @@
   @keyframes pulse-soft {
     50% {
       opacity: 0.5;
+    }
+  }
+  /* The landing hero's floating chips: a slow, small bob. */
+  @keyframes bob {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-6px);
+    }
+  }
+  @keyframes typing {
+    0%,
+    60%,
+    100% {
+      opacity: 0.35;
+      transform: translateY(0);
+    }
+    30% {
+      opacity: 1;
+      transform: translateY(-3px);
+    }
+  }
+  @keyframes press {
+    45% {
+      transform: scale(0.9);
+    }
+  }
+  /* Moves a wrapper the length of its own track (translate % of itself). */
+  @keyframes travel {
+    from {
+      opacity: 0;
+      transform: translate(0, 0);
+    }
+    20%,
+    80% {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
+      transform: translate(var(--travel-x, 0), var(--travel-y, 0));
     }
   }
 }
@@ -149,8 +208,20 @@
     --color-av4-ink: #f59ccc;
     --color-av5: #262642;
     --color-av5-ink: #cbd5e1;
+    --color-surface: #0f0f1d;
+    --color-cream: #1b1613; /* deep warm charcoal */
+    --color-sunset-soft: #3d2116;
+    --color-sunset-ink: #ffab85;
+    --color-marigold-soft: #3a2c0c;
+    --color-marigold-ink: #ffcf66;
     color-scheme: dark;
   }
+}
+
+/* The landing's primary buttons: the same violet-to-blue, stretched so the
+   lightest point behind white text stays at 6.5:1 or better. */
+@utility bg-cta {
+  background-image: linear-gradient(135deg, var(--color-primary) 0%, var(--color-accent) 130%);
 }
 
 /* The hero gradient, built from the theme colours: bg-hero. */
@@ -158,11 +229,20 @@
   background-image: linear-gradient(135deg, var(--color-primary) 0%, var(--color-accent) 100%);
 }
 
+
 @layer base {
   body {
     @apply bg-page font-sans text-ink antialiased;
     -webkit-tap-highlight-color: transparent;
     overflow-x: hidden;
+  }
+
+  /* The landing's in-page link ("See it on WhatsApp") glides unless motion is
+     reduced. Landing page only: in the app, switching tabs jumps to the top. */
+  @media (prefers-reduced-motion: no-preference) {
+    html:has([data-part="landing"]) {
+      scroll-behavior: smooth;
+    }
   }
 
   :focus-visible {
@@ -178,6 +258,7 @@
       animation-delay: 0ms !important;
       animation-iteration-count: 1 !important;
       transition-duration: 0.01ms !important;
+      transition-delay: 0ms !important;
     }
   }
 }

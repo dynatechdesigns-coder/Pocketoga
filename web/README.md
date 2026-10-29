@@ -87,7 +87,6 @@ When the real routes are live, just stop using the flag. Every call is in `src/a
 | `MOCK_URL` | dev server | Mock address. Default `http://localhost:3999`. |
 | `MOCK_PORT` | mock | Port the mock listens on. Default `3999`. |
 | `VITE_API_BASE` | build | API address for a production build. Default `/api`. |
-| `VITE_WHATSAPP_NUMBER` | build | The number behind the landing page's **Chat on WhatsApp** buttons, digits with country code (for example `2348012345678`). Without it WhatsApp opens its contact picker with the message ready. |
 
 ## Build and preview
 
@@ -96,19 +95,40 @@ npm run build        # production build into dist/
 npm run preview      # serves dist/ (plain http)
 ```
 
-The signed-in app is its own chunk, so the landing page loads only React and the landing code (about 59 KB of JavaScript with
-gzip) and one picture before it can paint. `/accuracy` is a "coming soon" placeholder: a host serving `dist/` needs to send
-`index.html` for unknown paths so that address works.
+The signed-in app is its own chunk, so the landing page never downloads the app screens. A first visit to the landing page is
+6 requests: the page, its CSS (about 11 KB with gzip), its JavaScript (about 65 KB with gzip), the icon, the manifest and the
+hero photo. Every other photo loads only when the visitor scrolls near it. `/accuracy` is a "coming soon" placeholder: a host
+serving `dist/` needs to send `index.html` for unknown paths so that address works.
 
 ## The landing page
 
-`src/screens/Landing.jsx` shows when no shop is open. It uses the app's own violet-to-blue gradient and real screenshots of the
-demo shop (`public/screens/*.webp`, fake data only, no stock photos). To retake them: seed the demo shop, run the app with the
-mock on (`npm run dev:mock`), and capture the Money, Debts, Reports, Ledger and Record confirm-card screens at 360 x 780, then
-save them as WebP (about 576 px wide) under the same names. Reject the confirm card afterwards so nothing is saved.
+`src/screens/Landing.jsx` shows when no shop is open. It only lists the sections; each one is a component in `src/landing/`
+(`Nav`, `Hero`, `Market`, `HowItWorks`, `WhatsAppWeb`, `Features`, `Shops`, `Trust`, `Proof`, `FinalCta`, `Footer`), built from
+shared pieces in `parts.jsx` (`Section`, `Pill`, `IconTile`, `Photo`, `ImageCard`, `CardRow`). Copy is plain trader language,
+sections alternate white and warm cream with one deep violet section (Trust), and the violet-to-blue gradient stays the
+primary button colour.
 
-Alert Guard and offline notes are marked **Coming soon** because they are not built yet (`../PROJECT.md`, section 5). Remove
-the `soon` flag on those two `Feature` entries when they ship. The privacy note and the accuracy page are placeholders.
+**Images.** The photos are AI-generated and live in `public/landing/` (they come from outside this repo's code, so don't edit
+that folder from here). Each slot is filled at build time by `scripts/landing-images.mjs`: `public/landing/photos/<slot>.webp`
+if it exists, else `public/landing/illustrations/<slot>.svg` (not for `shop-*` slots), else the slot is left out. Nothing asks
+the browser for a file that isn't there. Slots: `hero-trader`, `goods-rice`, `goods-eggs`, `goods-cartons`, `goods-measure`,
+`hands-notebook`, `market-lane`, `voice-note`, `shop-provision`, `shop-kiosk`, `shop-counter`, `shop-wholesale`. A new or
+replaced image needs only the right file name, and its size is read from the file. The footer says the images are
+AI-generated; keep that line, and don't present them as real customers or shops.
+
+```
+npm run check:images   # shows which slots use a photo, an illustration, or nothing, and tests the fallback rules
+npm run check:copy     # the WhatsApp mockup says exactly what the real bot says (messages.mjs)
+```
+
+**Motion** is gentle and uses only CSS transitions, CSS keyframes and IntersectionObserver (`src/landing/motion.jsx`): sections
+fade and rise once as they scroll in, the hero chips bob slowly, the WhatsApp demo plays while it is on screen and stops
+off screen, and the hash chain draws and then shows a change being caught. With `prefers-reduced-motion` everything is still
+and shows its final state.
+
+Alert Guard and offline notes are not built yet (`../PROJECT.md`, section 5), so the landing page doesn't mention them. The
+privacy note and the accuracy page are placeholders. There is no link to a WhatsApp number: the bot runs on a test number, so
+"See it on WhatsApp" scrolls to the demo instead.
 
 ## Look and feel
 
@@ -129,5 +149,7 @@ src/ui.jsx              shared pieces: Card, Button, Pill, Sheet, NotAvailable..
 src/ProfitChart.jsx     the profit bar chart (plain SVG, no chart library)
 scripts/seed-demo.mjs   fills the demo shop through propose -> confirm
 scripts/mock-contract.mjs, dev-mock.mjs, check-no-mock.mjs   see "The mock server"
-public/                 icons, manifest, service worker, landing screenshots
+scripts/landing-images.mjs, check-landing-images.mjs, check-landing-copy.mjs   see "The landing page"
+public/                 icons, manifest, service worker, landing/ (photos)
+src/landing/            one component per landing section, plus shared parts and motion
 ```

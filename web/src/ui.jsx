@@ -58,6 +58,8 @@ const BUTTON_VARIANTS = {
   amber: "border-amber bg-amber-soft text-amber-ink",
   light: "border-transparent bg-white text-primary", // on the gradient
   frost: "border-white/60 bg-frost text-white", // second button on the gradient
+  gradient: "border-transparent bg-cta text-white", // the landing's primary call to action
+  outline: "border-link bg-transparent text-link",
 };
 const BUTTON_SIZES = {
   sm: "px-3.5 py-2.5 text-[0.9375rem]",
@@ -72,7 +74,7 @@ export function Button({ as: Tag = "button", variant = "primary", size = "md", c
     <Tag
       className={cx(
         "inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full border-[1.5px] font-bold no-underline",
-        "transition-[transform,background-color] duration-150 ease-out-soft active:scale-96 [&_svg]:size-5",
+        "transition-[translate,scale,background-color] duration-150 ease-out-soft active:scale-96 [&_svg]:size-5",
         "disabled:cursor-not-allowed disabled:border-dashed disabled:border-grey disabled:bg-slate disabled:text-muted disabled:active:scale-100",
         calm && "disabled:border-solid disabled:border-transparent",
         BUTTON_VARIANTS[variant],
