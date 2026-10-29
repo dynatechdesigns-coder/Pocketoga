@@ -229,7 +229,7 @@ function Chat({ step, run }) {
 
 // A static waveform: bar heights in px, drawn with transform only.
 const BARS = [6, 12, 18, 10, 20, 14, 8, 16, 22, 12, 7, 15, 19, 9, 13, 6];
-function Waveform() {
+export function Waveform() {
   return (
     <span className="flex h-6 flex-1 items-center gap-[2px]" aria-hidden="true">
       {BARS.map((h, i) => (
