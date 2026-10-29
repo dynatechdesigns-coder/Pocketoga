@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronRight, Copy, MessageCircle, Search, Users } from "lucide-react";
+import { CalendarX2, Check, ChevronRight, Copy, MessageCircle, Search, Users } from "lucide-react";
 import { getDebts, getPromises } from "../api.js";
 import { ageText, dueText, formatDueDay, formatKobo, sameCustomer } from "../format.js";
 import { draftReminder, TONES, whatsappLink } from "../reminders.js";
@@ -22,10 +22,13 @@ function status(promises) {
 }
 
 // Who owes, in the server's chase order, with search. Tapping a row opens
-// a bottom sheet with the balance, promises and reminder drafts.
+// a bottom sheet with the balance, promises and reminder drafts. Intent
+// "chase" opens the most urgent customer; "broken" lists only customers
+// with a broken promise.
 export default function DebtsScreen({ intent, onGo }) {
   const { data, error, loading, reload } = useLoad(loadDebts);
   const [query, setQuery] = useState("");
+  const [brokenOnly, setBrokenOnly] = useState(intent === "broken");
   const [open, setOpen] = useState(null); // customer name
 
   // The phone's back button closes the sheet.
@@ -65,9 +68,21 @@ export default function DebtsScreen({ intent, onGo }) {
     );
   } else {
     const q = query.trim().toLowerCase();
-    const rows = data.chase.filter((c) => c.customer.toLowerCase().includes(q));
+    const rows = data.chase.filter(
+      (c) => c.customer.toLowerCase().includes(q) && (!brokenOnly || promisesOf(c.customer).some((p) => p.status === "broken"))
+    );
     body = (
       <div className="grid gap-4">
+        {brokenOnly && (
+          <div data-part="filter" className="flex items-center justify-between gap-3 rounded-2xl border-[1.5px] border-coral bg-coral-soft py-1.5 pr-1.5 pl-4 text-coral-ink">
+            <span className="flex items-center gap-2 font-bold [&_svg]:size-5">
+              <CalendarX2 aria-hidden="true" /> Broken promises only
+            </span>
+            <Button variant="quiet" size="sm" className="w-auto" onClick={() => setBrokenOnly(false)}>
+              Show all
+            </Button>
+          </div>
+        )}
         <div data-part="search" {...rise(0, "relative")}>
           <Search aria-hidden="true" className="pointer-events-none absolute top-1/2 left-[18px] size-5 -translate-y-1/2 text-grey" />
           <input
@@ -76,11 +91,11 @@ export default function DebtsScreen({ intent, onGo }) {
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search customers"
             aria-label="Search customers"
-            className="min-h-[52px] w-full rounded-full border-[1.5px] border-transparent bg-card pr-4 pl-12 text-base shadow-soft transition placeholder:text-muted focus:border-accent focus:ring-4 focus:ring-blue-soft focus:outline-none"
+            className="min-h-[52px] w-full rounded-full border-[1.5px] border-line bg-card pr-4 pl-12 text-base shadow-soft transition placeholder:text-muted focus:border-accent focus:ring-4 focus:ring-blue-soft focus:outline-none"
           />
         </div>
         {rows.length === 0 ? (
-          <p className="py-6 text-center text-muted">No customer matches “{query}”.</p>
+          <p className="py-6 text-center text-muted">{q ? `No customer matches “${query}”.` : "Nobody has a broken promise now."}</p>
         ) : (
           <Card as="ul" aria-label="Customers who owe, most urgent first" {...rise(1, "divide-y divide-line px-0 py-1.5")}>
             {rows.map((c) => {
@@ -142,7 +157,7 @@ const STATUS = { open: ["amber", "Due"], kept: ["teal", "Kept"], broken: ["coral
 
 function Stat({ label, children }) {
   return (
-    <div className="rounded-2xl bg-card px-3.5 py-3 shadow-soft">
+    <div className="rounded-2xl border border-line bg-card px-3.5 py-3 shadow-soft">
       <dt className="text-[0.8125rem] font-semibold text-muted">{label}</dt>
       <dd className="font-extrabold tabular-nums [overflow-wrap:anywhere]">{children}</dd>
     </div>

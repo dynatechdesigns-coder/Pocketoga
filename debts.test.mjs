@@ -242,41 +242,46 @@ describe("promises (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", () => {
     try {
       const rows = ledger.list("shop-a");
       const today = lagosDay(NOW);
+      // Promises created a day before the payments, so the payments count.
+      const made = daysAgo(9);
       // Paid in full before the due date: kept.
       assert.equal(
-        promiseStatus({ customer: "Ada", amount_kobo: 2000000, due_date: "2026-10-25" }, rows, today),
+        promiseStatus({ customer: "Ada", amount_kobo: 2000000, due_date: "2026-10-25", created_at: made }, rows, today),
         "kept"
       );
       // No amount promised: any payment before the due date keeps it.
-      assert.equal(promiseStatus({ customer: "Bola", amount_kobo: null, due_date: "2026-10-25" }, rows, today), "kept");
+      assert.equal(
+        promiseStatus({ customer: "Bola", amount_kobo: null, due_date: "2026-10-25", created_at: made }, rows, today),
+        "kept"
+      );
       // Part-payment only with the date still ahead: still open.
       assert.equal(
-        promiseStatus({ customer: "Bola", amount_kobo: 2000000, due_date: "2026-11-05" }, rows, today),
+        promiseStatus({ customer: "Bola", amount_kobo: 2000000, due_date: "2026-11-05", created_at: made }, rows, today),
         "open"
       );
       // Part-payment only with the date passed: broken, and the paid part recorded.
       assert.equal(
-        promiseStatus({ customer: "Bola", amount_kobo: 2000000, due_date: "2026-10-25" }, rows, today),
+        promiseStatus({ customer: "Bola", amount_kobo: 2000000, due_date: "2026-10-25", created_at: made }, rows, today),
         "broken"
       );
-      assert.equal(promisePaidKobo({ customer: "Bola", due_date: "2026-10-25" }, rows), 500000);
-      assert.equal(promisePaidKobo({ customer: "Nobody", due_date: "2026-10-25" }, rows), 0);
+      assert.equal(promisePaidKobo({ customer: "Bola", due_date: "2026-10-25", created_at: made }, rows), 500000);
+      assert.equal(promisePaidKobo({ customer: "Nobody", due_date: "2026-10-25", created_at: made }, rows), 0);
       // Nothing paid and the date has passed: broken.
       assert.equal(
-        promiseStatus({ customer: "Chidi", amount_kobo: 1000000, due_date: "2026-10-20" }, rows, today),
+        promiseStatus({ customer: "Chidi", amount_kobo: 1000000, due_date: "2026-10-20", created_at: made }, rows, today),
         "broken"
       );
       // Due in the future: open.
       assert.equal(
-        promiseStatus({ customer: "Chidi", amount_kobo: 1000000, due_date: "2026-11-05" }, rows, today),
+        promiseStatus({ customer: "Chidi", amount_kobo: 1000000, due_date: "2026-11-05", created_at: made }, rows, today),
         "open"
       );
 
       // refreshPromises persists the transitions with resolved_at and the paid part.
-      const keep = store.create({ shopId: "shop-a", customer: "Ada", amountKobo: 2000000, dueDate: "2026-10-25" });
-      const broke = store.create({ shopId: "shop-a", customer: "Chidi", amountKobo: 1000000, dueDate: "2026-10-20" });
-      const partial = store.create({ shopId: "shop-a", customer: "Bola", amountKobo: 2000000, dueDate: "2026-10-25" });
-      const open = store.create({ shopId: "shop-a", customer: "Chidi", amountKobo: 1000000, dueDate: "2026-11-05" });
+      const keep = store.create({ shopId: "shop-a", customer: "Ada", amountKobo: 2000000, dueDate: "2026-10-25", createdAt: made });
+      const broke = store.create({ shopId: "shop-a", customer: "Chidi", amountKobo: 1000000, dueDate: "2026-10-20", createdAt: made });
+      const partial = store.create({ shopId: "shop-a", customer: "Bola", amountKobo: 2000000, dueDate: "2026-10-25", createdAt: made });
+      const open = store.create({ shopId: "shop-a", customer: "Chidi", amountKobo: 1000000, dueDate: "2026-11-05", createdAt: made });
       const done = refreshPromises(store, ledger, "shop-a", { now: NOW });
       assert.deepEqual(done, [
         { id: keep.id, to: "kept" },
@@ -294,6 +299,64 @@ describe("promises (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", () => {
       assert.equal(store.get(open.id).paid_kobo, null);
       // Second refresh changes nothing: resolved promises are never reprocessed.
       assert.deepEqual(refreshPromises(store, ledger, "shop-a", { now: NOW }), []);
+    } finally {
+      store.close();
+      ledger.close();
+    }
+  });
+
+  it("only payments after creation and on or before the due date count", () => {
+    const ledger = seed([
+      { shopId: "shop-a", type: "payment", amountKobo: 2000000, customer: "Ada", createdAt: "2026-10-18T12:00:00.000Z" },
+      { shopId: "shop-a", type: "payment", amountKobo: 500000, customer: "Ada", createdAt: "2026-10-20T12:00:00.000Z" },
+      { shopId: "shop-a", type: "payment", amountKobo: 2000000, customer: "Ada", createdAt: "2026-10-27T12:00:00.000Z" },
+      { shopId: "shop-a", type: "payment", amountKobo: 2000000, customer: "Bola", createdAt: "2026-10-27T12:00:00.000Z" },
+      { shopId: "shop-a", type: "payment", amountKobo: 500000, customer: "Chidi", createdAt: "2026-10-20T12:00:00.000Z" },
+    ]);
+    try {
+      const rows = ledger.list("shop-a");
+      const today = lagosDay(NOW);
+      const made = "2026-10-19T12:00:00.000Z";
+      // Only the middle payment falls inside the window.
+      assert.equal(
+        promisePaidKobo({ customer: "Ada", due_date: "2026-10-25", created_at: made }, rows),
+        500000
+      );
+      // Part in the window, date passed: broken.
+      assert.equal(
+        promiseStatus({ customer: "Ada", amount_kobo: 2000000, due_date: "2026-10-25", created_at: made }, rows, today),
+        "broken"
+      );
+      // Part in the window, date ahead: open.
+      assert.equal(
+        promiseStatus({ customer: "Chidi", amount_kobo: 2000000, due_date: "2026-11-05", created_at: made }, rows, today),
+        "open"
+      );
+      // A full payment after the due date never makes it kept.
+      assert.equal(
+        promiseStatus({ customer: "Bola", amount_kobo: 2000000, due_date: "2026-10-20", created_at: made }, rows, today),
+        "broken"
+      );
+      assert.equal(promisePaidKobo({ customer: "Bola", due_date: "2026-10-20", created_at: made }, rows), 0);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  it("kept-rate and the leak report follow resolution", () => {
+    const ledger = seed([
+      { shopId: "shop-a", type: "payment", amountKobo: 500000, customer: "Ada", createdAt: daysAgo(8) },
+    ]);
+    const store = new PromiseStore(":memory:");
+    try {
+      store.create({ shopId: "shop-a", customer: "Ada", amountKobo: 2000000, dueDate: "2026-10-25", createdAt: daysAgo(9) });
+      refreshPromises(store, ledger, "shop-a", { now: NOW });
+      const promises = store.listByShop("shop-a");
+      assert.deepEqual(keptRate(promises, "Ada"), { kept: 0, total: 1, rate: 0 });
+      assert.deepEqual(moneyLeakReport(ledger.list("shop-a"), promises, { now: NOW }).broken, {
+        count: 1,
+        amountKobo: 1500000,
+      });
     } finally {
       store.close();
       ledger.close();
@@ -618,6 +681,32 @@ describe("proposal promises (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", 
       // Confirming twice does not duplicate the promise.
       confirmProposal(p.id, "shop-a", ctx.deps);
       assert.equal(ctx.promises.listByShop("shop-a").length, 1);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("a payment saved in the same note as the promise does not count toward it", async () => {
+    const ctx = setup(async () => ({
+      heard: "Ada pay 20k, she promise to pay 20k friday.",
+      entries: [
+        { type: "payment", customer: "Ada", item: null, quantity: null, unit: null, amountNaira: 20000, amountPhrase: "20k", priceBasis: "total" },
+      ],
+      totals: null,
+      question: null,
+      promise: { customer: "Ada", datePhrase: "friday", amountNaira: 20000 },
+    }));
+    try {
+      const p = await propose("shop-a", "fake note", { ...ctx.deps, now: NOW });
+      assert.deepEqual(p.flags, []);
+      confirmProposal(p.id, "shop-a", ctx.deps);
+      assert.equal(ctx.ledger.list("shop-a").length, 1);
+      refreshPromises(ctx.promises, ctx.ledger, "shop-a", { now: NOW });
+      const row = ctx.promises.listByShop("shop-a")[0];
+      // The same-note payment was confirmed before the promise existed, so it
+      // can never keep it; at most the outstanding promise goes broken.
+      assert.notEqual(row.status, "kept");
+      assert.equal(row.paid_kobo ?? 0, 0);
     } finally {
       teardown(ctx);
     }

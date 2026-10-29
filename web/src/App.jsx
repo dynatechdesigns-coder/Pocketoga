@@ -2,7 +2,7 @@ import { useState } from "react";
 import { FileText, Mic, ScrollText, Users, Wallet } from "lucide-react";
 import { setShop } from "./api.js";
 import { greeting } from "./format.js";
-import { Avatar } from "./ui.jsx";
+import { Avatar, ThemeToggle, cx } from "./ui.jsx";
 import Home from "./screens/Home.jsx";
 import RecordScreen from "./screens/RecordScreen.jsx";
 import MoneyScreen from "./screens/MoneyScreen.jsx";
@@ -22,7 +22,19 @@ function loadShop() {
   }
 }
 
-// Two tabs either side of the raised mic, so the mic sits in the centre.
+// Storage can be blocked (private mode); then the shop is kept until the
+// page closes.
+function saveShop(shop) {
+  try {
+    if (shop) localStorage.setItem(SHOP_KEY, JSON.stringify(shop));
+    else localStorage.removeItem(SHOP_KEY);
+  } catch {
+    // nothing to do
+  }
+}
+
+// The dock: five equal slots, the raised mic in the middle one, so it is
+// centred on the dock at any width.
 const LEFT = [
   { key: "money", label: "Money", icon: Wallet },
   { key: "debts", label: "Debts", icon: Users },
@@ -32,24 +44,31 @@ const RIGHT = [
   { key: "report", label: "Report", icon: FileText },
 ];
 
+// Every slot has the same shape (24px icon row, then the label, pinned to
+// the bottom), so all labels and icons share one baseline.
+const SLOT = "flex h-[72px] flex-col items-center justify-end gap-1 pb-2 text-xs font-semibold";
+
 export default function App() {
   const [shop, setShopState] = useState(loadShop);
   const [tab, setTab] = useState("money");
-  const [intent, setIntent] = useState(null); // e.g. "chase": open the top debtor
+  // What the next screen should do on arrival: "chase" (open the top debtor),
+  // "broken" (debtors with a broken promise), { text } (pre-fill Record),
+  // { item, unit, display } (Ledger: that item's sales).
+  const [intent, setIntent] = useState(null);
   const [account, setAccount] = useState(false);
 
   // Tell the API layer which shop we are, before any screen makes a call.
   if (shop) setShop(shop.id);
 
   function openShop(next) {
-    localStorage.setItem(SHOP_KEY, JSON.stringify(next));
+    saveShop(next);
     setShopState(next);
     setTab("money");
   }
 
   function exitShop() {
     setAccount(false);
-    localStorage.removeItem(SHOP_KEY);
+    saveShop(null);
     setShopState(null);
   }
 
@@ -77,10 +96,10 @@ export default function App() {
         data-part="tab"
         aria-current={active ? "page" : undefined}
         onClick={() => go(t.key)}
-        className="flex min-h-[68px] flex-col items-center justify-center gap-0.5 text-xs font-semibold text-muted transition-colors aria-[current=page]:font-extrabold aria-[current=page]:text-link [&_svg]:size-6"
+        className={cx(SLOT, "text-muted transition-colors aria-[current=page]:font-extrabold aria-[current=page]:text-link [&_svg]:size-6")}
       >
         <Icon aria-hidden="true" strokeWidth={active ? 2.2 : 1.75} />
-        <span>{t.label}</span>
+        <span data-part="tab-label">{t.label}</span>
       </button>
     );
   };
@@ -92,41 +111,56 @@ export default function App() {
           <span className="text-sm font-medium text-muted">{greeting()},</span>
           <span className="truncate text-lg font-extrabold tracking-tight">{shop.name}</span>
         </div>
-        <button
-          data-part="avatar-btn"
-          onClick={() => setAccount(true)}
-          aria-label={`Account for ${shop.name}`}
-          className="rounded-full shadow-soft transition-transform duration-150 active:scale-96"
-        >
-          <Avatar name={shop.name} size="btn" />
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <ThemeToggle />
+          <button
+            data-part="avatar-btn"
+            onClick={() => setAccount(true)}
+            aria-label={`Account for ${shop.name}`}
+            className="rounded-full shadow-soft transition-transform duration-150 active:scale-96"
+          >
+            <Avatar name={shop.name} size="btn" />
+          </button>
+        </div>
       </header>
 
-      <main id="main" className="mx-auto max-w-[680px] px-5 pt-6 pb-[calc(120px+env(safe-area-inset-bottom))]">
+      {/* Bottom padding clears the dock (72px), the mic raised 28px above it,
+          the desktop lift (12px) and the phone's home bar, so the last thing
+          on every screen sits above them. */}
+      <main id="main" className="mx-auto max-w-[680px] px-5 pt-6 pb-[calc(128px+env(safe-area-inset-bottom))]">
         {tab === "money" && <MoneyScreen shop={shop} onGo={go} />}
         {tab === "debts" && <DebtsScreen intent={intent} onGo={go} />}
-        {tab === "record" && <RecordScreen shop={shop} onGo={go} />}
-        {tab === "ledger" && <LedgerScreen shop={shop} onGo={go} />}
-        {tab === "report" && <ReportScreen shop={shop} />}
+        {tab === "record" && <RecordScreen shop={shop} intent={intent} onGo={go} />}
+        {tab === "ledger" && <LedgerScreen shop={shop} intent={intent} onGo={go} />}
+        {tab === "report" && <ReportScreen shop={shop} onGo={go} />}
       </main>
 
       <nav
+        data-part="dock"
         aria-label="Main"
-        className="fixed inset-x-0 bottom-0 z-20 mx-auto max-w-[600px] rounded-t-3xl bg-card pb-[env(safe-area-inset-bottom)] shadow-bar md:bottom-3 md:rounded-3xl"
+        className="fixed inset-x-0 bottom-0 z-20 mx-auto max-w-[600px] rounded-t-3xl border-t border-line bg-card/85 pb-[env(safe-area-inset-bottom)] shadow-bar backdrop-blur-xl md:bottom-3 md:rounded-3xl md:border"
       >
-        <div className="grid grid-cols-[1fr_1fr_92px_1fr_1fr] items-end px-2">
+        <div className="grid grid-cols-5 px-2">
           {LEFT.map(tabButton)}
-          <div className="grid h-[68px] place-items-center">
-            <button
-              data-part="tab-mic"
-              onClick={pressMic}
-              aria-label={tab === "record" ? "Record a voice note" : "Open Record"}
-              aria-current={tab === "record" ? "page" : undefined}
-              className="-mt-[34px] grid size-[66px] place-items-center rounded-full border-[5px] border-page bg-hero text-white shadow-lift transition-transform duration-150 active:scale-96 [&_svg]:size-[26px]"
+          {/* The middle slot is one button: the gradient circle rides 28px
+              above the dock's top edge, centred on the slot, and "Record"
+              sits on the shared label baseline. */}
+          <button
+            data-part="tab-mic"
+            onClick={pressMic}
+            aria-label={tab === "record" ? "Record a voice note" : "Open Record"}
+            aria-current={tab === "record" ? "page" : undefined}
+            className={cx(SLOT, "group relative text-muted aria-[current=page]:font-extrabold aria-[current=page]:text-link")}
+          >
+            <span
+              data-part="mic-circle"
+              aria-hidden="true"
+              className="absolute -top-7 left-1/2 grid size-[66px] -translate-x-1/2 place-items-center rounded-full border-[5px] border-page bg-hero text-white shadow-lift transition-transform duration-150 group-active:scale-96 [&_svg]:size-[26px]"
             >
-              <Mic aria-hidden="true" strokeWidth={2} />
-            </button>
-          </div>
+              <Mic strokeWidth={2} />
+            </span>
+            <span data-part="tab-label">Record</span>
+          </button>
           {RIGHT.map(tabButton)}
         </div>
       </nav>

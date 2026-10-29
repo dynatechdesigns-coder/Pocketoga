@@ -1,20 +1,28 @@
-import { ArrowDownLeft, PackagePlus, RotateCcw, ScrollText, ShieldAlert, ShieldCheck, ShoppingBag } from "lucide-react";
+import { useState } from "react";
+import { ArrowDownLeft, Filter, PackagePlus, RotateCcw, ScrollText, ShieldAlert, ShieldCheck, ShoppingBag } from "lucide-react";
 import { getLedger } from "../api.js";
 import { dayLabel, formatKobo, itemText, plural, timeLabel, typeLabel } from "../format.js";
-import { Card, EmptyState, ErrorState, IconCircle, ScreenHeader, Skeleton, cx, rise, useLoad } from "../ui.jsx";
+import { Button, Card, EmptyState, ErrorState, IconCircle, ScreenHeader, Skeleton, cx, rise, useLoad } from "../ui.jsx";
 
 // Icon and tint for each entry type.
 const KIND = {
   sale: [ShoppingBag, "lavender"],
   payment: [ArrowDownLeft, "blue"],
   restock: [PackagePlus, "slate"],
-  correction: [RotateCcw, "amber"],
+  correction: [RotateCcw, "slate"],
 };
 
+// Item names are matched the way the money check groups them (leak.mjs):
+// trimmed and lowercased, item and unit together.
+const norm = (v) => String(v ?? "").trim().toLowerCase();
+const isSaleOf = (e, f) => e.type === "sale" && norm(e.item) === f.item && (norm(e.unit) || null) === (f.unit ?? null);
+
 // Saved entries grouped by day, newest first, under the hash-chain check
-// from GET /ledger.
-export default function LedgerScreen({ shop, onGo }) {
+// from GET /ledger. `intent.item` (from "Margin lost") shows only the sales
+// of that item until "Show all".
+export default function LedgerScreen({ shop, intent, onGo }) {
   const { data, error, loading, reload } = useLoad(getLedger);
+  const [only, setOnly] = useState(intent?.item ? intent : null);
 
   return (
     <section>
@@ -24,13 +32,20 @@ export default function LedgerScreen({ shop, onGo }) {
       ) : error ? (
         <ErrorState message={error} onRetry={reload} />
       ) : (
-        <LedgerBody entries={data.entries} verify={data.verify} shop={shop} onGo={onGo} />
+        <LedgerBody
+          entries={only ? data.entries.filter((e) => isSaleOf(e, only)) : data.entries}
+          verify={data.verify}
+          only={only}
+          onShowAll={() => setOnly(null)}
+          shop={shop}
+          onGo={onGo}
+        />
       )}
     </section>
   );
 }
 
-function LedgerBody({ entries, verify, shop, onGo }) {
+function LedgerBody({ entries, verify, only, onShowAll, shop, onGo }) {
   // Group newest first by Lagos day.
   const days = [];
   for (const e of [...entries].reverse()) {
@@ -62,7 +77,20 @@ function LedgerBody({ entries, verify, shop, onGo }) {
         </div>
       )}
 
-      {days.length === 0 ? (
+      {only && (
+        <div data-part="filter" className="flex items-center justify-between gap-3 rounded-2xl border-[1.5px] border-line bg-card py-1.5 pr-1.5 pl-4">
+          <span className="flex min-w-0 items-center gap-2 font-bold [&_svg]:size-5 [&_svg]:shrink-0">
+            <Filter aria-hidden="true" /> <span className="truncate">Sales of {only.display}</span>
+          </span>
+          <Button variant="quiet" size="sm" className="w-auto shrink-0" onClick={onShowAll}>
+            Show all
+          </Button>
+        </div>
+      )}
+
+      {days.length === 0 && only ? (
+        <p className="py-6 text-center text-muted">No sales of {only.display} in your records.</p>
+      ) : days.length === 0 ? (
         <EmptyState icon={ScrollText} title="No entries yet" action="Record your first sale" onAction={() => onGo("record")}>
           Tell PocketOga what you sold. It appears here after you tap Save, and can never be edited.
         </EmptyState>

@@ -5,8 +5,9 @@
 // together) so Tailwind can find them.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { X } from "lucide-react";
+import { Moon, Sun, X } from "lucide-react";
 import { friendlyError } from "./api.js";
+import { isDark, setTheme } from "./theme.js";
 
 // Joins class names, skipping empty ones.
 export const cx = (...parts) => parts.filter(Boolean).join(" ");
@@ -36,8 +37,11 @@ export const rise = (i, className = "") => ({
 
 // --- Card ----------------------------------------------------------------------
 
-export function Card({ as: Tag = "div", className, ...props }) {
-  return <Tag className={cx("rounded-card bg-card p-5 shadow-soft", className)} {...props} />;
+// A visible edge so cards stay distinct in sunlight. `edge` picks its colour;
+// never add a second border colour in className (stylesheet order would
+// decide which one shows).
+export function Card({ as: Tag = "div", edge = "border-line", className, ...props }) {
+  return <Tag className={cx("rounded-card border bg-card p-5 shadow-soft", edge, className)} {...props} />;
 }
 
 // --- Button --------------------------------------------------------------------
@@ -49,6 +53,7 @@ const BUTTON_VARIANTS = {
   secondary: "border-transparent bg-lavender text-link",
   quiet: "border-line bg-card text-ink",
   amber: "border-amber bg-amber-soft text-amber-ink",
+  light: "border-transparent bg-white text-primary", // on the gradient
 };
 const BUTTON_SIZES = {
   sm: "px-3.5 py-2.5 text-[0.9375rem]",
@@ -82,6 +87,7 @@ const PILL_TONES = {
   amber: "bg-amber-soft text-amber-ink",
   coral: "bg-coral-soft text-coral-ink",
   slate: "bg-slate text-muted",
+  blue: "bg-blue-soft text-blue-ink",
 };
 
 export function Pill({ tone, children }) {
@@ -99,6 +105,7 @@ const ICON_TONES = {
   blue: "bg-blue-soft text-blue-ink",
   amber: "bg-amber-soft text-amber-ink",
   coral: "bg-coral-soft text-coral-ink",
+  rose: "bg-coral/15 text-coral-ink", // translucent, for losses
   teal: "bg-teal-soft text-teal-ink",
   slate: "bg-slate text-muted",
 };
@@ -151,6 +158,29 @@ export function Avatar({ name, size = "md" }) {
   );
 }
 
+// --- ThemeToggle ----------------------------------------------------------------
+
+// Sun/Moon button: switches light and dark and remembers it on this device.
+export function ThemeToggle({ className }) {
+  const [dark, setDark] = useState(isDark);
+
+  function toggle() {
+    setTheme(dark ? "light" : "dark");
+    setDark(isDark());
+  }
+
+  return (
+    <button
+      data-part="theme-toggle"
+      onClick={toggle}
+      aria-label={dark ? "Switch to light mode" : "Switch to dark mode"}
+      className={cx("grid size-12 shrink-0 place-items-center rounded-full border border-line bg-card text-ink shadow-soft transition-transform duration-150 active:scale-96 [&_svg]:size-[22px]", className)}
+    >
+      {dark ? <Sun aria-hidden="true" strokeWidth={2} /> : <Moon aria-hidden="true" strokeWidth={2} />}
+    </button>
+  );
+}
+
 // --- States ----------------------------------------------------------------------
 
 // Placeholder blocks the same size as the real content: nothing jumps.
@@ -166,7 +196,7 @@ export function Skeleton({ blocks, label = "Loading" }) {
 
 export function ErrorState({ message, onRetry }) {
   return (
-    <Card className="grid justify-items-start gap-3 border-[1.5px] border-line p-6" role="alert">
+    <Card className="grid justify-items-start gap-3 p-6" role="alert">
       <p className="text-lg font-extrabold">That did not load</p>
       <p className="text-muted">{message}</p>
       <Button variant="secondary" className="w-auto min-w-42" onClick={onRetry}>

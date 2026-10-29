@@ -8,32 +8,67 @@ import ConfirmCard, { inputClass } from "./ConfirmCard.jsx";
 
 const MAX_SECONDS = 120; // keeps the upload well under the server's 12 MB limit
 
+// sessionStorage that shrugs when storage is blocked (private mode).
+const session = {
+  get: (key) => {
+    try {
+      return sessionStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  },
+  set: (key, value) => {
+    try {
+      sessionStorage.setItem(key, value);
+    } catch {
+      // the note just is not kept across a reload
+    }
+  },
+  remove: (key) => {
+    try {
+      sessionStorage.removeItem(key);
+    } catch {
+      // nothing stored
+    }
+  },
+};
+
 // Record a voice note (or type one), send it to /propose, then check it in
 // a bottom sheet. Closing the sheet keeps the note waiting; nothing saves
-// without Save.
-export default function RecordScreen({ shop, onGo }) {
+// without Save. `intent.text` pre-fills the typed note (e.g. "I restock ").
+export default function RecordScreen({ shop, intent, onGo }) {
   const [proposal, setProposal] = useState(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [outcome, setOutcome] = useState(null); // { kind: "saved"|"rejected", count?, already? }
   const [busy, setBusy] = useState(null); // loading message, or null
   const [error, setError] = useState(null);
-  const [text, setText] = useState("");
+  const [text, setText] = useState(intent?.text ?? "");
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const recorderRef = useRef(null);
   const toggleRef = useRef(null);
+  const textRef = useRef(null);
 
   // Remember the open note for this browser tab, so a reload does not lose it.
   const pendingKey = `pocketoga.pending.${shop.id}`;
   const canRecord = !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
 
   useEffect(() => {
-    const id = sessionStorage.getItem(pendingKey);
+    const id = session.get(pendingKey);
     if (!id) return;
     getProposal(id)
-      .then((p) => (p.status === "pending" ? setProposal(p) : sessionStorage.removeItem(pendingKey)))
-      .catch(() => sessionStorage.removeItem(pendingKey));
+      .then((p) => (p.status === "pending" ? setProposal(p) : session.remove(pendingKey)))
+      .catch(() => session.remove(pendingKey));
   }, [pendingKey]);
+
+  // Pre-filled: put the cursor at the end, ready to finish the sentence.
+  useEffect(() => {
+    const box = textRef.current;
+    if (!intent?.text || !box) return;
+    box.focus({ preventScroll: true });
+    box.setSelectionRange(box.value.length, box.value.length);
+    box.scrollIntoView({ block: "center" });
+  }, [intent]);
 
   // Stop the microphone if the trader leaves this screen mid-recording.
   useEffect(() => () => recorderRef.current?.cleanup(), []);
@@ -50,14 +85,14 @@ export default function RecordScreen({ shop, onGo }) {
   }, []);
 
   function showProposal(p) {
-    sessionStorage.setItem(pendingKey, p.id);
+    session.set(pendingKey, p.id);
     setProposal(p);
     setOutcome(null);
     setSheetOpen(true);
   }
 
   function finish(result) {
-    sessionStorage.removeItem(pendingKey);
+    session.remove(pendingKey);
     setProposal(null);
     setOutcome(result);
   }
@@ -147,13 +182,14 @@ export default function RecordScreen({ shop, onGo }) {
         <Card
           as="button"
           onClick={() => setSheetOpen(true)}
-          className="mb-4 flex w-full animate-rise items-center justify-between gap-4 border-[1.5px] border-amber text-left"
+          edge="border-accent"
+          className="mb-4 flex w-full animate-rise items-center justify-between gap-4 border-[1.5px] text-left"
         >
           <span>
             <strong>A note is waiting for you</strong>
             <span className="block text-sm text-muted">Nothing is saved yet. Tap to check it.</span>
           </span>
-          <Pill tone="amber">Open</Pill>
+          <Pill tone="blue">Open</Pill>
         </Card>
       )}
 
@@ -196,7 +232,7 @@ export default function RecordScreen({ shop, onGo }) {
       </div>
 
       {error && (
-        <Card className="mb-4 border-[1.5px] border-line" role="alert">
+        <Card className="mb-4" role="alert">
           <p>{error}</p>
         </Card>
       )}
@@ -207,6 +243,7 @@ export default function RecordScreen({ shop, onGo }) {
         </label>
         <textarea
           id="note-text"
+          ref={textRef}
           rows={3}
           value={text}
           onChange={(e) => setText(e.target.value)}

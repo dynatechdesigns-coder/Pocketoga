@@ -2,12 +2,13 @@
    shadow and animation lives in the @theme block below; components use only
    the utilities these generate (bg-primary, rounded-card, shadow-soft…).
 
-   Contrast (WCAG AA): the bright brand colours (accent, coral, amber, teal,
-   grey) are for fills, icons and borders. Text in those hues uses the darker
-   "-ink" shades, which pass 4.5:1 on cards and on the page. */
+   Contrast (WCAG AA): the bright colours (accent, coral, amber, teal, grey)
+   are for fills, icons and borders. Text in those hues uses the "-ink"
+   shades, which pass 4.5:1 on cards, on the page and on their "-soft" tints,
+   in both themes. */
 @import "tailwindcss";
 
-/* Dark mode by class; index.html sets .dark from the system setting. */
+/* Dark mode by class; index.html sets .dark before first paint. */
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
@@ -15,49 +16,55 @@
   --color-*: initial;
   --color-white: #ffffff;
 
-  /* Brand */
+  /* Colour has one meaning each:
+     brand gradient (primary -> accent) = money in;
+     amber = money owed;
+     coral (rose) = losses: margin lost, overdue, broken promises, tamper;
+     teal = kept and verified, nothing else.
+     Light values are tuned for outdoor sunlight: near-white surfaces, ink
+     text, strong borders, no faint grey for anything that matters. */
   --color-primary: #2e1a7a; /* deep violet */
   --color-accent: #3d6bff; /* electric blue */
-  --color-lavender: #f1eefb;
-  --color-page: #f6f7fb;
+  --color-lavender: #efebfd;
+  --color-page: #f7f8fc;
   --color-card: #ffffff;
   --color-ink: #12122a;
-  --color-grey: #6e7191;
-  --color-coral: #ff6b5b; /* broken promises, tamper */
-  --color-amber: #ffb020; /* check this */
-  --color-teal: #14b8a6; /* kept, verified — nothing else */
+  --color-grey: #5d6080; /* icons only */
+  --color-amber: #f59e0b;
+  --color-coral: #f43f5e;
+  --color-teal: #14b8a6;
 
   /* Text-safe shades and tints */
   --color-link: #2e1a7a; /* violet used as text */
-  --color-muted: #5d6080; /* grey text: 5.6:1 on page, 6.2:1 on white */
-  --color-blue-soft: #e9eeff;
+  --color-muted: #42465f; /* secondary text, still strong in sunlight */
+  --color-blue-soft: #e6ecff;
   --color-blue-ink: #2447c8;
-  --color-coral-soft: #ffedeb;
-  --color-coral-ink: #c2382a;
-  --color-amber-soft: #fff5dd;
-  --color-amber-ink: #8a5a00;
-  --color-teal-soft: #e3f7f4;
-  --color-teal-ink: #0f766e;
+  --color-coral-soft: #ffe4e6;
+  --color-coral-ink: #be123c;
+  --color-amber-soft: #fef3c7;
+  --color-amber-ink: #92400e;
+  --color-teal-soft: #ddf6f2;
+  --color-teal-ink: #0f6b63;
   --color-slate: #eceef4;
-  --color-line: #e8e9f1;
+  --color-line: #c9ccdc; /* borders you can see outdoors */
   --color-field: #ffffff;
-  --color-skeleton: #e9eaf2;
+  --color-skeleton: #e6e8f0;
   --color-frost: rgba(18, 18, 42, 0.28); /* chips on the gradient: white text stays >= 6:1 */
   --color-backdrop: rgba(18, 18, 42, 0.5);
 
   /* Avatar tints, picked from the customer's name */
-  --color-av0: #f1eefb;
+  --color-av0: #efebfd;
   --color-av0-ink: #2e1a7a;
-  --color-av1: #e9eeff;
+  --color-av1: #e6ecff;
   --color-av1-ink: #2447c8;
-  --color-av2: #ffedeb;
-  --color-av2-ink: #b3352a;
-  --color-av3: #fff5dd;
-  --color-av3-ink: #8a5a00;
+  --color-av2: #ffe4e6;
+  --color-av2-ink: #be123c;
+  --color-av3: #fef3c7;
+  --color-av3-ink: #92400e;
   --color-av4: #fce8f3;
   --color-av4-ink: #a3236b;
   --color-av5: #eceef4;
-  --color-av5-ink: #44485f;
+  --color-av5-ink: #3a3e56;
 
   /* Type */
   --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -98,44 +105,49 @@
   }
 }
 
-/* Dark mode: the same token names with night values. */
+/* Light is the default; dark only after the trader taps the Sun/Moon button
+   (index.html). Dark mode: the same token names with
+   night values; body text on cards is slate-300 or lighter. */
 @layer theme {
+  :root {
+    color-scheme: light;
+  }
   .dark {
     --color-page: #0d0d1e;
     --color-card: #17172e;
     --color-ink: #f1f1fa;
-    --color-grey: #8f92b0;
-    --color-lavender: #221c45;
-    --color-link: #b9a9ff;
-    --color-muted: #a9abc6;
+    --color-grey: #a3a7c4;
+    --color-lavender: #26204d;
+    --color-link: #c4b8ff;
+    --color-muted: #cbd5e1; /* slate-300 */
     --color-blue-soft: #1a2550;
-    --color-blue-ink: #9db4ff;
-    --color-coral-soft: #3a1d22;
-    --color-coral-ink: #ff9a8f;
-    --color-amber-soft: #33280c;
-    --color-amber-ink: #ffc857;
+    --color-blue-ink: #a8beff;
+    --color-coral-soft: #3f1520;
+    --color-coral-ink: #fda4af;
+    --color-amber-soft: #3a2a07;
+    --color-amber-ink: #fcd34d;
     --color-teal-soft: #0f2e2c;
-    --color-teal-ink: #5ad8c8;
-    --color-slate: #23233d;
-    --color-line: #2a2a45;
+    --color-teal-ink: #5eead4;
+    --color-slate: #262642;
+    --color-line: #3a3a5c;
     --color-field: #121226;
     --color-skeleton: #22223b;
     --color-backdrop: rgba(0, 0, 0, 0.6);
     --shadow-soft: 0 4px 16px rgba(0, 0, 0, 0.35);
     --shadow-lift: 0 10px 28px rgba(0, 0, 0, 0.5);
     --shadow-bar: 0 -4px 20px rgba(0, 0, 0, 0.35);
-    --color-av0: #221c45;
-    --color-av0-ink: #c9bcff;
+    --color-av0: #26204d;
+    --color-av0-ink: #d0c6ff;
     --color-av1: #1a2550;
-    --color-av1-ink: #9db4ff;
-    --color-av2: #3a1d22;
-    --color-av2-ink: #ff9a8f;
-    --color-av3: #33280c;
-    --color-av3-ink: #ffc857;
+    --color-av1-ink: #a8beff;
+    --color-av2: #3f1520;
+    --color-av2-ink: #fda4af;
+    --color-av3: #3a2a07;
+    --color-av3-ink: #fcd34d;
     --color-av4: #3a1830;
     --color-av4-ink: #f59ccc;
-    --color-av5: #23233d;
-    --color-av5-ink: #c3c6dc;
+    --color-av5: #262642;
+    --color-av5-ink: #cbd5e1;
     color-scheme: dark;
   }
 }

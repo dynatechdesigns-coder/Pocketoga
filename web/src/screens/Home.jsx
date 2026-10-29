@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { HandCoins, Mic, ShieldCheck } from "lucide-react";
 import { DEMO_SHOP_ID } from "../api.js";
-import { Button, IconCircle, rise } from "../ui.jsx";
+import { Button, IconCircle, ThemeToggle, rise } from "../ui.jsx";
 import { inputClass } from "./ConfirmCard.jsx";
 
 const POINTS = [
@@ -24,7 +24,10 @@ export default function Home({ onOpen }) {
   return (
     <main className="mx-auto grid max-w-[460px] gap-6 px-5 pt-[calc(48px+env(safe-area-inset-top))] pb-10">
       <div {...rise(0, "grid gap-3")}>
-        <img src="/icon.svg" alt="" width="56" height="56" className="size-14 rounded-[18px] shadow-lift" />
+        <div className="flex items-center justify-between">
+          <img src="/icon.svg" alt="" width="56" height="56" className="size-14 rounded-[18px] shadow-lift" />
+          <ThemeToggle />
+        </div>
         <h1 className="mt-2 text-[2rem] leading-[1.15] font-extrabold tracking-tight">Find the money your shop is losing.</h1>
         <p className="text-[1.0625rem] text-muted">
           PocketOga keeps your records, chases what you are owed, and tells you where money is leaking.

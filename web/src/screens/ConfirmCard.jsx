@@ -127,7 +127,7 @@ export default function ConfirmCard({ proposal, shopId, onUpdate, onFinish, onSt
             ["Paid", t.paidKobo],
             ["Still owed", t.remainderKobo],
           ].map(([label, kobo]) => (
-            <div key={label} className="rounded-2xl bg-card px-3.5 py-3 shadow-soft">
+            <div key={label} className="rounded-2xl border border-line bg-card px-3.5 py-3 shadow-soft">
               <dt className="text-[0.8125rem] font-semibold text-muted">{label}</dt>
               <dd className="font-extrabold tabular-nums [overflow-wrap:anywhere]">{formatKobo(kobo)}</dd>
             </div>

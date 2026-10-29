@@ -151,15 +151,20 @@ function isPaymentLike(row, byId) {
   return !!cur && cur.type === "payment";
 }
 
-// Payments by one customer on or before a promise's due date (effective
-// rows, so corrected payments count at their corrected amount).
+// Payments by one customer inside a promise's window: strictly after the
+// promise was created (so earlier payments, including any saved in the same
+// confirmation, never count) and on or before the due date, end of that day
+// in Africa/Lagos. Effective rows, so corrected payments count corrected.
 function promisePayments(promise, shopRows) {
   const want = normCustomer(promise.customer);
+  const createdAt = Date.parse(promise.created_at);
   const byId = new Map((shopRows ?? []).map((r) => [r.id, r]));
   return effectiveEntries(shopRows).filter(
     (r) =>
       isPaymentLike(r, byId) &&
       normCustomer(r.customer) === want &&
+      Number.isFinite(createdAt) &&
+      Date.parse(r.created_at) > createdAt &&
       lagosDay(Date.parse(r.created_at)) <= promise.due_date
   );
 }
@@ -170,10 +175,11 @@ export function promisePaidKobo(promise, shopRows) {
 }
 
 // Effective status of an OPEN promise against one shop's ledger rows:
-// kept when a qualifying payment exists on or before the due date (at least
-// the promised amount, or any payment when no amount was promised); broken
-// when the due date has passed without that — including past-due part
-// payments, whose paid part is recorded separately; otherwise still open.
+// kept when a qualifying payment exists inside the window (at least the
+// promised amount, or any payment when no amount was promised); broken when
+// the due date has passed without that — including past-due part payments,
+// whose paid part is recorded separately; otherwise still open. A payment
+// after the due date never makes it kept.
 export function promiseStatus(promise, shopRows, todayDay) {
   const before = promisePayments(promise, shopRows);
   const qualifying = before.filter(

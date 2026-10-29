@@ -5,6 +5,9 @@ import { formatKobo, plural } from "./format.js";
 export function reportText(shopName, report) {
   const { owed, overdue, broken, shortfalls, belowCost } = report;
   const lines = [`PocketOga money check — ${shopName}`];
+  if (report.today) {
+    lines.push(`Sold today: ${formatKobo(report.today.soldTodayKobo)} · Collected today: ${formatKobo(report.today.collectedTodayKobo)}`);
+  }
   lines.push(
     owed.totalKobo > 0
       ? `Customers owe: ${formatKobo(owed.totalKobo)} (${plural(owed.customers, "customer")})`
