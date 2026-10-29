@@ -109,9 +109,12 @@ export async function getReport() {
   return (await request("GET", "/report")).report;
 }
 
-// --- Routes being built (scripts/mock-contract.mjs serves them in dev) --------
+// --- Routes being built (see the README for the dev-only stand-in server) -------
 
-// A 404 from these means the server does not have the route yet.
+// A 404 from these means the server does not have the route yet. The app then
+// shows "not available yet"; it never substitutes made-up numbers.
+export const isNotBuilt = (err) => err instanceof ApiError && err.status === 404 && err.message === "not built";
+
 async function newRoute(method, path, body) {
   try {
     return await request(method, path, body);

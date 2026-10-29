@@ -49,6 +49,7 @@
   --color-line: #c9ccdc; /* borders you can see outdoors */
   --color-field: #ffffff;
   --color-skeleton: #e6e8f0;
+  --color-bezel: #12122a; /* phone frames on the landing page, both themes */
   --color-frost: rgba(18, 18, 42, 0.28); /* chips on the gradient: white text stays >= 6:1 */
   --color-backdrop: rgba(18, 18, 42, 0.5);
 

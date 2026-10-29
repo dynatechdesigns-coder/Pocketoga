@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "seed:demo": "node scripts/seed-demo.mjs",
-    "mock:contract": "node scripts/mock-contract.mjs"
+    "mock:contract": "node scripts/mock-contract.mjs",
+    "dev:mock": "node scripts/dev-mock.mjs",
+    "check:build": "node scripts/check-no-mock.mjs"
   },
   "dependencies": {
     "lucide-react": "0.468.0",

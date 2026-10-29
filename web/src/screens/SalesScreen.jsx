@@ -28,10 +28,18 @@ export default function SalesScreen({ shop, onGo }) {
       <div className="grid gap-4">
         <Card {...rise(0, "grid gap-1")} data-part="sales-total">
           <p className="text-sm font-bold text-muted">Sales {period === "today" ? "today" : `this ${period}`}</p>
-          <p className={cx(figure, "text-[2rem]")}>{total.data ? formatKobo(total.data.salesKobo) : total.error ? "—" : "…"}</p>
+          {total.data ? (
+            <p className={cx(figure, "text-[2rem]")}>{formatKobo(total.data.salesKobo)}</p>
+          ) : total.error ? (
+            <p data-part="total-unavailable" className="text-lg font-extrabold">
+              {total.unavailable ? "Total not available yet" : "Total could not load"}
+            </p>
+          ) : (
+            <p className={cx(figure, "text-[2rem]")}>…</p>
+          )}
           <p className="text-sm text-muted">
             {plural(sales.length, "sale")} recorded
-            {total.error && " · the total needs the newer server"}
+            {total.unavailable && " · the total needs the newer PocketOga server"}
           </p>
         </Card>
         {days.length === 0 ? (

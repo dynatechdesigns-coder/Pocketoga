@@ -5,23 +5,25 @@
 // together) so Tailwind can find them.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Moon, Sun, X } from "lucide-react";
-import { friendlyError } from "./api.js";
+import { Hourglass, Moon, Sun, X } from "lucide-react";
+import { friendlyError, isNotBuilt } from "./api.js";
 import { isDark, setTheme } from "./theme.js";
 export { setTheme };
 
 // Joins class names, skipping empty ones.
 export const cx = (...parts) => parts.filter(Boolean).join(" ");
 
-// Runs an async loader on mount. Returns { data, error, loading, reload }.
+// Runs an async loader on mount. Returns { data, error, loading, unavailable,
+// reload }. `unavailable` means the server has no such route yet (not a
+// failure): screens show NotAvailable for it.
 export function useLoad(loader) {
-  const [state, setState] = useState({ loading: true, data: null, error: null });
+  const [state, setState] = useState({ loading: true, data: null, error: null, unavailable: false });
   const reload = useCallback(async () => {
-    setState((s) => ({ ...s, loading: true, error: null }));
+    setState((s) => ({ ...s, loading: true, error: null, unavailable: false }));
     try {
-      setState({ loading: false, data: await loader(), error: null });
+      setState({ loading: false, data: await loader(), error: null, unavailable: false });
     } catch (err) {
-      setState({ loading: false, data: null, error: friendlyError(err) });
+      setState({ loading: false, data: null, error: friendlyError(err), unavailable: isNotBuilt(err) });
     }
   }, [loader]);
   useEffect(() => {
@@ -55,6 +57,7 @@ const BUTTON_VARIANTS = {
   quiet: "border-line bg-card text-ink",
   amber: "border-amber bg-amber-soft text-amber-ink",
   light: "border-transparent bg-white text-primary", // on the gradient
+  frost: "border-white/60 bg-frost text-white", // second button on the gradient
 };
 const BUTTON_SIZES = {
   sm: "px-3.5 py-2.5 text-[0.9375rem]",
@@ -80,6 +83,10 @@ export function Button({ as: Tag = "button", variant = "primary", size = "md", c
     />
   );
 }
+
+// Text boxes on the Record screen, in the Fix forms and on the landing page.
+export const inputClass =
+  "block min-h-12 w-full resize-y rounded-2xl border-[1.5px] border-line bg-field px-4 py-3 text-base transition placeholder:text-muted focus:border-accent focus:ring-4 focus:ring-blue-soft focus:outline-none disabled:bg-slate";
 
 // --- Pill ----------------------------------------------------------------------
 
@@ -250,6 +257,18 @@ export function ErrorState({ message, onRetry }) {
       <Button variant="secondary" className="w-auto min-w-42" onClick={onRetry}>
         Retry
       </Button>
+    </Card>
+  );
+}
+
+// The server has no route for this yet. Calm and plain: nothing is wrong, and
+// no placeholder numbers are shown.
+export function NotAvailable({ title = "Not available yet", children }) {
+  return (
+    <Card data-part="not-available" role="status" className="grid justify-items-start gap-3 p-6">
+      <IconCircle icon={Hourglass} tone="slate" />
+      <p className="text-lg font-extrabold">{title}</p>
+      <p className="text-muted">{children ?? "This part needs the newer PocketOga server, which is not ready yet. Your records are fine."}</p>
     </Card>
   );
 }

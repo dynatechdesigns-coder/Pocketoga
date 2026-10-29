@@ -3,14 +3,14 @@ import { ChevronRight, Phone, UserPlus, Users } from "lucide-react";
 import { friendlyError, getCustomers, saveCustomer } from "../api.js";
 import { formatKobo, phoneText, sameCustomer } from "../format.js";
 import { waNumber } from "../reminders.js";
-import { Avatar, Button, Card, EmptyState, ErrorState, Field, ScreenHeader, Sheet, Skeleton, rise, useLoad } from "../ui.jsx";
+import { Avatar, Button, Card, EmptyState, ErrorState, Field, NotAvailable, ScreenHeader, Sheet, Skeleton, rise, useLoad } from "../ui.jsx";
 import { inputClass } from "./ConfirmCard.jsx";
 
 // GET /customers: who they are, what they owe (amber) and their phone. The
 // add/edit sheet stores a number only with the trader's explicit consent;
 // Debts uses it to open WhatsApp straight to that customer.
 export default function CustomersScreen() {
-  const { data, error, loading, reload } = useLoad(getCustomers);
+  const { data, error, loading, unavailable, reload } = useLoad(getCustomers);
   const [edits, setEdits] = useState([]); // customers saved this visit
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null); // customer, or {} for new
@@ -24,6 +24,8 @@ export default function CustomersScreen() {
 
   let body;
   if (loading && !data) body = <Skeleton blocks={[76, 76, 76, 76]} label="Loading customers" />;
+  else if (unavailable)
+    body = <NotAvailable title="Customers are not available yet">Customer details and phone numbers need the newer PocketOga server.</NotAvailable>;
   else if (error) body = <ErrorState message={error} onRetry={reload} />;
   else if (list.length === 0)
     body = (
@@ -69,11 +71,13 @@ export default function CustomersScreen() {
   return (
     <section>
       <ScreenHeader title="Customers" />
-      <div className="mb-4">
-        <Button data-part="add-customer" variant="secondary" onClick={() => openSheet({})}>
-          <UserPlus aria-hidden="true" /> Add customer
-        </Button>
-      </div>
+      {!unavailable && (
+        <div className="mb-4">
+          <Button data-part="add-customer" variant="secondary" onClick={() => openSheet({})}>
+            <UserPlus aria-hidden="true" /> Add customer
+          </Button>
+        </div>
+      )}
       {body}
       <Sheet open={open} onClose={() => setOpen(false)} title={editing?.name ? `Edit ${editing.name}` : "Add customer"}>
         {editing && (
@@ -151,7 +155,7 @@ function CustomerForm({ customer, onSaved }) {
 
       {/* Consent: the whole row is the target; nothing is ticked for them. */}
       <label data-part="consent" className="flex min-h-14 cursor-pointer items-start gap-3 rounded-2xl border-[1.5px] border-line bg-card px-4 py-3">
-        <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} className="mt-0.5 size-6 shrink-0 accent-primary" />
+        <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} className="mt-0.5 size-6 shrink-0 accent-accent" />
         <span>
           <strong>I have this customer’s permission to store their number</strong>
           <span className="block text-sm text-muted">It is only used to open WhatsApp to them from Debts. PocketOga never sends messages itself.</span>

@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { Plus, Receipt } from "lucide-react";
 import { getExpenses } from "../api.js";
 import { PERIODS, dayLabel, formatKobo } from "../format.js";
-import { Button, Card, EmptyState, ErrorState, IconCircle, PeriodTabs, ScreenHeader, Skeleton, rise, useLoad } from "../ui.jsx";
+import { Button, Card, EmptyState, ErrorState, IconCircle, NotAvailable, PeriodTabs, ScreenHeader, Skeleton, rise, useLoad } from "../ui.jsx";
 
 // GET /expenses for the period: category totals (from the server) as chips,
 // then each expense. "Add expense" only pre-fills a note on Record; it is
@@ -10,10 +10,12 @@ import { Button, Card, EmptyState, ErrorState, IconCircle, PeriodTabs, ScreenHea
 export default function ExpensesScreen({ onGo }) {
   const [period, setPeriod] = useState("month");
   const load = useCallback(() => getExpenses(period), [period]);
-  const { data, error, loading, reload } = useLoad(load);
+  const { data, error, loading, unavailable, reload } = useLoad(load);
 
   let body;
   if (loading && !data) body = <Skeleton blocks={[48, 220]} label="Loading expenses" />;
+  else if (unavailable)
+    body = <NotAvailable title="Expenses are not available yet">Expense totals need the newer PocketOga server. You can still record one with Add expense.</NotAvailable>;
   else if (error) body = <ErrorState message={error} onRetry={reload} />;
   else if (data.expenses.length === 0)
     body = (
@@ -53,7 +55,7 @@ export default function ExpensesScreen({ onGo }) {
     <section>
       <ScreenHeader title="Expenses" />
       <div className="mb-4 grid gap-3">
-        <PeriodTabs periods={PERIODS} value={period} onChange={setPeriod} label="Expenses period" />
+        {!unavailable && <PeriodTabs periods={PERIODS} value={period} onChange={setPeriod} label="Expenses period" />}
         <Button data-part="add-expense" onClick={() => onGo("record", { text: "I spend ₦" })}>
           <Plus aria-hidden="true" /> Add expense
         </Button>

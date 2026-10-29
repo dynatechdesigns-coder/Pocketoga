@@ -2,13 +2,12 @@ import { useState } from "react";
 import { ArrowDownLeft, CalendarClock, Check, PackagePlus, Pencil, ShoppingBag, TriangleAlert, X } from "lucide-react";
 import { confirmProposal, fixProposal, friendlyError, rejectProposal } from "../api.js";
 import { formatDueDay, formatKobo, itemText, typeLabel } from "../format.js";
-import { Button, Card, IconCircle, cx, figure } from "../ui.jsx";
+import { Button, Card, IconCircle, cx, figure, inputClass } from "../ui.jsx";
 
 const TYPE_ICON = { sale: ShoppingBag, payment: ArrowDownLeft, restock: PackagePlus };
 
-// Text boxes on the Record screen and in the Fix form.
-export const inputClass =
-  "block min-h-12 w-full resize-y rounded-2xl border-[1.5px] border-line bg-field px-4 py-3 text-base transition placeholder:text-muted focus:border-accent focus:ring-4 focus:ring-blue-soft focus:outline-none disabled:bg-slate";
+// Re-exported for the screens that import it from here.
+export { inputClass };
 
 // Server flags are written for developers ("entry 1: missing customer name").
 // Make them read like plain words, and drop repeats.
@@ -127,9 +126,11 @@ export default function ConfirmCard({ proposal, shopId, onUpdate, onFinish, onSt
             ["Paid", t.paidKobo],
             ["Still owed", t.remainderKobo],
           ].map(([label, kobo]) => (
-            <div key={label} className="rounded-2xl border border-line bg-card px-3.5 py-3 shadow-soft">
+            <div key={label} className="min-w-0 rounded-2xl border border-line bg-card px-3 py-3 shadow-soft">
               <dt className="text-[0.8125rem] font-semibold text-muted">{label}</dt>
-              <dd className="font-extrabold tabular-nums [overflow-wrap:anywhere]">{formatKobo(kobo)}</dd>
+              {/* Sized to the box so ₦118,000 stays on one line at 360px; very
+                  long amounts still wrap rather than spill out. */}
+              <dd className="text-[clamp(0.8125rem,3.9vw,1rem)] font-extrabold tabular-nums [overflow-wrap:anywhere]">{formatKobo(kobo)}</dd>
             </div>
           ))}
         </dl>

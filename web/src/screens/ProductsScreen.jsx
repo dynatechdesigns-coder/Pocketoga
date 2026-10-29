@@ -2,14 +2,14 @@ import { useState } from "react";
 import { ChevronRight, Package } from "lucide-react";
 import { friendlyError, getProducts, setProductPrices } from "../api.js";
 import { formatKobo, nairaInput, parseNaira, plural } from "../format.js";
-import { Button, Card, EmptyState, ErrorState, Field, IconCircle, Pill, ScreenHeader, Sheet, Skeleton, rise, useLoad } from "../ui.jsx";
+import { Button, Card, EmptyState, ErrorState, Field, IconCircle, NotAvailable, Pill, ScreenHeader, Sheet, Skeleton, rise, useLoad } from "../ui.jsx";
 import { inputClass } from "./ConfirmCard.jsx";
 
 // GET /products: stock on hand, a low-stock pill, and a sheet to set the sell
 // and cost prices (POST /products/:id). Cost prices are what let Reports
 // count cost of goods; a product with none is left out of the estimate.
 export default function ProductsScreen() {
-  const { data: products, error, loading, reload } = useLoad(getProducts);
+  const { data: products, error, loading, unavailable, reload } = useLoad(getProducts);
   const [open, setOpen] = useState(null); // product
   const [shown, setShown] = useState(null); // kept while the sheet slides away
   const [saved, setSaved] = useState({}); // id -> product, after a save
@@ -23,6 +23,8 @@ export default function ProductsScreen() {
 
   let body;
   if (loading && !products) body = <Skeleton blocks={[76, 76, 76, 76]} label="Loading products" />;
+  else if (unavailable)
+    body = <NotAvailable title="Products are not available yet">Stock and prices need the newer PocketOga server.</NotAvailable>;
   else if (error) body = <ErrorState message={error} onRetry={reload} />;
   else if (list.length === 0)
     body = (

@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { BarChart3, ChevronRight, Ellipsis, Mic, Package, Receipt, ScrollText, Settings, ShoppingBag, Users, UserRound, Wallet } from "lucide-react";
 import { setShop } from "./api.js";
+import DevBanner from "./DevBanner.jsx";
 import { greeting } from "./format.js";
 import { Avatar, IconCircle, Sheet, ThemeToggle, cx } from "./ui.jsx";
-import Home from "./screens/Home.jsx";
 import RecordScreen from "./screens/RecordScreen.jsx";
 import MoneyScreen from "./screens/MoneyScreen.jsx";
 import DebtsScreen from "./screens/DebtsScreen.jsx";
@@ -14,28 +14,6 @@ import ProductsScreen from "./screens/ProductsScreen.jsx";
 import ExpensesScreen from "./screens/ExpensesScreen.jsx";
 import CustomersScreen from "./screens/CustomersScreen.jsx";
 import SettingsScreen from "./screens/SettingsScreen.jsx";
-
-// The open shop ({ id, name, demo }) is remembered on this device.
-const SHOP_KEY = "pocketoga.shop";
-
-function loadShop() {
-  try {
-    return JSON.parse(localStorage.getItem(SHOP_KEY));
-  } catch {
-    return null;
-  }
-}
-
-// Storage can be blocked (private mode); then the shop is kept until the
-// page closes.
-function saveShop(shop) {
-  try {
-    if (shop) localStorage.setItem(SHOP_KEY, JSON.stringify(shop));
-    else localStorage.removeItem(SHOP_KEY);
-  } catch {
-    // nothing to do
-  }
-}
 
 // The dock: five equal slots, the raised mic in the middle one, so it is
 // centred on the dock at any width.
@@ -59,8 +37,9 @@ const MORE_KEYS = MORE.map((m) => m.key);
 // the bottom), so all labels and icons share one baseline.
 const SLOT = "flex h-[72px] flex-col items-center justify-end gap-1 pb-2 text-xs font-semibold";
 
-export default function App() {
-  const [shop, setShopState] = useState(loadShop);
+// The signed-in app for one open shop ({ id, name, demo }); Root decides when
+// it shows and what leaving the shop does.
+export default function App({ shop, onExit }) {
   const [tab, setTab] = useState("money");
   // What the next screen should do on arrival: "chase" (open the top debtor),
   // "broken" (debtors with a broken promise), { text } (pre-fill Record),
@@ -69,18 +48,7 @@ export default function App() {
   const [more, setMore] = useState(false);
 
   // Tell the API layer which shop we are, before any screen makes a call.
-  if (shop) setShop(shop.id);
-
-  function openShop(next) {
-    saveShop(next);
-    setShopState(next);
-    setTab("money");
-  }
-
-  function exitShop() {
-    saveShop(null);
-    setShopState(null);
-  }
+  setShop(shop.id);
 
   // Screens move between tabs with go("debts") or go("debts", "chase").
   function go(next, nextIntent = null) {
@@ -95,8 +63,6 @@ export default function App() {
     if (tab === "record") window.dispatchEvent(new Event("pocketoga:mic"));
     else go("record");
   }
-
-  if (!shop) return <Home onOpen={openShop} />;
 
   const slot = ({ key, label, icon: Icon, active, onClick, part = "tab" }) => (
     <button
@@ -113,6 +79,7 @@ export default function App() {
 
   return (
     <div className="min-h-dvh">
+      {__MOCK_CONTRACT__ && <DevBanner />}
       <header data-part="topbar" className="mx-auto flex max-w-[680px] items-center justify-between gap-4 px-5 pt-[calc(16px+env(safe-area-inset-top))]">
         <div className="grid min-w-0">
           <span className="text-sm font-medium text-muted">{greeting()},</span>
@@ -144,7 +111,7 @@ export default function App() {
         {tab === "expenses" && <ExpensesScreen onGo={go} />}
         {tab === "customers" && <CustomersScreen />}
         {tab === "ledger" && <LedgerScreen shop={shop} intent={intent} onGo={go} />}
-        {tab === "settings" && <SettingsScreen shop={shop} onExit={exitShop} />}
+        {tab === "settings" && <SettingsScreen shop={shop} onExit={onExit} />}
       </main>
 
       <nav

@@ -8,25 +8,37 @@ import basicSsl from "@vitejs/plugin-basic-ssl";
 // The backend stays plain http; only the browser-to-Vite hop is https.
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:3000";
 
-// MOCK_CONTRACT=1: send /api to scripts/mock-contract.mjs instead, which
-// answers the routes still being built (profit, expenses, products,
-// customers, ledger corrections) with fake data and forwards the rest to
-// the backend. Drop the flag once the real routes exist.
-const API_TARGET = process.env.MOCK_CONTRACT === "1" ? process.env.MOCK_URL ?? "http://localhost:3999" : BACKEND_URL;
+export default defineConfig(({ command, isPreview }) => {
+  const dev = command === "serve" && !isPreview;
 
-export default defineConfig(({ command, isPreview }) => ({
-  // The dev server (npm run dev) runs on https with a self-signed
-  // certificate, because phones only allow the microphone on secure pages.
-  // Builds and vite preview are untouched.
-  plugins: [react(), tailwindcss(), command === "serve" && !isPreview && basicSsl()],
-  server: {
-    host: true, // also reachable from a phone on the same Wi-Fi
-    proxy: {
-      "/api": {
-        target: API_TARGET,
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ""),
+  // MOCK_CONTRACT=1 is an explicit, development-only switch: /api goes to
+  // scripts/mock-contract.mjs, which answers the routes still being built
+  // (profit, expenses, products, customers, ledger corrections) with fake
+  // data and forwards the rest to the backend. It is read ONLY for the dev
+  // server. Builds and vite preview ignore it, so a production bundle never
+  // contains the flag, the mock address or any fallback to fake numbers
+  // (npm run check:build proves it). Without it, a route the backend does
+  // not have yet shows "not available yet" in the app.
+  const mock = dev && process.env.MOCK_CONTRACT === "1";
+  const apiTarget = mock ? process.env.MOCK_URL ?? "http://localhost:3999" : BACKEND_URL;
+  if (mock) console.log(`\n  MOCK_CONTRACT=1: /api uses the mock server at ${apiTarget} (fake data, development only)\n`);
+
+  return {
+    // The dev server (npm run dev) runs on https with a self-signed
+    // certificate, because phones only allow the microphone on secure pages.
+    plugins: [react(), tailwindcss(), dev && basicSsl()],
+    // True only while the mock is on in dev; a constant false in builds, so
+    // the dev banner is removed from the bundle.
+    define: { __MOCK_CONTRACT__: JSON.stringify(mock) },
+    server: {
+      host: true, // also reachable from a phone on the same Wi-Fi
+      proxy: {
+        "/api": {
+          target: apiTarget,
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/api/, ""),
+        },
       },
     },
-  },
-}));
+  };
+});

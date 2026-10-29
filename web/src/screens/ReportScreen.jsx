@@ -3,7 +3,7 @@ import { ArrowDownLeft, ArrowRight, CalendarX2, ChevronRight, Package, PackageMi
 import { getProfit, getReport } from "../api.js";
 import { PERIODS, formatKobo, plural } from "../format.js";
 import { reportText, shareText } from "../share.js";
-import { Button, Card, EmptyState, ErrorState, IconCircle, PeriodTabs, ScreenHeader, SectionTitle, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
+import { Button, Card, EmptyState, ErrorState, IconCircle, NotAvailable, PeriodTabs, ScreenHeader, SectionTitle, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
 import ProfitChart from "../ProfitChart.jsx";
 
 // How many leak categories need the trader's attention (Money shows the count).
@@ -24,9 +24,13 @@ export default function ReportScreen({ shop, onGo }) {
     <section>
       <ScreenHeader title="Reports" />
       <div className="grid gap-4">
-        <PeriodTabs periods={PERIODS} value={period} onChange={setPeriod} label="Report period" />
+        {!profit.unavailable && <PeriodTabs periods={PERIODS} value={period} onChange={setPeriod} label="Report period" />}
         {profit.loading && !profit.data ? (
           <Skeleton blocks={[104, 104, 120, 260]} label="Loading profit" />
+        ) : profit.unavailable ? (
+          <NotAvailable title="Profit is not available yet">
+            Sales, cost of goods and estimated profit need the newer PocketOga server. Where money is leaking, below, still works.
+          </NotAvailable>
         ) : profit.error ? (
           <ErrorState message={profit.error} onRetry={profit.reload} />
         ) : (

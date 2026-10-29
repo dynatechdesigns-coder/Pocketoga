@@ -60,9 +60,9 @@ function MoneyBody({ report, shop, onGo }) {
         {quiet ? (
           <div className="grid justify-items-start gap-3">
             <p data-part="hero-empty" className="text-[1.375rem] leading-tight font-extrabold">
-              {today.unknown ? "Today’s totals are not available" : "No sales recorded today"}
+              {today.unknown ? "Today’s totals are not available yet" : "No sales recorded today"}
             </p>
-            <p className="font-medium">{today.unknown ? "Restart the PocketOga server to see them." : "Record a sale or payment and it shows here."}</p>
+            <p className="font-medium">{today.unknown ? "The PocketOga server needs updating to show them." : "Record a sale or payment and it shows here."}</p>
             <Button variant="light" className="w-auto min-w-42" onClick={() => onGo("record")}>
               <Mic aria-hidden="true" /> Record
             </Button>
