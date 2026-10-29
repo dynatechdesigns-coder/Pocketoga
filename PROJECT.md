@@ -2,94 +2,102 @@
 
 ## 1. What PocketOga is
 
-PocketOga is a voice-first ledger assistant for Nigerian small traders, on WhatsApp and the web, that understands English, Pidgin and Nigerian money talk like 15k.
-The trader speaks or types a note and the AI proposes ledger entries from it.
-Plain code checks every proposal and the trader taps confirm before anything is saved.
+Voice-first AI bookkeeping assistant for Nigerian market traders, on WhatsApp and the web. Understands English, Pidgin and money talk like 15k.
+Trader speaks or types a note, the AI proposes ledger entries, plain code checks them, the trader taps confirm, entries land in a hash-chained ledger.
+Meta Global AI Developer Hackathon, Indie track. Submission planned for the evening of Tue 3 Nov 2026.
 
-## 2. Built and tested
+## 2. Core rules
 
-`npm test` runs 12 suites (`ledger`, `money`, `voice`, `whatsapp`, `messages`, `debts`, `server`, `products`, `customers`, `corrections`, `secondopinion`, `profit`): 243 tests, all passing. Real files:
+- The AI only proposes. Plain code checks every number. The trader confirms every entry. Nothing is saved without a tap.
+- Append-only ledger: per-shop chain, `seq` from 1, `prev_hash` links, SHA-256 over `HASHED_FIELDS` (exact, in order): `["shop_id", "seq", "type", "amount_kobo", "customer", "item", "quantity", "unit", "created_at", "corrects_id", "prev_hash"]`. SQL triggers abort UPDATE/DELETE.
+- Money in integer kobo, never floats. Proposal entry types: sale, payment, restock, expense. Stored corrections use type `correction`. No `debt` type exists.
+- Corrections are new entries (`corrects_id` link, same shop); reasons live in `corrections_log`, never in the ledger or hash.
+- Confirm is idempotent (`alreadyConfirmed`); proposals expire after 30 minutes.
 
-- `ledger.mjs` — per-shop append-only hash chain: per-shop `seq` from 1, `prev_hash` links, integer kobo only, nullable item/quantity/unit. SHA-256 over a JSON array of the hashed fields; SQL triggers abort UPDATE/DELETE; `verifyChain`/`verify` report the first broken entry. Corrections are new entries via `appendCorrection` (same shop, `corrects_id` link). Reasons live in `corrections_log`, never in the ledger.
-- `proposals.mjs` — drafts live here, never in the ledger: one row per note (`entries_json`, `heard`, `question`, `recorded_ids`, `name_checked`).
-- `voice.mjs` — propose / fix / confirm / reject / get. `confirmProposal` is the only path that appends to the ledger and is idempotent (`alreadyConfirmed`); it also auto-creates products and records the proposal's promise. Plain-code checks: model-output validation, price basis (`each`/`total`/`unclear`), stated-remainder cross-check, similar-name check. Entry types are sale/payment/restock/expense (expense: category in item, payee or shop in customer, quantity/unit null). Proposals expire after 30 minutes.
-- `money.mjs` — deterministic parser (`parseNaira`: 15k, N2,500, number words), `nairaToKobo`, `formatKobo`.
-- `model.mjs` — Meta API client (`muse-spark-1.3` text, `muse-spark-1.2` audio) plus the mock client all tests use.
-- `whatsapp.mjs` — webhook processing: signature check and verification handshake, duplicate-delivery dedupe, allowed-numbers list, Save/Fix/Reject button replies, voice notes via ffmpeg to 16 kHz mono WAV, per-sender fix state, secrets masked in logs. Exact commands before any model call: `who owes`, `chase`, `balance <name>`, `report`, `stock`, `profit`, `profit week`, `profit month`.
-- `server.mjs` — main API on `PORT` (default 3000, see routes below). Separate webhook-only listener on `WEBHOOK_PORT` (default 3001, 404s everything but `/webhook`). `WEBHOOK_PUBLIC_ONLY=1` hides non-webhook routes from tunnelled traffic. `buildDeps(env)` wires all stores without sockets. Every shop route checks `x-shop-id`.
-- `messages.mjs` — every user-facing WhatsApp string: clean cards (Save/Fix/Reject) and needs-checking cards (Fix/Reject, arithmetic, question once), usual-price note, saved replies, debt/chase/balance/report/stock/profit renders, expense card and saved lines, 1024-char cap, markdown escaping.
-- `debts.mjs` — balances (oldest-first allocation, corrections respected), chase ranking, Lagos-day helpers. `promises.mjs` — promise store, code-resolved due dates, kept/broken resolution, kept-rate. `leak.mjs` — Money Leak Report (owed, 30-day overdue, broken promises, shortfalls, below-cost margin, today's totals).
-- `products.mjs` — products catalog (auto-created on confirm, trader-set prices, stock computed from the ledger, low at ≤3). `customers.mjs` — customers directory (phones + consent, never in the ledger).
-- `secondopinion.mjs` — second-opinion check: a Baseten text model re-reads the note's heard text (same prompt as primary, note text only, 6 s timeout) and plain code compares types, customers, kobo amounts, quantity, unit, price basis, promise and expense category; disagreement adds one code-built flag, never changes entries. Agreement stats live in `second_opinions` (not the ledger). Skipped silently without `BASETEN_API_KEY`/`BASETEN_MODEL`.
-- `profit.mjs` — profit and expenses per period (today/week-from-Monday/month/year, Lagos time): sales, collected, weighted-average COGS, expenses, estimated profit, items without cost, bucketed series; expense list with category breakdown. Corrections respected; sales and collected never merged.
-- `web/` — React PWA (`App.jsx`, `Home.jsx`, `RecordScreen.jsx`, `ConfirmCard.jsx`, `LedgerScreen.jsx`, `api.js`, `localLedger.js`, `money.js`, `sha256.js`, `wav.js`): record/type notes, confirm card, ledger with chain banner, demo shop with fake data, device ledger mirror, mic audio to WAV, `/api` proxy to the backend.
-- Helpers: `preview-messages.mjs`, `preview-debts.mjs`, `preview-profit.mjs`, `smoke-live.mjs` (manual propose-only run), `tamper-demo.mjs`, `audio-test*.mjs`/`baseten-test.mjs` (manual model probes). `test-notes.md` is the manual test log.
+## 3. Stack and files
 
-## 3. Routes (main server only, never the webhook port)
+Backend: Node ESM (`.mjs`), `node:http`, `node:sqlite`, `node:crypto`, `node:test`. Zero runtime dependencies; `sharp` is a devDependency used only for landing photos.
 
-Every route except `/webhook` needs the `x-shop-id` header (400 without it); cross-shop access is 403. Errors are `{ error }`.
+- `ledger.mjs` — append-only chain, `verify`/`verifyChain`, `appendCorrection`, `recordCorrectionReason`.
+- `proposals.mjs` — draft proposals; drafts never touch the ledger.
+- `voice.mjs` — propose/fix/confirm/reject/get; model-output validation, price basis (`each`/`total`/`unclear`), stated-remainder and similar-name checks.
+- `money.mjs` — `parseNaira` (15k, N2,500, number words), `nairaToKobo`, `formatKobo`.
+- `model.mjs` — Meta API client plus the mock client all tests use.
+- `whatsapp.mjs` — webhook processing, commands, voice notes, Save/Fix/Reject buttons, dedupe, allow-list.
+- `server.mjs` — main API plus webhook-only listener; `buildDeps(env)` wires stores without sockets.
+- `messages.mjs` — every user-facing WhatsApp string (cards, debts, chase, report, stock, profit, expenses).
+- `debts.mjs` — balances (oldest-first), chase ranking, Lagos-day helpers. `promises.mjs` — promise store, code-resolved dates, kept/broken. `leak.mjs` — Money Leak Report.
+- `products.mjs` — catalog (auto-created on confirm, trader-set prices, stock from ledger, low at ≤3). `customers.mjs` — directory (phones + consent, never in the ledger).
+- `secondopinion.mjs` — Baseten re-read of the note plus code comparison; stats in `second_opinions`.
+- `profit.mjs` — profit and expenses per period (Lagos time), weighted-average COGS, bucketed series.
+- `scripts/gen-landing.mjs` — generates the 12 landing photos with Muse Image. `scripts/optimize-landing.mjs` — resizes/re-encodes them to ≤200 KB (originals kept in `_originals/`).
+- Helpers: `preview-messages.mjs`, `preview-debts.mjs`, `preview-profit.mjs` (print cards in terminal); `smoke-live.mjs` (manual propose-only run); `tamper-demo.mjs` (local verify demo); `audio-test*.mjs`, `baseten-test.mjs` (manual model probes); `note*.wav` (sample audio for the probes). `test-notes.md` is the manual test log.
 
-| Route | Request body | Response |
+Web (`web/`, React 18 + Vite 5 + Tailwind 4 PWA): `src/screens/` (Record, ConfirmCard, Ledger, Debts, Report, Money, Sales, Expenses, Products, Customers, Settings, Accuracy, Landing), `src/landing/` (marketing page), `src/api.js` (backend client, incl. ledger corrections), `src/format.js` (₦/kobo), `src/shop.js` (open shop on device), `src/wav.js` (mic to WAV). Landing photos in `public/landing/photos/*.webp` (SVG fallback for non-shop slots). `web/scripts/`: `seed-demo.mjs` (fills demo shop via real propose/confirm), `mock-contract.mjs` (dev-only stand-in), `check-no-mock.mjs`, `check-landing-copy.mjs`, `check-landing-images.mjs`.
+
+Run: backend `node server.mjs`; web `cd web && npm install && npm run dev` (`/api` proxies to localhost:3000, `BACKEND_URL` moves it); tests `npm test`; tunnel points at 3001 only.
+
+## 4. Routes
+
+Main server only, except `/webhook` (served on both ports). Every other route needs the `x-shop-id` header (400 without it); cross-shop access is 403. Errors are `{ error }`. Verified complete against `server.mjs` on 29 Oct 2026: no route in code is missing here, none listed is missing in code.
+
+| Route | Request → response | Tests |
 |---|---|---|
-| POST `/propose` | `{ text }` or `{ audioBase64, audioFormat }` | 201 `{ proposal }` |
-| POST `/confirm/:id` | — | `{ proposal, recordedIds, alreadyConfirmed }` |
-| POST `/fix/:id` | `{ correctionText }` (or `{ text }`) | `{ proposal }` |
-| POST `/reject/:id` | — | `{ proposal }` |
-| GET `/proposals/:id` | — | `{ proposal }` |
-| GET `/ledger` | — | `{ entries, verify }` |
-| GET `/debts` | — | `{ debts, chase }` |
-| GET `/promises` | — | `{ promises }` |
-| GET `/report` | — | `{ report }` |
-| GET `/products` | — | `{ products }` |
-| POST `/products/:id` | `{ sellPriceKobo?, costPriceKobo? }` whole kobo ≥ 0 | `{ product }` |
-| GET `/customers` | — | `{ customers }` |
-| POST `/customers` | `{ name, phone?, consent? }` (phone needs `consent: true`) | `{ customer }` |
-| POST `/customers/:id/clear-phone` | — | `{ customer }` (phone gone) |
-| POST `/ledger/:id/correct` | `{ amountKobo?, customer?, item?, quantity?, unit?, reason }` | `{ entry, verify }` |
-| GET `/profit?period=today\|week\|month\|year` | — (missing period reads as today) | `{ period, from, to, salesKobo, collectedKobo, cogsKobo, expensesKobo, estimatedProfitKobo, itemsWithoutCost, series }` |
-| GET `/expenses?period=...` | — | `{ expenses, byCategory }` |
-| GET `/webhook` | Meta handshake query | challenge text |
-| POST `/webhook` | signed Meta payload | `{ ok: true }` |
+| POST `/propose` | `{ text }` or `{ audioBase64, audioFormat }` → 201 `{ proposal }` | voice |
+| POST `/confirm/:id` | — → `{ proposal, recordedIds, alreadyConfirmed }` | voice |
+| POST `/fix/:id` | `{ correctionText }` (or `{ text }`) → `{ proposal }` | voice |
+| POST `/reject/:id` | — → `{ proposal }` | voice |
+| GET `/proposals/:id` | — → `{ proposal }` | voice |
+| GET `/ledger` | — → `{ entries, verify }` (entries gain `correctedById`, `correctionReason`) | voice, corrections |
+| POST `/ledger/:id/correct` | `{ amountKobo?, customer?, item?, quantity?, unit?, reason }` (reason required) → `{ entry, verify }` | corrections |
+| GET `/debts` | — → `{ debts, chase }` | whatsapp, corrections |
+| GET `/promises` | — → `{ promises }` | whatsapp |
+| GET `/report` | — → `{ report }` | server, whatsapp, corrections |
+| GET `/products` | — → `{ products }` | products |
+| POST `/products/:id` | `{ sellPriceKobo?, costPriceKobo? }` (whole kobo ≥ 0, at least one) → `{ product }` | products |
+| GET `/customers` | — → `{ customers }` | customers |
+| POST `/customers` | `{ name, phone?, consent? }` (phone needs `consent: true`) → `{ customer }` | customers |
+| POST `/customers/:id/clear-phone` | — → `{ customer }` (phone gone, row kept) | customers |
+| GET `/profit?period=` | `today\|week\|month\|year` (missing reads as today) → `{ period, from, to, salesKobo, collectedKobo, cogsKobo, expensesKobo, estimatedProfitKobo, itemsWithoutCost, series }` | profit |
+| GET `/expenses?period=` | same periods → `{ expenses, byCategory }` | profit |
+| GET `/webhook` | Meta handshake query → challenge text | server, whatsapp |
+| POST `/webhook` | signed Meta payload → `{ ok: true }` (work runs after responding) | whatsapp |
 
-Shapes: `proposal` is `{ id, shop_id, status, heard, question, created_at, entries, totals, flags, notes, recorded_ids, name_checked, promise }`; a ledger `entry` is `{ id, shop_id, seq, prev_hash, entry_hash, type, amount_kobo, customer, item, quantity, unit, corrects_id, created_at, correctedById, correctionReason }`; `verify` is `{ ok, count, shopId }`; `debts` items are `{ customer, owedKobo, salesKobo, paidKobo, oldestUnpaidAgeDays, oldestUnpaidAt, lastPaymentAt }`; `chase` items are `{ customer, owedKobo, ageDays, broken, score }`; `promises` are `{ id, shop_id, customer, amount_kobo, due_date, status, created_at, resolved_at, paid_kobo }`; `report` is `{ owed, overdue, broken, shortfalls, noStockRecord, belowCost, today }`; `product` is `{ id, name, unit, sellPriceKobo, costPriceKobo, stockOnHand, lowStock }`; `customer` is `{ id, name, phone, owedKobo, lastActivityAt }` (`id`/`phone` null for ledger-only names); `series` items are `{ label, salesKobo, cogsKobo, expensesKobo, profitKobo }` (hours for today, days for week/month, months for year); `expenses` items are `{ id, createdAt, category, payee, amountKobo }` and `byCategory` items are `{ category, amountKobo }`.
+Shapes: `proposal` is `{ id, shop_id, status, heard, question, created_at, entries, totals, flags, notes, recorded_ids, name_checked, promise }`; entry is `{ id, shop_id, seq, prev_hash, entry_hash, type, amount_kobo, customer, item, quantity, unit, corrects_id, created_at }`; `verify` is `{ ok, count, shopId }`; `product` is `{ id, name, unit, sellPriceKobo, costPriceKobo, stockOnHand, lowStock }`; `customer` is `{ id, name, phone, owedKobo, lastActivityAt }`.
 
-## 4. Rules for any tool working here
+## 5. WhatsApp
 
-- Never put the AI in the write path: it proposes, code checks, the trader confirms.
-- All money maths in code, integer kobo, never floats.
-- Never edit or delete ledger entries; corrections are new entries.
-- Hashed fields (`HASHED_FIELDS` in `ledger.mjs`, exact, in order):
+- Main server on `PORT` (default 3000, local only); webhook-only listener on `WEBHOOK_PORT` (default 3001, 404s everything but `/webhook`). Tunnel points at 3001 only. `WEBHOOK_PUBLIC_ONLY=1` hides non-webhook routes from tunnelled traffic.
+- POST signature: HMAC-SHA256 over the raw body compared (timing-safe) with `x-hub-signature-256`, secret `WHATSAPP_APP_SECRET`. GET handshake via `WHATSAPP_VERIFY_TOKEN`. Replies via Graph API (`WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`).
+- Only `WHATSAPP_ALLOWED_NUMBERS` (comma-separated) are served; anyone else gets a not-registered reply. Each sender maps to a shop (`wa-` + 16 hash chars). Duplicate deliveries are deduped; secrets and full numbers are masked in logs.
+- Exact commands, matched before any model call (case-insensitive): `who owes`, `chase`, `report`, `stock`, `profit`, `profit week`, `profit month`, `balance <name>`.
+- Voice notes: media is downloaded immediately, converted with ffmpeg to 16 kHz mono WAV, then sent to the audio model; clear fallback messages when ffmpeg or conversion fails. Text/voice notes get proposal cards with Save/Fix/Reject buttons; per-sender fix state tracks what Fix refers to.
 
-```js
-["shop_id", "seq", "type", "amount_kobo", "customer", "item", "quantity", "unit", "created_at", "corrects_id", "prev_hash"]
-```
+## 6. Models
 
-- Never open or print `.env` files or secrets; keys come from the environment.
-- Fake data only; no real trader data while coding.
-- Only the webhook port (3001) is ever tunnelled; the main server stays local.
-- Per-shop isolation on every route; cross-shop access is 403.
-- Commit before and after big tasks.
+- Meta Model API (`https://api.meta.ai/v1`, key `META_API_KEY`): `muse-spark-1.3` for text extraction, `muse-spark-1.2` for audio input (`input_audio` WAV part). `reasoning_effort: minimal`, JSON-only replies. All suites use the mock client.
+- Second opinion: a Baseten text model (`BASETEN_API_KEY` + `BASETEN_MODEL`, `https://inference.baseten.co/v1/chat/completions`) re-reads the note's heard text with the same prompt (6 s timeout); plain code compares types, customers, amounts, quantity, unit, price basis, promise and expense category. Disagreement adds one code-built flag, never changes entries; stats go to `second_opinions`; skipped silently without keys.
+- Landing photos: Muse Image (`muse-image-1.0`, `POST /v1/images/generations`, webp out). `scripts/gen-landing.mjs` generates 12 shots (key from `META_API_KEY`); `scripts/optimize-landing.mjs` fits each under 200 KB.
 
-## 5. Known gaps, honestly
+## 7. Status
 
-- The server trusts the `x-shop-id` header and the web app opens test shops by name with no password. Local testing only.
-- WhatsApp token lifecycle is manual; the test log notes an expired temporary token during setup.
-- Web ledger details: two comments saying "until the server has a ledger route" are stale (`GET /ledger` exists and is tried first); the device-mirror hash omits `unit` while the server hash includes it; confirmed entries mirrored to the device carry no unit; server flags render as plain text on web, so WhatsApp `*bold*` markers show literally.
-- No automated tests for real model accuracy: every suite uses the mock model; `smoke-live.mjs` and the audio probes are manual, and spoken-note accuracy is unmeasured.
-- The `debt` entry type can't be created through proposals (only sale, payment, restock, expense); corrections have an HTTP route but no web UI.
-- Kept needs one payment of at least the promised amount: several small payments totalling the promise still resolve as broken.
-- Two warnings can still repeat one question in slightly different words on a card (minor, noted in the test log).
+Built and tested: the whole backend above plus all 19 routes. `npm test`: 243 pass, 0 fail, 44 suites, on 29 Oct 2026. Manual log (`test-notes.md` sessions 1–3): typed notes, phone web tests, WhatsApp text + voice; fixes landed for price basis, unit column, payment items, stated-remainder and similar-name checks. Web app: all screens, correction UI, demo seeding, landing page with photo slots.
+Built but needing a check: web against the real backend without the dev mock (mock still covers profit/expenses/products/customers/correct; `check:build` guards production); second-opinion live accuracy; spoken-note accuracy (hand-tested only); `audio-test.mjs` predates the current audio path; landing `shop-*` photos and the optimizer run (8 of 12 photos present on 29 Oct).
+Not started: Alert Guard, offline notes queue (`occurred_at`), notebook photo import, accuracy numbers and red-team report (`/accuracy` is a "coming soon" placeholder).
 
-## 6. Planned, not built
+## 8. Working rules
 
-- Alert Guard: screenshot/receipt/SMS checks that only warn and never say verified; payments stay unconfirmed until the trader confirms the credit.
-- Offline notes queue with an `occurred_at` field.
-- Notebook photo import.
-- Accuracy page and red-team report.
+- Keys live only in `.env.local` (never opened, never printed, never committed): `META_API_KEY`, `BASETEN_API_KEY`, `BASETEN_MODEL`, `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_ALLOWED_NUMBERS`, plus `PORT`, `WEBHOOK_PORT`, `WEBHOOK_PUBLIC_ONLY`, `LEDGER_DB`.
+- Fake data only; no real trader data while coding. Per-shop isolation on every route.
+- Muse Code owns the backend, Claude Code owns `web/`; plain screens may go to either tool, but never both on the same files at once.
+- Commit only when `npm test` is green and `git status` shows no `.env`, `.db` or `_originals` files.
 
-## 7. How to run
+## 9. Open questions and known problems
 
-- Backend: `node server.mjs` (env: `PORT` default 3000, `WEBHOOK_PORT` default 3001, `LEDGER_DB` default `pocketoga.db`, `META_API_KEY` for the real model, `BASETEN_API_KEY` + `BASETEN_MODEL` for the second opinion).
-- Web app: `cd web && npm install && npm run dev` (uses `/api` to localhost:3000, or set `VITE_API_BASE`; `BACKEND_URL` moves the proxy target).
-- Tests: `npm test`.
-- Tunnel: point it at port 3001 (webhook listener) only, never at the main server.
+- The server trusts `x-shop-id` and the web app opens test shops by name with no password. Local testing only; remove before anything goes online.
+- WhatsApp token lifecycle is manual; setup once hit an expired temporary token.
+- A promise resolves kept only on one payment of at least the promised amount; several small payments totalling it still resolve broken.
+- Two warnings can repeat one question in slightly different words on a card (minor).
+- No automated tests for real model accuracy: every suite uses the mock; `smoke-live.mjs` and the audio probes are manual, spoken-note accuracy unmeasured.
+- Which Baseten model is configured and its live agreement rate are unmeasured (value sits in `.env.local`, never opened).
+- Web `check:build` / `check:copy` / `check:images` were not run here; confirm they are green and the app runs clean without `MOCK_CONTRACT`.
