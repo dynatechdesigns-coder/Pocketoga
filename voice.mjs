@@ -54,6 +54,7 @@ export function toProposal(row) {
     promise: env.promise ?? null,
     correctionOf: env.correctionOf ?? null,
     correctionReason: env.correctionReason ?? null,
+    photoCheck: env.photoCheck ?? null,
   };
 }
 
@@ -379,7 +380,8 @@ function stripTitle(normalized) {
 
 // True when two already-normalized, non-equal names may be the same person:
 // a small typo, one name extending the other, or a title difference.
-function namesSimilar(a, b) {
+// Exported for the photo pipeline's sender check.
+export function namesSimilar(a, b) {
   if (editDistance(a, b) <= 2) return true;
   const short = a.length <= b.length ? a : b;
   const long = a.length <= b.length ? b : a;
@@ -787,18 +789,43 @@ function applyExpiry(proposals, row) {
 
 // The ONLY path that appends to the ledger. Idempotent: confirming twice
 // records once and reports alreadyConfirmed the second time.
-export function confirmProposal(proposalId, shopId, { proposals, ledger, promises = null, products = null }) {
+export function confirmProposal(proposalId, shopId, { proposals, ledger, promises = null, products = null, photoChecks = null }) {
   if (!proposals || !ledger) throw new Error("confirmProposal needs { proposals, ledger }");
   const row = applyExpiry(proposals, getOwnedRow(proposals, proposalId, shopId));
   if (row.status === "confirmed") {
-    return { proposal: toProposal(row), recordedIds: JSON.parse(row.recorded_ids), alreadyConfirmed: true };
+    const done = toProposal(row);
+    return { proposal: done, recordedIds: done.photoCheck ? [] : JSON.parse(row.recorded_ids), alreadyConfirmed: true };
   }
   if (row.status === "rejected") throw voiceError(409, `proposal ${row.id} was rejected`);
   if (row.status === "expired") throw voiceError(410, `proposal ${row.id} expired; send the note again`);
   const proposal = toProposal(row);
   const isCorrection = proposal.correctionOf !== null && proposal.correctionOf !== undefined;
+  const isPhoto = proposal.photoCheck !== null && proposal.photoCheck !== undefined;
   if (proposal.flags.length > 0) {
     throw voiceError(400, `cannot confirm proposal ${row.id}: ${proposal.flags.join("; ")} — send a fix first`);
+  }
+  // Photo checks record a payment_checks row, never ledger entries. Unknown
+  // photos never reach here: they carry flags and stay blocked above.
+  if (isPhoto) {
+    if (!photoChecks) throw new Error("confirmProposal needs { photoChecks } for photo proposals");
+    const pc = proposal.photoCheck;
+    if (!Number.isInteger(pc.fields.amountKobo)) {
+      throw voiceError(400, `cannot confirm proposal ${row.id}: the alert amount is unknown`);
+    }
+    const check = photoChecks.create({
+      shopId: row.shop_id,
+      proposalId: row.id,
+      photoType: pc.photoType,
+      customer: pc.matchedCustomer ?? null,
+      sender: pc.fields.sender,
+      amountKobo: pc.fields.amountKobo,
+      reference: pc.fields.reference,
+      alertDate: pc.fields.date,
+      alertStatus: pc.fields.status,
+      warnings: pc.warnings,
+    });
+    const updated = proposals.update(row.id, { status: "confirmed", recordedIds: { paymentCheckId: check.id } });
+    return { proposal: toProposal(updated), recordedIds: [], alreadyConfirmed: false };
   }
   if (proposal.entries.length === 0) {
     throw voiceError(400, `cannot confirm proposal ${row.id}: no entries to record`);
@@ -888,6 +915,9 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
     throw voiceError(400, "correction text is required");
   }
   const row = getOwnedRow(proposals, proposalId, shopId);
+  if (toProposal(row).photoCheck) {
+    throw voiceError(409, `proposal ${row.id} is a photo check; send the photo again to change it`);
+  }
   if (row.status === "confirmed") {
     throw voiceError(409, `proposal ${row.id} is already confirmed; send a new note to correct it`);
   }

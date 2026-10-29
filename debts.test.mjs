@@ -555,6 +555,70 @@ describe("money leak report (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", 
     );
   });
 
+  it("unconfirmed transfers list oldest first; confirmed ones stay out", () => {
+    const ledger = new Ledger(":memory:");
+    try {
+      const report = moneyLeakReport(ledger.list("shop-a"), [], {
+        now: NOW,
+        paymentChecks: [
+          { id: 2, shop_id: "shop-a", check_status: "unconfirmed", customer: "Bola", sender: "Bola", amount_kobo: 500000, reference: "R2", warnings_json: '["Amount ₦5,000 matches no unpaid sale."]', created_at: "2026-10-28T10:00:00.000Z" },
+          { id: 1, shop_id: "shop-a", check_status: "unconfirmed", customer: null, sender: "Ada", amount_kobo: 1200000, reference: "R1", warnings_json: "[]", created_at: "2026-10-27T10:00:00.000Z" },
+          { id: 3, shop_id: "shop-a", check_status: "confirmed", customer: "Ada", sender: "Ada", amount_kobo: 999900, reference: "R3", warnings_json: "[]", created_at: "2026-10-26T10:00:00.000Z" },
+        ],
+      });
+      assert.deepEqual(report.unconfirmed, {
+        count: 2,
+        totalKobo: 1700000,
+        items: [
+          { customer: "Ada", amountKobo: 1200000, reference: "R1", warned: false, createdAt: "2026-10-27T10:00:00.000Z" },
+          { customer: "Bola", amountKobo: 500000, reference: "R2", warned: true, createdAt: "2026-10-28T10:00:00.000Z" },
+        ],
+      });
+      const empty = moneyLeakReport(ledger.list("shop-a"), [], { now: NOW });
+      assert.deepEqual(empty.unconfirmed, { count: 0, totalKobo: 0, items: [] });
+    } finally {
+      ledger.close();
+    }
+  });
+
+  it("report message lists unconfirmed transfers with its attention header", () => {
+    const text = renderReport({
+      owed: { count: 0, totalKobo: 0 },
+      overdue: { count: 0, totalKobo: 0 },
+      broken: { count: 0, totalKobo: 0, promises: [] },
+      shortfalls: [],
+      noStockRecord: { count: 0, totalKobo: 0 },
+      belowCost: { count: 0, totalKobo: 0 },
+      unconfirmed: {
+        count: 4,
+        totalKobo: 4000000,
+        items: [
+          { customer: "Ada", amountKobo: 1200000, reference: "R1", warned: false, createdAt: "2026-10-25T10:00:00.000Z" },
+          { customer: "Bola", amountKobo: 500000, reference: "R2", warned: true, createdAt: "2026-10-26T10:00:00.000Z" },
+          { customer: "Sef", amountKobo: 1500000, reference: null, warned: true, createdAt: "2026-10-27T10:00:00.000Z" },
+          { customer: "Zed", amountKobo: 800000, reference: "R4", warned: false, createdAt: "2026-10-28T10:00:00.000Z" },
+        ],
+      },
+    });
+    assert.ok(text.startsWith("⚠️ *Money check*\n"), text);
+    assert.ok(text.includes("4 unconfirmed transfers (*₦40,000* not yet seen in bank):"), text);
+    assert.ok(text.includes("*Ada* *₦12,000* (R1)"), text);
+    assert.ok(text.includes("*Sef* *₦15,000* (no ref)"), text);
+    assert.ok(text.includes("+1 more"), text);
+    assert.ok(!text.includes("Nothing alarming yet."), text);
+
+    const clear = renderReport({
+      owed: { count: 0, totalKobo: 0 },
+      overdue: { count: 0, totalKobo: 0 },
+      broken: { count: 0, totalKobo: 0, promises: [] },
+      shortfalls: [],
+      noStockRecord: { count: 0, totalKobo: 0 },
+      belowCost: { count: 0, totalKobo: 0 },
+      unconfirmed: { count: 0, totalKobo: 0, items: [] },
+    });
+    assert.ok(!clear.includes("unconfirmed"), clear);
+  });
+
   it("report message never exceeds 1024 characters", () => {
     const long = "item-" + "x".repeat(120);
     const shortfalls = Array.from({ length: 30 }, (_, i) => ({ display: `${long}-${i} (bag)`, shortfallQty: i + 1 }));

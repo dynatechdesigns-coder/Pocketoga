@@ -11,6 +11,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { propose, confirmProposal, fixProposal, rejectProposal, proposeCorrectionFromText } from "./voice.mjs";
+import { PhotoCheckStore, proposePhotoCheck } from "./photos.mjs";
 import { customerDebts, chaseForShop, lagosDay } from "./debts.mjs";
 import { PromiseStore, refreshPromises, keptRate } from "./promises.mjs";
 import { moneyLeakReport } from "./leak.mjs";
@@ -33,6 +34,11 @@ import {
   FIX_LAST_HELP,
   FIX_LAST_NO_ENTRIES,
   FIX_LAST_ALREADY_FIXED,
+  PHOTO_FAILED,
+  FIX_PHOTO_AGAIN,
+  BANK_NOTHING,
+  BANK_ALREADY,
+  BANK_DONE,
   REJECTED,
   MAX_BODY_CHARS,
   alreadyConfirmedFix,
@@ -47,6 +53,8 @@ import {
   renderReport,
   renderStock,
   renderProfit,
+  renderPhotoSaved,
+  waButton,
 } from "./messages.mjs";
 
 export const GRAPH_VERSION = "v25.0";
@@ -183,6 +191,13 @@ export function getPromiseStore(deps) {
   return deps._promiseStore;
 }
 
+export function getPhotoCheckStore(deps) {
+  if (deps.photoChecks) return deps.photoChecks;
+  if (!deps.ledger) return null;
+  deps._photoCheckStore ??= new PhotoCheckStore(deps.ledger.db);
+  return deps._photoCheckStore;
+}
+
 export function buildWhatsAppContext(deps, env = deps.env ?? process.env) {
   const config = readWhatsAppConfig(env);
   const sink = deps.log ?? console.log;
@@ -193,6 +208,7 @@ export function buildWhatsAppContext(deps, env = deps.env ?? process.env) {
     promises: getPromiseStore(deps),
     products: deps.products ?? null,
     secondOpinions: deps.secondOpinions ?? null,
+    photoChecks: getPhotoCheckStore(deps),
     model: deps.model,
     nowMs: deps.nowMs ?? Date.now(),
     config,
@@ -304,7 +320,8 @@ async function handleDebtCommand(ctx, sender, shopId, cmd) {
     return;
   }
   if (cmd.name === "report") {
-    await sendText(ctx, sender, renderReport(moneyLeakReport(rows, promises, { now: ctx.nowMs })));
+    const paymentChecks = ctx.photoChecks ? ctx.photoChecks.listUnconfirmedByShop(shopId) : [];
+    await sendText(ctx, sender, renderReport(moneyLeakReport(rows, promises, { now: ctx.nowMs, paymentChecks })));
     return;
   }
   if (cmd.name === "stock") {
@@ -411,10 +428,27 @@ async function replyFriendly(ctx, to, fn) {
   }
 }
 
+function proposalPhotoCheck(row) {
+  try {
+    return JSON.parse(row.entries_json)?.photoCheck ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function recordedCheckId(row) {
+  try {
+    const recorded = row.recorded_ids ? JSON.parse(row.recorded_ids) : null;
+    return Number.isInteger(recorded?.paymentCheckId) ? recorded.paymentCheckId : null;
+  } catch {
+    return null;
+  }
+}
+
 async function handleButtonReply(ctx, sender, shopId, reply) {
   const match = /^(\w+):(\d+)$/.exec(reply?.id ?? "");
   const action = match?.[1];
-  if (!match || !["confirm", "fix", "reject"].includes(action)) {
+  if (!match || !["confirm", "fix", "reject", "bank"].includes(action)) {
     await sendText(ctx, sender, UNKNOWN_BUTTON);
     return;
   }
@@ -428,7 +462,26 @@ async function handleButtonReply(ctx, sender, shopId, reply) {
     await sendText(ctx, sender, OTHER_SHOP);
     return;
   }
+  if (action === "bank") {
+    const checkId = row.status === "confirmed" ? recordedCheckId(row) : null;
+    const check = checkId !== null && ctx.photoChecks ? ctx.photoChecks.get(checkId) : null;
+    if (!check || check.shop_id !== shopId) {
+      await sendText(ctx, sender, BANK_NOTHING);
+      return;
+    }
+    if (check.check_status === "confirmed") {
+      await sendText(ctx, sender, BANK_ALREADY);
+      return;
+    }
+    ctx.photoChecks.markSeen(check.id);
+    await sendText(ctx, sender, BANK_DONE);
+    return;
+  }
   if (action === "fix") {
+    if (proposalPhotoCheck(row)) {
+      await sendText(ctx, sender, FIX_PHOTO_AGAIN);
+      return;
+    }
     if (row.status === "confirmed") {
       await sendText(ctx, sender, alreadyConfirmedFix(proposalId));
       return;
@@ -439,10 +492,15 @@ async function handleButtonReply(ctx, sender, shopId, reply) {
   }
   await replyFriendly(ctx, sender, async () => {
     if (action === "confirm") {
-      const out = confirmProposal(proposalId, shopId, { proposals: ctx.proposals, ledger: ctx.ledger, promises: ctx.promises, products: ctx.products });
+      const out = confirmProposal(proposalId, shopId, { proposals: ctx.proposals, ledger: ctx.ledger, promises: ctx.promises, products: ctx.products, photoChecks: ctx.photoChecks });
       ctx.store.clearFixState(sender);
       if (out.alreadyConfirmed) {
         await sendText(ctx, sender, ALREADY_SAVED);
+        return;
+      }
+      if (out.proposal.photoCheck) {
+        const fields = out.proposal.photoCheck.fields;
+        await sendPhotoSaved(ctx, sender, out.proposal.id, { amountKobo: fields.amountKobo, sender: fields.sender });
         return;
       }
       const recorded = out.recordedIds.map((id) => ctx.ledger.get(id));
@@ -452,6 +510,18 @@ async function handleButtonReply(ctx, sender, shopId, reply) {
       ctx.store.clearFixState(sender);
       await sendText(ctx, sender, REJECTED);
     }
+  });
+}
+
+// Saved photo check: the transfer stays unconfirmed until the trader taps
+// the bank button below. One button only — WhatsApp allows three per card
+// and this card needs just the one.
+async function sendPhotoSaved(ctx, to, proposalId, { amountKobo, sender }) {
+  const text = renderPhotoSaved({ amountKobo, sender });
+  return graphSend(ctx, {
+    to,
+    type: "interactive",
+    interactive: { type: "button", body: { text }, action: { buttons: [waButton(`bank:${proposalId}`, "I saw it in my bank")] } },
   });
 }
 
@@ -600,6 +670,28 @@ async function handleIncomingMessage(message, ctx) {
         return;
       }
       await sendCard(ctx, sender, got.result, shopId);
+    } else if (message?.type === "image") {
+      const mediaId = message.image?.id;
+      const mime = message.image?.mime_type;
+      const photoFormat = mime === "image/png" ? "png" : mime === "image/jpeg" ? "jpeg" : null;
+      if (!mediaId || !photoFormat) {
+        await sendText(ctx, sender, PHOTO_FAILED);
+        return;
+      }
+      let bytes;
+      try {
+        bytes = await downloadMedia(ctx, await fetchMediaUrl(ctx, mediaId));
+      } catch (err) {
+        ctx.log(`photo download failed: ${err?.message ?? err}`);
+        await sendText(ctx, sender, PHOTO_FAILED);
+        return;
+      }
+      const proposal = await proposePhotoCheck(
+        shopId,
+        { photoBase64: bytes.toString("base64"), photoFormat },
+        { proposals: ctx.proposals, model: ctx.model, ledger: ctx.ledger, photoChecks: ctx.photoChecks, now: ctx.nowMs }
+      );
+      await sendCard(ctx, sender, proposal, shopId);
     } else {
       await sendText(ctx, sender, UNSUPPORTED);
     }

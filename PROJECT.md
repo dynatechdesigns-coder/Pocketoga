@@ -13,6 +13,7 @@ Meta Global AI Developer Hackathon, Indie track. Submission planned for the even
 - Money in integer kobo, never floats. Proposal entry types: sale, payment, restock, expense. Stored corrections use type `correction`. No `debt` type exists.
 - Corrections are new entries (`corrects_id` link, same shop); reasons live in `corrections_log`, never in the ledger or hash.
 - Confirm is idempotent (`alreadyConfirmed`); proposals expire after 30 minutes.
+- Photos: the AI classifies the type and extracts fields; code runs every check; the trader confirms; raw photos are never stored.
 
 ## 3. Stack and files
 
@@ -22,11 +23,12 @@ Backend: Node ESM (`.mjs`), `node:http`, `node:sqlite`, `node:crypto`, `node:tes
 - `proposals.mjs` — draft proposals; drafts never touch the ledger.
 - `voice.mjs` — propose/fix/confirm/reject/get; model-output validation, price basis (`each`/`total`/`unclear`), stated-remainder and similar-name checks.
 - `money.mjs` — `parseNaira` (15k, N2,500, number words), `nairaToKobo`, `formatKobo`.
-- `model.mjs` — Meta API client plus the mock client all tests use.
+- `model.mjs` — Meta API client (text, audio, image) plus the mock client all tests use.
+- `photos.mjs` — photo pipeline and Alert Guard checks, plus the `payment_checks` store (extracted fields only, never raw photos).
 - `whatsapp.mjs` — webhook processing, commands, voice notes, Save/Fix/Reject buttons, dedupe, allow-list.
 - `server.mjs` — main API plus webhook-only listener; `buildDeps(env)` wires stores without sockets.
 - `messages.mjs` — every user-facing WhatsApp string (cards, debts, chase, report, stock, profit, expenses).
-- `debts.mjs` — balances (oldest-first), chase ranking, Lagos-day helpers. `promises.mjs` — promise store, code-resolved dates, kept/broken. `leak.mjs` — Money Leak Report.
+- `debts.mjs` — balances (oldest-first), chase ranking, Lagos-day helpers. `promises.mjs` — promise store, code-resolved dates, kept/broken. `leak.mjs` — Money Leak Report, including unconfirmed transfers.
 - `products.mjs` — catalog (auto-created on confirm, trader-set prices, stock from ledger, low at ≤3). `customers.mjs` — directory (phones + consent, never in the ledger).
 - `secondopinion.mjs` — Baseten re-read of the note plus code comparison; stats in `second_opinions`.
 - `profit.mjs` — profit and expenses per period (Lagos time), weighted-average COGS, bucketed series.
@@ -51,6 +53,7 @@ Main server only, except `/webhook` (served on both ports). Every other route ne
 | GET `/ledger` | — → `{ entries, verify }` (entries gain `correctedById`, `correctionReason`) | voice, corrections |
 | POST `/ledger/:id/correct` | `{ amountKobo?, customer?, item?, quantity?, unit?, reason }` (reason required) → `{ entry, verify }` | corrections |
 | POST `/correct-last` | `{ entryId?, amountKobo?, customer?, item?, quantity?, unit?, reason }` → 201 `{ proposal }` (proposes a correction of the latest entry; confirm to record) | corrections |
+| POST `/photo-checks` | `{ photoBase64, photoFormat }` → 201 `{ proposal }` (classifies the photo and runs Alert Guard; confirm records a payment check, never the ledger) | photos |
 | GET `/debts` | — → `{ debts, chase }` | whatsapp, corrections |
 | GET `/promises` | — → `{ promises }` | whatsapp |
 | GET `/report` | — → `{ report }` | server, whatsapp, corrections |
@@ -64,7 +67,7 @@ Main server only, except `/webhook` (served on both ports). Every other route ne
 | GET `/webhook` | Meta handshake query → challenge text | server, whatsapp |
 | POST `/webhook` | signed Meta payload → `{ ok: true }` (work runs after responding) | whatsapp |
 
-Shapes: `proposal` is `{ id, shop_id, status, heard, question, created_at, entries, totals, flags, notes, recorded_ids, name_checked, promise, correctionOf, correctionReason }` (`correctionOf`/`correctionReason` set only on correction proposals); entry is `{ id, shop_id, seq, prev_hash, entry_hash, type, amount_kobo, customer, item, quantity, unit, corrects_id, created_at }`; `verify` is `{ ok, count, shopId }`; `product` is `{ id, name, unit, sellPriceKobo, costPriceKobo, stockOnHand, lowStock }`; `customer` is `{ id, name, phone, owedKobo, lastActivityAt }`.
+Shapes: `proposal` is `{ id, shop_id, status, heard, question, created_at, entries, totals, flags, notes, recorded_ids, name_checked, promise, correctionOf, correctionReason, photoCheck }` (`correctionOf`/`correctionReason` set only on correction proposals, `photoCheck` only on photo proposals, where `recorded_ids` is `{ paymentCheckId }`); entry is `{ id, shop_id, seq, prev_hash, entry_hash, type, amount_kobo, customer, item, quantity, unit, corrects_id, created_at }`; `verify` is `{ ok, count, shopId }`; `product` is `{ id, name, unit, sellPriceKobo, costPriceKobo, stockOnHand, lowStock }`; `customer` is `{ id, name, phone, owedKobo, lastActivityAt }`.
 
 ## 5. WhatsApp
 
@@ -73,18 +76,19 @@ Shapes: `proposal` is `{ id, shop_id, status, heard, question, created_at, entri
 - Only `WHATSAPP_ALLOWED_NUMBERS` (comma-separated) are served; anyone else gets a not-registered reply. Each sender maps to a shop (`wa-` + 16 hash chars). Duplicate deliveries are deduped; secrets and full numbers are masked in logs.
 - Exact commands, matched before the note flow (case-insensitive): `who owes`, `chase`, `report`, `stock`, `profit`, `profit week`, `profit month`, `balance <name>` — all answered without the model — plus `fix last <text>`, which reads the corrected note with the model and shows a correction card with Save/Fix/Reject (bare `fix last` explains the usage).
 - Voice notes: media is downloaded immediately, converted with ffmpeg to 16 kHz mono WAV, then sent to the audio model; clear fallback messages when ffmpeg or conversion fails. Text/voice notes get proposal cards with Save/Fix/Reject buttons; per-sender fix state tracks what Fix refers to.
+- Photos: the trader sends a JPG/PNG; Alert Guard classifies it, extracts fields and runs code checks, then shows a result card ("warning signs found" / "no warning signs found") with Save/Fix/Reject. Save records an unconfirmed transfer plus a follow-up card with the "I saw it in my bank" button (four buttons can't fit one WhatsApp card); the tap marks it confirmed. Fix on a photo card asks for the photo again. Never "verified".
 
 ## 6. Models
 
-- Meta Model API (`https://api.meta.ai/v1`, key `META_API_KEY`): `muse-spark-1.3` for text extraction, `muse-spark-1.2` for audio input (`input_audio` WAV part). `reasoning_effort: minimal`, JSON-only replies. All suites use the mock client.
+- Meta Model API (`https://api.meta.ai/v1`, key `META_API_KEY`): `muse-spark-1.3` for text extraction, `muse-spark-1.2` for audio input (`input_audio` WAV part), `muse-spark-1.3` for photos (`image_url` part, JSON contract in `PHOTO_SYSTEM_PROMPT`): the model classifies the photo type and extracts fields, code runs every check. `reasoning_effort: minimal`, JSON-only replies. All suites use the mock client.
 - Second opinion: a Baseten text model (`BASETEN_API_KEY` + `BASETEN_MODEL`, `https://inference.baseten.co/v1/chat/completions`) re-reads the note's heard text with the same prompt (6 s timeout); plain code compares types, customers, amounts, quantity, unit, price basis, promise and expense category. Disagreement adds one code-built flag, never changes entries; stats go to `second_opinions`; skipped silently without keys.
 - Landing photos: Muse Image (`muse-image-1.0`, `POST /v1/images/generations`, webp out). `scripts/gen-landing.mjs` generates 12 shots (key from `META_API_KEY`); `scripts/optimize-landing.mjs` fits each under 200 KB.
 
 ## 7. Status
 
-Built and tested: the whole backend above plus all 20 routes. `npm test`: 263 pass, 0 fail, 48 suites, on 29 Oct 2026. Manual log (`test-notes.md` sessions 1–3): typed notes, phone web tests, WhatsApp text + voice; fixes landed for price basis, unit column, payment items, stated-remainder and similar-name checks. Web app: all screens, correction UI, demo seeding, landing page with photo slots.
-Built but needing a check: web against the real backend without the dev mock (mock still covers profit/expenses/products/customers/correct; `check:build` guards production); second-opinion live accuracy; spoken-note accuracy (hand-tested only); `audio-test.mjs` predates the current audio path; landing `shop-*` photos and the optimizer run (8 of 12 photos present on 29 Oct).
-Not started: Alert Guard, offline notes queue (`occurred_at`), notebook photo import, accuracy numbers and red-team report (`/accuracy` is a "coming soon" placeholder).
+Built and tested: the whole backend above plus all 21 routes. `npm test`: 291 pass, 0 fail, 53 suites, on 29 Oct 2026. Manual log (`test-notes.md` sessions 1–3): typed notes, phone web tests, WhatsApp text + voice; fixes landed for price basis, unit column, payment items, stated-remainder and similar-name checks. Web app: all screens, correction UI, demo seeding, landing page with photo slots.
+Built but needing a check: web against the real backend without the dev mock (mock still covers profit/expenses/products/customers/correct; `check:build` guards production); second-opinion live accuracy; spoken-note accuracy (hand-tested only); Alert Guard live photo accuracy (mock-tested only); `audio-test.mjs` predates the current audio path; landing `shop-*` photos and the optimizer run (8 of 12 photos present on 29 Oct).
+Not started: offline notes queue (`occurred_at`), notebook photo import, accuracy numbers and red-team report (`/accuracy` is a "coming soon" placeholder).
 
 ## 8. Working rules
 
@@ -99,7 +103,7 @@ Not started: Alert Guard, offline notes queue (`occurred_at`), notebook photo im
 - WhatsApp token lifecycle is manual; setup once hit an expired temporary token.
 - A promise resolves kept only on one payment of at least the promised amount; several small payments totalling it still resolve broken.
 - Two warnings can repeat one question in slightly different words on a card (minor).
-- No automated tests for real model accuracy: every suite uses the mock; `smoke-live.mjs` and the audio probes are manual, spoken-note accuracy unmeasured.
+- No automated tests for real model accuracy: every suite uses the mock; `smoke-live.mjs` and the audio probes are manual, spoken-note and photo accuracy unmeasured.
 - Which Baseten model is configured and its live agreement rate are unmeasured (value sits in `.env.local`, never opened).
 - Web `check:build` / `check:copy` / `check:images` were not run here; confirm they are green and the app runs clean without `MOCK_CONTRACT`.
 
@@ -128,3 +132,7 @@ POST /customers/:id/clear-phone
 POST /correct-last
 ← { "entryId"?: int, "amountKobo"?: int ≥ 0, "customer"?: string, "item"?: string|null, "quantity"?: int|null, "unit"?: string|null, "reason": string }
 → 201 { "proposal": { "id": int, "shop_id": string, "status": "pending", "heard": string, "question": string|null, "created_at": string, "entries": [{ "type": string, "customer": string, "item": string|null, "quantity": int|null, "unit": string|null, "priceBasis": "total", "amountNaira": int|null, "amountKobo": int, "amountPhrase": string|null, "eachNaira": null, "eachKobo": null }], "totals": null, "flags": [], "notes": string[], "recorded_ids": null, "name_checked": null, "promise": null, "correctionOf": int, "correctionReason": string } }
+
+POST /photo-checks
+← { "photoBase64": string, "photoFormat": "png"|"jpg"|"jpeg" }
+→ 201 { "proposal": { "id": int, "shop_id": string, "status": "pending", "heard": "(photo)", "question": string|null, "created_at": string, "entries": [], "totals": null, "flags": string[], "notes": string[], "recorded_ids": null, "name_checked": null, "promise": null, "photoCheck": { "photoType": "payment_alert"|"unknown", "fields": { "status": string|null, "date": "YYYY-MM-DD"|null, "amountKobo": int|null, "amountPhrase": string|null, "sender": string|null, "reference": string|null }|null, "warnings": string[], "matchedCustomer": string|null } } }

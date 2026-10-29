@@ -10,6 +10,7 @@ import { PromiseStore } from "./promises.mjs";
 import { ProductStore } from "./products.mjs";
 import { CustomerStore } from "./customers.mjs";
 import { SecondOpinionStore } from "./secondopinion.mjs";
+import { PhotoCheckStore } from "./photos.mjs";
 
 const FAKE_ENV = {
   LEDGER_DB: ":memory:",
@@ -49,6 +50,7 @@ describe("server startup wiring (fake env)", () => {
       assert.ok(deps.products instanceof ProductStore);
       assert.ok(deps.customers instanceof CustomerStore);
       assert.ok(deps.secondOpinions instanceof SecondOpinionStore);
+  assert.ok(deps.photoChecks instanceof PhotoCheckStore);
       assert.equal(typeof deps.model.complete, "function");
 
       // A debt route runs against built deps: needs ledger + promises.

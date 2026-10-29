@@ -32,7 +32,7 @@ export const REJECTED = "Not saved. Send a new note anytime.";
 export const FIX_ASK = "What should I change? Send the correction as text or a voice note.";
 export const ALREADY_SAVED = "Already saved — recorded once.";
 export const NOT_REGISTERED = "Sorry, this number is not registered on PocketOga — ask your shop owner to register it.";
-export const UNSUPPORTED = "I can only read text and voice notes for now.";
+export const UNSUPPORTED = "I can only read text, voice notes and photos for now.";
 export const EXPIRED_PROPOSAL = "That proposal has expired — please send the note again.";
 export const GENERIC_ERROR = "⚠️ Sorry, something went wrong. Please try again.";
 export const UNKNOWN_BUTTON = "I didn't understand that button. Send your note again.";
@@ -46,6 +46,11 @@ export const CORRECTION_AS_TEXT = "Please send the correction as text or a voice
 export const FIX_LAST_HELP = "To fix your last entry, send: fix last followed by what it should be. Example: fix last Ada paid 12k.";
 export const FIX_LAST_NO_ENTRIES = "You have no entries yet — nothing to fix.";
 export const FIX_LAST_ALREADY_FIXED = "Your last entry was already corrected. Send a new note if something else is wrong.";
+export const PHOTO_FAILED = "Sorry, I couldn't read that photo. Please send it again.";
+export const FIX_PHOTO_AGAIN = "I don't keep your photo — send it again to change it.";
+export const BANK_NOTHING = "There's no transfer to mark — save a payment alert first.";
+export const BANK_ALREADY = "Already marked as seen in your bank.";
+export const BANK_DONE = "Done — marked as seen in your bank.";
 
 export const alreadyConfirmedFix = (proposalId) =>
   `Proposal ${proposalId} is already confirmed; send a new note to correct it.`;
@@ -368,9 +373,46 @@ export function cardButtons(proposal, blocked) {
   ];
 }
 
+// Photo result card. Warnings are code-built lines over extracted data;
+// every raw value is escaped at render time and only the machine-formatted
+// amount is bolded, so hostile photo text can never format the card or
+// appear as a bold claim. The verdict is always one of the two wordings.
+export function renderPhotoCard(proposal) {
+  const pc = proposal.photoCheck;
+  if (!pc || pc.photoType !== "payment_alert") {
+    return joinBlocks([`${EMOJI.check} *Check this one*`, (proposal.flags ?? []).map(renderCheckLine).join("\n")]);
+  }
+  const f = pc.fields;
+  const amount = Number.isInteger(f.amountKobo) ? `*${formatKobo(f.amountKobo)}*` : "missing";
+  const sender = f.sender ? escapeMd(f.sender) : "missing";
+  const date = f.date ? escapeMd(f.date) : "missing";
+  const ref = f.reference ? escapeMd(f.reference) : "missing";
+  const status = f.status ? escapeMd(f.status) : "missing";
+  return joinBlocks([
+    "*Payment alert*",
+    [`Amount: ${amount}`, `Sender: ${sender}`, `Date: ${date}`, `Ref: ${ref}`, `Status: ${status}`].join("\n"),
+    pc.warnings.length > 0 ? "warning signs found" : "no warning signs found",
+    pc.warnings.map((w) => escapeMd(w)).join("\n"),
+  ]);
+}
+
+// Saved photo check: names the transfer and its unconfirmed state. The bank
+// button arrives on this card, never "verified" wording.
+export function renderPhotoSaved({ amountKobo, sender }) {
+  const amount = Number.isInteger(amountKobo) ? `*${formatKobo(amountKobo)}*` : "amount unknown";
+  const who = sender ? ` from ${escapeMd(sender)}` : "";
+  return joinBlocks([`${EMOJI.saved} *Saved*`, `Transfer ${amount}${who} — unconfirmed.`, "Tap below when you see it in your bank."]);
+}
+
 // Full card: { text, buttons }. The heard quote shrinks first when the body
 // would exceed 1024 characters; the body itself is the last resort.
 export function renderProposalCard(proposal, { existing = [], shopId = null, products = [] } = {}) {
+  if (proposal.photoCheck) {
+    const blocked = proposal.flags.length > 0 || !!proposal.question;
+    let text = renderPhotoCard(proposal);
+    if (text.length > MAX_BODY_CHARS) text = `${text.slice(0, MAX_BODY_CHARS - 1)}…`;
+    return { text, buttons: cardButtons(proposal, blocked) };
+  }
   const blocked = proposal.flags.length > 0 || !!proposal.question;
   const render = (heardMax) =>
     blocked
@@ -580,6 +622,15 @@ export function renderReport(report) {
     let line = `${EMOJI.promise} ${broken.count} broken promise${broken.count === 1 ? "" : "s"}`;
     if (broken.amountKobo > 0) line += ` (*${formatKobo(broken.amountKobo)}* at risk)`;
     lines.push(line);
+  }
+  const unconfirmed = report?.unconfirmed;
+  if (unconfirmed && unconfirmed.count > 0) {
+    attention = true;
+    lines.push(`${unconfirmed.count} unconfirmed transfer${unconfirmed.count === 1 ? "" : "s"} (*${formatKobo(unconfirmed.totalKobo)}* not yet seen in bank):`);
+    for (const u of (unconfirmed.items ?? []).slice(0, 3)) {
+      lines.push(`*${escapeMd(u.customer ?? "?")}* *${formatKobo(u.amountKobo)}* (${escapeMd(u.reference ?? "no ref")})`);
+    }
+    if ((unconfirmed.items ?? []).length > 3) lines.push(`+${unconfirmed.items.length - 3} more`);
   }
   const shortfalls = report?.shortfalls ?? [];
   if (shortfalls.length > 0) {

@@ -43,7 +43,7 @@ function stockGroups(rows) {
   return [...groups.values()];
 }
 
-export function moneyLeakReport(ledgerRows, promises, { now = Date.now() } = {}) {
+export function moneyLeakReport(ledgerRows, promises, { now = Date.now(), paymentChecks = [] } = {}) {
   const rows = ledgerRows ?? [];
 
   // (a) Total owed and the number of customers owing.
@@ -139,5 +139,32 @@ export function moneyLeakReport(ledgerRows, promises, { now = Date.now() } = {})
   }
   const today = { soldTodayKobo, collectedTodayKobo, entriesToday };
 
-  return { owed, overdue, broken, shortfalls, noStockRecord, belowCost, today };
+  // (f) Unconfirmed transfers: saved payment alerts the trader has not yet
+  // seen in the bank, oldest first. A transfer counts once recorded, with
+  // or without warning signs.
+  const unconfirmedRows = (paymentChecks ?? [])
+    .filter((c) => c && c.check_status === "unconfirmed")
+    .sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.id - b.id));
+  const unconfirmed = {
+    count: unconfirmedRows.length,
+    totalKobo: unconfirmedRows.reduce((t, c) => t + (Number.isInteger(c.amount_kobo) ? c.amount_kobo : 0), 0),
+    items: unconfirmedRows.map((c) => ({
+      customer: c.customer ?? c.sender ?? null,
+      amountKobo: c.amount_kobo,
+      reference: c.reference ?? null,
+      warned: parseCheckWarnings(c).length > 0,
+      createdAt: c.created_at,
+    })),
+  };
+
+  return { owed, overdue, broken, shortfalls, noStockRecord, belowCost, today, unconfirmed };
+}
+
+function parseCheckWarnings(check) {
+  try {
+    const warnings = JSON.parse(check.warnings_json ?? "[]");
+    return Array.isArray(warnings) ? warnings : [];
+  } catch {
+    return [];
+  }
 }

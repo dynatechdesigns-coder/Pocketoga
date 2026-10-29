@@ -21,6 +21,11 @@ import {
   FIX_LAST_HELP,
   FIX_LAST_NO_ENTRIES,
   FIX_LAST_ALREADY_FIXED,
+  PHOTO_FAILED,
+  FIX_PHOTO_AGAIN,
+  BANK_NOTHING,
+  BANK_ALREADY,
+  BANK_DONE,
   alreadyConfirmedFix,
   friendlyErrorText,
   escapeMd,
@@ -136,6 +141,45 @@ describe("message goldens (fake data)", () => {
 
     const plain = renderProposalCard(proposal(32, base), { existing: [], shopId: SHOP });
     assert.ok(!plain.text.includes("Fixes entry"), plain.text);
+  });
+
+  it("photo cards show fields, the verdict, and escaped warnings", () => {
+    const alert = (over = {}) => ({
+      id: 40,
+      flags: [],
+      question: null,
+      photoCheck: {
+        photoType: "payment_alert",
+        fields: { status: "successful", date: "2026-10-28", amountKobo: 1200000, amountPhrase: "12k", sender: "Ada", reference: "ABC123" },
+        warnings: [],
+        matchedCustomer: "Ada",
+        ...over,
+      },
+    });
+    const clean = renderProposalCard(alert());
+    assert.equal(
+      clean.text,
+      "*Payment alert*\n\nAmount: *₦12,000*\nSender: Ada\nDate: 2026-10-28\nRef: ABC123\nStatus: successful\n\nno warning signs found"
+    );
+    assert.deepEqual(
+      clean.buttons.map((b) => b.reply.id),
+      ["confirm:40", "fix:40", "reject:40"]
+    );
+
+    const warned = renderProposalCard(alert({ warnings: ["Amount ₦12,000 matches no unpaid sale."] }));
+    assert.ok(warned.text.includes("warning signs found"), warned.text);
+    assert.ok(warned.text.includes("Amount ₦12,000 matches no unpaid sale."), warned.text);
+    assert.ok(warned.buttons.some((b) => b.reply.id === "confirm:40"));
+
+    const hostile = renderProposalCard(
+      alert({
+        fields: { status: "successful", date: "2026-10-28", amountKobo: 1200000, amountPhrase: "12k", sender: "x *y* verified", reference: "R1" },
+        warnings: ['Sender "x *y* verified" matches no customer.'],
+      })
+    );
+    assert.ok(!hostile.text.includes("*y*"), hostile.text);
+    assert.ok(hostile.text.includes("x ＊y＊ verified"), hostile.text);
+    assert.ok(!/\*[^*]*verified[^*]*\*/i.test(hostile.text), hostile.text);
   });
 
   it("needs-checking card shows arithmetic then the flag once, no Save", () => {
@@ -389,7 +433,7 @@ describe("message rules", () => {
         existing: [],
       })
     );
-    for (const line of [REJECTED, FIX_ASK, ALREADY_SAVED, NOT_REGISTERED, UNSUPPORTED, EXPIRED_PROPOSAL, GENERIC_ERROR, UNKNOWN_BUTTON, PROPOSAL_NOT_FOUND, OTHER_SHOP, FFMPEG_MISSING, AUDIO_FAILED, HEAR_FAILED, BAD_AUDIO_JSON, CORRECTION_AS_TEXT, FIX_LAST_HELP, FIX_LAST_NO_ENTRIES, FIX_LAST_ALREADY_FIXED]) {
+    for (const line of [REJECTED, FIX_ASK, ALREADY_SAVED, NOT_REGISTERED, UNSUPPORTED, EXPIRED_PROPOSAL, GENERIC_ERROR, UNKNOWN_BUTTON, PROPOSAL_NOT_FOUND, OTHER_SHOP, FFMPEG_MISSING, AUDIO_FAILED, HEAR_FAILED, BAD_AUDIO_JSON, CORRECTION_AS_TEXT, FIX_LAST_HELP, FIX_LAST_NO_ENTRIES, FIX_LAST_ALREADY_FIXED, PHOTO_FAILED, FIX_PHOTO_AGAIN, BANK_NOTHING, BANK_ALREADY, BANK_DONE]) {
       bodies.push(line);
     }
     for (const body of bodies) assert.ok(body.length <= MAX_BODY_CHARS, `over limit (${body.length}): ${body.slice(0, 80)}`);
@@ -420,6 +464,7 @@ describe("message rules", () => {
         REJECTED, FIX_ASK, ALREADY_SAVED, NOT_REGISTERED, UNSUPPORTED, EXPIRED_PROPOSAL,
         GENERIC_ERROR, UNKNOWN_BUTTON, PROPOSAL_NOT_FOUND, OTHER_SHOP,
         FIX_LAST_HELP, FIX_LAST_NO_ENTRIES, FIX_LAST_ALREADY_FIXED,
+        PHOTO_FAILED, FIX_PHOTO_AGAIN, BANK_NOTHING, BANK_ALREADY, BANK_DONE,
       ];
       for (const body of bodies) {
         assert.ok(!/\d{7,}/.test(body), `digit run in: ${body.slice(0, 120)}`);

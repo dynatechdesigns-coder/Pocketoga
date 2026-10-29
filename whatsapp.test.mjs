@@ -10,6 +10,7 @@ import { PromiseStore } from "./promises.mjs";
 import { ProductStore } from "./products.mjs";
 import { SecondOpinionStore } from "./secondopinion.mjs";
 import { WhatsAppStore, drainWhatsAppJobs, parseCommand } from "./whatsapp.mjs";
+import { PhotoCheckStore } from "./photos.mjs";
 import { createMockModelClient } from "./model.mjs";
 import { handleVoiceRequest, handleWebhookOnlyRequest, createWebhookServer } from "./server.mjs";
 
@@ -58,6 +59,9 @@ function waText(from, id, body) {
 }
 function waAudio(from, id, mediaId = "media-1") {
   return { from, id, type: "audio", audio: { id: mediaId, mime_type: "audio/ogg; codecs=opus", voice: true } };
+}
+function waImage(from, id, mediaId = "media-2", mime = "image/jpeg") {
+  return { from, id, type: "image", image: { id: mediaId, mime_type: mime } };
 }
 // Realistic Meta shape: reply-button taps arrive as type "interactive"
 // with the tapped id in interactive.button_reply.id.
@@ -531,7 +535,7 @@ describe("whatsapp webhook (mocked fetch, no network)", () => {
         interactive: { type: "list_reply", list_reply: { id: "row-1", title: "Row", description: "fake row" } },
       };
       await postWebhook(ctx, wrap([listTap]));
-      assert.match(sends(ctx).at(-1).body.text.body, /can only read text and voice notes/);
+      assert.match(sends(ctx).at(-1).body.text.body, /can only read text, voice notes and photos/);
       assert.deepEqual(ctx.ledger.list(shop), []);
       assert.equal(ctx.proposals.get(id).status, "pending");
     } finally {
@@ -1119,6 +1123,195 @@ describe("fix last command", () => {
       await postWebhook(ctx, wrap([waText(FROM_A, mid(), "balance Ada")]));
       assert.match(sends(ctx).at(-1).body.text.body, /owes \*₦12,000\*/);
       assert.equal(ctx.ledger.verify(shop).ok, true);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+});
+
+describe("photo alerts", () => {
+  const PHOTO_NOW = Date.UTC(2026, 9, 28, 12, 0, 0); // Wed 28 Oct 2026 13:00 Lagos
+  const waAlert = (over = {}) => ({
+    photoType: "payment_alert",
+    status: "successful",
+    date: "2026-10-28",
+    amountNaira: 12000,
+    amountPhrase: "12k",
+    sender: "Ada",
+    reference: "WA-1",
+    ...over,
+  });
+  const checksOf = (ctx) => new PhotoCheckStore(ctx.db);
+
+  it("a photo gets a result card with Save, Fix and Reject", async () => {
+    const ctx = setup(async () => waAlert(), { nowMs: PHOTO_NOW });
+    try {
+      const shop = ctx.whatsapp.getOrCreateShop(FROM_A);
+      ctx.ledger.append({ shopId: shop, type: "sale", amountKobo: 1200000, customer: "Ada" });
+      assert.equal((await postWebhook(ctx, wrap([waImage(FROM_A, mid())]))).status, 200);
+      const sent = sends(ctx);
+      assert.equal(sent.length, 1);
+      assert.equal(sent[0].body.type, "interactive");
+      const card = sent[0].body.interactive;
+      assert.match(card.body.text, /Payment alert/);
+      assert.match(card.body.text, /no warning signs found/);
+      assert.match(card.body.text, /₦12,000/);
+      assert.deepEqual(
+        card.action.buttons.map((b) => b.reply.title),
+        ["Save", "Fix", "Reject"]
+      );
+      assert.equal(ctx.ledger.list(shop).length, 1);
+      const stored = ctx.proposals.listByShop(shop)[0];
+      assert.equal(JSON.parse(stored.entries_json).photoCheck.photoType, "payment_alert");
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("a warned alert still offers Save", async () => {
+    const ctx = setup(async () => waAlert({ amountNaira: 9999, amountPhrase: "9,999", reference: "WA-2" }), { nowMs: PHOTO_NOW });
+    try {
+      const shop = ctx.whatsapp.getOrCreateShop(FROM_A);
+      ctx.ledger.append({ shopId: shop, type: "sale", amountKobo: 1200000, customer: "Ada" });
+      await postWebhook(ctx, wrap([waImage(FROM_A, mid())]));
+      const card = sends(ctx)[0].body.interactive;
+      assert.match(card.body.text, /warning signs found/);
+      assert.equal(card.action.buttons.length, 3);
+      assert.ok(card.action.buttons.some((b) => b.reply.title === "Save"));
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("Save stores the check unconfirmed with a bank button; the bank tap confirms it", async () => {
+    const ctx = setup(async () => waAlert(), { nowMs: PHOTO_NOW });
+    try {
+      const shop = ctx.whatsapp.getOrCreateShop(FROM_A);
+      ctx.ledger.append({ shopId: shop, type: "sale", amountKobo: 1200000, customer: "Ada" });
+      await postWebhook(ctx, wrap([waImage(FROM_A, mid())]));
+      const id = ctx.proposals.listByShop(shop)[0].id;
+      await postWebhook(ctx, wrap([waButton(FROM_A, mid(), `confirm:${id}`)]));
+      const saved = sends(ctx).at(-1).body;
+      assert.equal(saved.type, "interactive");
+      assert.match(saved.interactive.body.text, /Saved/);
+      assert.match(saved.interactive.body.text, /unconfirmed/);
+      assert.deepEqual(saved.interactive.action.buttons.map((b) => b.reply.id), [`bank:${id}`]);
+      assert.deepEqual(saved.interactive.action.buttons.map((b) => b.reply.title), ["I saw it in my bank"]);
+      for (const b of saved.interactive.action.buttons) assert.ok(b.reply.title.length < 20);
+      assert.equal(ctx.ledger.list(shop).length, 1);
+      assert.equal(checksOf(ctx).listByShop(shop)[0].check_status, "unconfirmed");
+
+      await postWebhook(ctx, wrap([waButton(FROM_A, mid(), `bank:${id}`)]));
+      assert.match(sends(ctx).at(-1).body.text.body, /marked as seen in your bank/);
+      assert.equal(checksOf(ctx).listByShop(shop)[0].check_status, "confirmed");
+
+      await postWebhook(ctx, wrap([waButton(FROM_A, mid(), `bank:${id}`)]));
+      assert.match(sends(ctx).at(-1).body.text.body, /Already marked/);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("bank taps with nothing to mark are refused", async () => {
+    const ctx = setup(async () => WA_PART, { nowMs: PHOTO_NOW });
+    try {
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "fake note")]));
+      const shop = ctx.whatsapp.getOrCreateShop(FROM_A);
+      const id = ctx.proposals.listByShop(shop)[0].id;
+      await postWebhook(ctx, wrap([waButton(FROM_A, mid(), `bank:${id}`)]));
+      assert.match(sends(ctx).at(-1).body.text.body, /no transfer to mark/);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("bank before Save is refused", async () => {
+    const ctx = setup(async () => waAlert(), { nowMs: PHOTO_NOW });
+    try {
+      const shop = ctx.whatsapp.getOrCreateShop(FROM_A);
+      ctx.ledger.append({ shopId: shop, type: "sale", amountKobo: 1200000, customer: "Ada" });
+      await postWebhook(ctx, wrap([waImage(FROM_A, mid())]));
+      const id = ctx.proposals.listByShop(shop)[0].id;
+      await postWebhook(ctx, wrap([waButton(FROM_A, mid(), `bank:${id}`)]));
+      assert.match(sends(ctx).at(-1).body.text.body, /no transfer to mark/);
+      assert.equal(checksOf(ctx).listByShop(shop).length, 0);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("Fix on a photo card asks for the photo again and sets no fix state", async () => {
+    const ctx = setup(async () => waAlert(), { nowMs: PHOTO_NOW });
+    try {
+      const shop = ctx.whatsapp.getOrCreateShop(FROM_A);
+      ctx.ledger.append({ shopId: shop, type: "sale", amountKobo: 1200000, customer: "Ada" });
+      await postWebhook(ctx, wrap([waImage(FROM_A, mid())]));
+      const id = ctx.proposals.listByShop(shop)[0].id;
+      await postWebhook(ctx, wrap([waButton(FROM_A, mid(), `fix:${id}`)]));
+      assert.match(sends(ctx).at(-1).body.text.body, /send it again/);
+      assert.equal(ctx.whatsapp.getFixState(FROM_A), null);
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "another fake note")]));
+      assert.equal(ctx.proposals.listByShop(shop).length, 2);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("a failed download gets the photo-failed reply", async () => {
+    const ctx = setup(async () => waAlert(), { nowMs: PHOTO_NOW });
+    try {
+      const realFetch = ctx.fetch;
+      ctx.deps.fetch = async (url, opts) => (url.endsWith("/messages") ? realFetch(url, opts) : { ok: false, status: 500, text: async () => "nope" });
+      await postWebhook(ctx, wrap([waImage(FROM_A, mid())]));
+      assert.match(sends(ctx)[0].body.text.body, /couldn't read that photo/);
+      assert.equal(proposalCount(ctx), 0);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("a gif photo is refused without calling the model", async () => {
+    let calls = 0;
+    const ctx = setup(async () => {
+      calls++;
+      return waAlert();
+    }, { nowMs: PHOTO_NOW });
+    try {
+      await postWebhook(ctx, wrap([waImage(FROM_A, mid(), "media-9", "image/gif")]));
+      assert.match(sends(ctx)[0].body.text.body, /couldn't read that photo/);
+      assert.equal(calls, 0);
+      assert.equal(proposalCount(ctx), 0);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("an unknown photo gets a check card without Save", async () => {
+    const ctx = setup(async () => ({ photoType: "unknown" }), { nowMs: PHOTO_NOW });
+    try {
+      await postWebhook(ctx, wrap([waImage(FROM_A, mid())]));
+      const card = sends(ctx)[0].body.interactive;
+      assert.match(card.body.text, /don't recognise this photo/);
+      assert.deepEqual(
+        card.action.buttons.map((b) => b.reply.title),
+        ["Fix", "Reject"]
+      );
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("the report command lists the unconfirmed transfer", async () => {
+    const ctx = setup(async () => waAlert(), { nowMs: PHOTO_NOW });
+    try {
+      const shop = ctx.whatsapp.getOrCreateShop(FROM_A);
+      ctx.ledger.append({ shopId: shop, type: "sale", amountKobo: 1200000, customer: "Ada" });
+      await postWebhook(ctx, wrap([waImage(FROM_A, mid())]));
+      const id = ctx.proposals.listByShop(shop)[0].id;
+      await postWebhook(ctx, wrap([waButton(FROM_A, mid(), `confirm:${id}`)]));
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "report")]));
+      assert.match(sends(ctx).at(-1).body.text.body, /1 unconfirmed transfer \(/);
+      assert.match(sends(ctx).at(-1).body.text.body, /₦12,000/);
     } finally {
       await teardown(ctx);
     }

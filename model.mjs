@@ -6,6 +6,9 @@
 // - muse-spark-1.2: still the checkpoint to use for audio input.
 // Audio uses the OpenAI-compatible input_audio part:
 //   { type: "input_audio", input_audio: { data: base64, format: "wav" } }
+// Images use the OpenAI-compatible image_url part on the 1.3 checkpoint
+// (dev.meta.ai/docs/image-understanding):
+//   { type: "image_url", image_url: { url: "data:image/jpeg;base64,..." } }
 
 export const META_BASE_URL = "https://api.meta.ai/v1";
 export const TEXT_MODEL = "muse-spark-1.3";
@@ -75,12 +78,20 @@ export function createModelClient({
   timeoutMs = 60000,
 } = {}) {
   return {
-    async complete({ text = null, audio = null, prior = null }) {
+    async complete({ text = null, audio = null, image = null, prior = null, system = null }) {
       if (!apiKey) throw apiError("META_API_KEY is not set");
+      if (audio && image) throw new Error("complete takes audio or image, not both");
       const isAudio = !!audio;
-      const system = prior ? `${SYSTEM_PROMPT}\n\n${FIX_SUFFIX}` : SYSTEM_PROMPT;
+      const isImage = !!image;
+      const prompt = system ?? (prior ? `${SYSTEM_PROMPT}\n\n${FIX_SUFFIX}` : SYSTEM_PROMPT);
       let userContent;
-      if (isAudio) {
+      if (isImage) {
+        if (prior) throw new Error("prior is not supported with image input");
+        userContent = [
+          { type: "text", text: "Read this photo and reply with the JSON described in the system prompt." },
+          { type: "image_url", image_url: { url: `data:${image.format};base64,${image.data}` } },
+        ];
+      } else if (isAudio) {
         userContent = [
           { type: "text", text: "Listen to this trader voice note and extract the bookkeeping JSON." },
           { type: "input_audio", input_audio: { data: audio.data, format: audio.format } },
@@ -101,7 +112,7 @@ export function createModelClient({
             reasoning_effort: "minimal",
             response_format: { type: "json_object" },
             messages: [
-              { role: "system", content: system },
+              { role: "system", content: prompt },
               { role: "user", content: userContent },
             ],
           }),

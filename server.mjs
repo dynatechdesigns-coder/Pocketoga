@@ -15,8 +15,10 @@ import { ProductStore, withStock, toProductJson } from "./products.mjs";
 import { CustomerStore, describeCustomers, normalizePhone } from "./customers.mjs";
 import { PROFIT_PERIODS, profitForPeriod, expensesForPeriod } from "./profit.mjs";
 import { SecondOpinionStore } from "./secondopinion.mjs";
+import { PhotoCheckStore } from "./photos.mjs";
 import { createModelClient } from "./model.mjs";
 import { propose, confirmProposal, fixProposal, rejectProposal, getProposal, proposeCorrection } from "./voice.mjs";
+import { proposePhotoCheck } from "./photos.mjs";
 import {
   verifyWhatsAppSignature,
   verifyWebhookSubscription,
@@ -164,6 +166,20 @@ export async function handleVoiceRequest(req, res, deps) {
     return send(res, 201, { proposal });
   }
 
+  // Photo pipeline (Alert Guard first): classifies the photo, extracts its
+  // fields and runs the code checks, storing a proposal the trader confirms
+  // as usual. The raw photo is never stored.
+  if (req.method === "POST" && parts.length === 1 && parts[0] === "photo-checks") {
+    const body = await readBody(req);
+    const fields = body && typeof body === "object" ? body : {};
+    const proposal = await proposePhotoCheck(
+      shopId,
+      { photoBase64: fields.photoBase64, photoFormat: fields.photoFormat },
+      { proposals: deps.proposals, model: deps.model, ledger: deps.ledger, photoChecks: deps.photoChecks }
+    );
+    return send(res, 201, { proposal });
+  }
+
   if (req.method === "POST" && parts.length === 2 && ["confirm", "fix", "reject"].includes(parts[0])) {
     const id = decodeURIComponent(parts[1]);
     if (parts[0] === "confirm") {
@@ -279,7 +295,8 @@ export async function handleVoiceRequest(req, res, deps) {
     refreshPromises(deps.promises, deps.ledger, shopId, {});
     const rows = deps.ledger.list(shopId);
     const promises = deps.promises ? deps.promises.listByShop(shopId) : [];
-    return send(res, 200, { report: moneyLeakReport(rows, promises, {}) });
+    const paymentChecks = deps.photoChecks ? deps.photoChecks.listUnconfirmedByShop(shopId) : [];
+    return send(res, 200, { report: moneyLeakReport(rows, promises, { paymentChecks }) });
   }
 
   // Products catalog for the caller's own shop, with stock computed from
@@ -381,9 +398,9 @@ export async function handleVoiceRequest(req, res, deps) {
   return send(res, 404, { error: "not found" });
 }
 
-export function createVoiceServer({ ledger, proposals, promises, products, customers, secondOpinions, model }) {
+export function createVoiceServer({ ledger, proposals, promises, products, customers, secondOpinions, photoChecks, model }) {
   return createServer((req, res) => {
-    handleVoiceRequest(req, res, { ledger, proposals, promises, products, customers, secondOpinions, model }).catch((err) => {
+    handleVoiceRequest(req, res, { ledger, proposals, promises, products, customers, secondOpinions, photoChecks, model }).catch((err) => {
       if (!res.headersSent) send(res, err.status ?? 500, { error: err.message ?? "internal error" });
     });
   });
@@ -400,9 +417,9 @@ export async function handleWebhookOnlyRequest(req, res, deps) {
   return handleWebhookRoute(req, res, url, deps);
 }
 
-export function createWebhookServer({ ledger, proposals, promises, products, customers, secondOpinions, model }) {
+export function createWebhookServer({ ledger, proposals, promises, products, customers, secondOpinions, photoChecks, model }) {
   return createServer((req, res) => {
-    handleWebhookOnlyRequest(req, res, { ledger, proposals, promises, products, customers, secondOpinions, model }).catch((err) => {
+    handleWebhookOnlyRequest(req, res, { ledger, proposals, promises, products, customers, secondOpinions, photoChecks, model }).catch((err) => {
       if (!res.headersSent) send(res, err.status ?? 500, { error: err.message ?? "internal error" });
     });
   });
@@ -423,6 +440,7 @@ export function buildDeps(env = process.env) {
     products: new ProductStore(db),
     customers: new CustomerStore(db),
     secondOpinions: new SecondOpinionStore(db),
+    photoChecks: new PhotoCheckStore(db),
     model: createModelClient({ apiKey: env.META_API_KEY ?? null }),
     env,
   };
