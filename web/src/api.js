@@ -154,9 +154,12 @@ export async function getCustomers() {
   return (await newRoute("GET", "/customers")).customers;
 }
 
-// POST /customers { name, phone, consent: true } -> { customer }
+// POST /customers { name, phone?, consent? } -> { customer }. Create or update
+// by name. A phone needs consent: true (the form asks for it), so the two are
+// sent together; with no phone only the name goes.
 export async function saveCustomer({ name, phone }) {
-  return (await newRoute("POST", "/customers", { name, phone, consent: true })).customer;
+  const body = phone ? { name, phone, consent: true } : { name };
+  return (await newRoute("POST", "/customers", body)).customer;
 }
 
 // POST /ledger/:id/correct { amountKobo?, customer?, item?, quantity?, unit?, reason }
@@ -172,7 +175,8 @@ export function friendlyError(err) {
     case 0:
       return "Cannot reach PocketOga. Check your connection and try again.";
     case 403:
-      return "This note belongs to another shop.";
+      // "that product belongs to another shop": say which thing it was.
+      return /^that (product|customer) /i.test(err.message) ? err.message.charAt(0).toUpperCase() + err.message.slice(1) + "." : "This note belongs to another shop.";
     case 404:
       return err.message === "not built"
         ? "This part needs the newer PocketOga server, which is still being built."

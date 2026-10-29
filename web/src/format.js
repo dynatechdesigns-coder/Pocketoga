@@ -126,5 +126,33 @@ export function periodStartDay(period) {
 // The Lagos day an entry was made, "YYYY-MM-DD".
 export const lagosDay = (iso) => dayKey(iso);
 
-// A phone number as written ("0803 000 0011", "+234 803…").
-export const phoneText = (phone) => String(phone ?? "").replace(/(\d{4})(\d{3})(\d{4})$/, "$1 $2 $3");
+// A stored phone number as people write it. The backend keeps digits with a
+// country code ("2348030000011"); this shows "+234 803 000 0011", or just
+// "+447700900123" for other countries.
+export function phoneText(phone) {
+  const digits = String(phone ?? "").replace(/\D/g, "");
+  if (/^234\d{10}$/.test(digits)) return `+234 ${digits.slice(3, 6)} ${digits.slice(6, 9)} ${digits.slice(9)}`;
+  return digits.length >= 7 ? `+${digits}` : String(phone ?? "");
+}
+
+// A GET /profit series label as the chart shows it. The server labels buckets
+// "00".."23" (hours: today), "2026-10-26" (days: week and month) and
+// "2026-10" (months: year). `long` is for the detail line, short for the axis;
+// `count` (buckets in the series) tells a week's days from a month's. Any other
+// label is shown as given.
+export function bucketLabel(label, { long = false, count = 0 } = {}) {
+  const text = String(label ?? "");
+  if (/^\d{2}$/.test(text)) {
+    const at = (h) => `${h % 12 || 12}${h % 24 < 12 ? "am" : "pm"}`;
+    const h = Number(text);
+    return long ? `${at(h)}–${at(h + 1)}` : at(h);
+  }
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (day) {
+    if (long) return formatDueDay(text);
+    return count > 0 && count <= 7 ? formatDueDay(text).slice(0, 3) : String(Number(day[3]));
+  }
+  const month = /^(\d{4})-(\d{2})$/.exec(text);
+  if (month) return long ? `${MON[Number(month[2]) - 1]} ${month[1]}` : MON[Number(month[2]) - 1];
+  return text;
+}

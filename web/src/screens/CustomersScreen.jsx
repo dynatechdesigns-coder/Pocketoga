@@ -98,13 +98,17 @@ export default function CustomersScreen() {
 function CustomerForm({ customer, onSaved }) {
   const isNew = !customer.name;
   const [name, setName] = useState(customer.name ?? "");
-  const [phone, setPhone] = useState(customer.phone ?? "");
+  const [phone, setPhone] = useState(customer.phone ? phoneText(customer.phone) : "");
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
-  const phoneOk = waNumber(phone) !== null;
-  const ready = name.trim() && phoneOk && consent && !busy;
+  // A number is optional (a customer can be saved by name alone). Saving one
+  // needs the permission box ticked, and changing an existing customer needs one.
+  const hasPhone = phone.trim() !== "";
+  const phoneOk = !hasPhone || waNumber(phone) !== null;
+  const ready = name.trim() && phoneOk && (isNew || hasPhone) && (!hasPhone || consent) && !busy;
+  const why = !isNew && !hasPhone ? "Type a number to save a change." : hasPhone && !consent ? "Tick the permission box to save a number." : null;
 
   async function save(e) {
     e.preventDefault();
@@ -112,7 +116,7 @@ function CustomerForm({ customer, onSaved }) {
     setBusy(true);
     setError(null);
     try {
-      onSaved(await saveCustomer({ name: name.trim(), phone: phone.trim() }));
+      onSaved(await saveCustomer({ name: name.trim(), phone: hasPhone ? phone.trim() : "" }));
     } catch (err) {
       setError(friendlyError(err));
     } finally {
@@ -133,7 +137,7 @@ function CustomerForm({ customer, onSaved }) {
           className={`${inputClass} read-only:bg-slate`}
         />
       </Field>
-      <Field id="customer-phone" label="Phone number" hint="Nigerian numbers like 0803 000 0000, or +country code.">
+      <Field id="customer-phone" label="Phone number" hint="Optional. Nigerian numbers like 0803 000 0000, or +country code.">
         <input
           id="customer-phone"
           type="tel"
@@ -144,10 +148,10 @@ function CustomerForm({ customer, onSaved }) {
           placeholder="0803 000 0000"
           className={inputClass}
           aria-describedby="customer-phone-hint"
-          aria-invalid={phone.trim() !== "" && !phoneOk}
+          aria-invalid={!phoneOk}
         />
       </Field>
-      {phone.trim() !== "" && !phoneOk && (
+      {!phoneOk && (
         <p role="alert" className="-mt-2 font-semibold text-coral-ink">
           That does not look like a phone number.
         </p>
@@ -158,7 +162,9 @@ function CustomerForm({ customer, onSaved }) {
         <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} className="mt-0.5 size-6 shrink-0 accent-accent" />
         <span>
           <strong>I have this customer’s permission to store their number</strong>
-          <span className="block text-sm text-muted">It is only used to open WhatsApp to them from Debts. PocketOga never sends messages itself.</span>
+          <span className="block text-sm text-muted">
+            Needed only when you save a number. It is only used to open WhatsApp to them from Debts. PocketOga never sends messages itself.
+          </span>
         </span>
       </label>
 
@@ -167,12 +173,12 @@ function CustomerForm({ customer, onSaved }) {
           {error}
         </p>
       )}
-      <Button size="lg" disabled={!ready} aria-describedby={consent ? undefined : "consent-why"}>
+      <Button size="lg" disabled={!ready} aria-describedby={why ? "consent-why" : undefined}>
         {busy ? "Saving…" : "Save customer"}
       </Button>
-      {!consent && (
+      {why && (
         <p id="consent-why" className="-mt-2 text-center text-sm text-muted">
-          Tick the permission box to save a number.
+          {why}
         </p>
       )}
     </form>

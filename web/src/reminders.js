@@ -28,13 +28,21 @@ export function draftReminder(tone, { customer, owedKobo, ageDays }) {
   return TEMPLATES[tone](customer, formatKobo(owedKobo), ageWords(ageDays));
 }
 
-// A stored phone number in the international digits wa.me wants:
-// "0803 000 0011" -> "2348030000011". Null when it does not look like one.
+// A phone number in the international digits wa.me wants, worked out the way
+// the backend stores it (customers.mjs normalizePhone): "0803 000 0011" and
+// "+234 803 000 0011" both give "2348030000011"; a number from another country
+// ("+44 7700 900123", or "447700900123" as stored) keeps its own code. Null
+// when it does not look like a phone number: under 7 or over 15 digits, or a
+// Nigerian number that is not 234 plus ten digits (usually a typo).
 export function waNumber(phone) {
-  const digits = String(phone ?? "").replace(/\D/g, "");
-  if (/^0\d{10}$/.test(digits)) return "234" + digits.slice(1);
-  if (/^234\d{10}$/.test(digits)) return digits;
-  return digits.length >= 8 && digits.length <= 15 && String(phone).trim().startsWith("+") ? digits : null;
+  let digits = String(phone ?? "").replace(/\D/g, "");
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  if (digits.length < 7) return null;
+  if (digits.startsWith("0")) digits = `234${digits.replace(/^0+/, "")}`;
+  else if (!digits.startsWith("234") && digits.length === 10) digits = `234${digits}`;
+  if (digits.length > 15) return null;
+  if (digits.startsWith("234") && digits.length !== 13) return null;
+  return digits;
 }
 
 // wa.me straight to the customer's chat when we have their number (stored

@@ -47,7 +47,7 @@ export default function ProductsScreen() {
               <span className="grid min-w-0 flex-1 gap-0.5">
                 <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <span className="font-bold">{p.name}</span>
-                  {p.lowStock && <Pill tone="blue">{p.stockOnHand === 0 ? "Out of stock" : "Low stock"}</Pill>}
+                  {p.lowStock && <Pill tone="blue">{p.stockOnHand <= 0 ? "Out of stock" : "Low stock"}</Pill>}
                 </span>
                 <span className="text-[0.8125rem] text-muted">{stockText(p)}</span>
                 <span className="text-[0.8125rem] text-muted">
@@ -81,7 +81,9 @@ export default function ProductsScreen() {
   );
 }
 
-const stockText = (p) => `${plural(p.stockOnHand, p.unit ?? "item")} in stock`;
+// stockOnHand can be below zero: more was sold than the records show bought.
+const stockText = (p) =>
+  p.stockOnHand < 0 ? `${plural(-p.stockOnHand, p.unit ?? "item")} sold more than you bought` : `${plural(p.stockOnHand, p.unit ?? "item")} in stock`;
 const priceText = (kobo, unit) => (kobo == null ? "not set" : `${formatKobo(kobo)}${unit ? ` per ${unit}` : ""}`);
 
 function PriceForm({ product, onSaved }) {

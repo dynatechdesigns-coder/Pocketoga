@@ -50,7 +50,7 @@ export default function ReportScreen({ shop, onGo }) {
   );
 }
 
-const CHART_TITLE = { today: "Estimated profit by hour", week: "Estimated profit by day", month: "Estimated profit by week", year: "Estimated profit by month" };
+const CHART_TITLE = { today: "Estimated profit by hour", week: "Estimated profit by day", month: "Estimated profit by day", year: "Estimated profit by month" };
 
 function ProfitBody({ p, period, busy, onGo }) {
   const loss = p.estimatedProfitKobo < 0;

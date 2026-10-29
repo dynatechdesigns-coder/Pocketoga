@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { formatKobo } from "./format.js";
+import { bucketLabel, formatKobo } from "./format.js";
 import { cx } from "./ui.jsx";
 
 // Estimated profit per bucket from GET /profit `series`, as plain SVG bars on
@@ -28,6 +28,17 @@ export default function ProfitChart({ series, title }) {
   useEffect(() => setPicked(defaultPick(series)), [series]);
 
   const n = Math.max(1, series.length);
+  // Axis labels from the server's bucket labels, and only as many as fit: a
+  // month has 31 days on a phone-wide axis.
+  const short = series.map((s) => bucketLabel(s.label, { count: series.length }));
+  const need = Math.max(...short.map((l) => l.length), 1) * 6.4 + 12;
+  const every = Math.max(1, Math.ceil(need / (width / n || 1)));
+  // A label centred under the first or last bar can run off the edge of the
+  // drawing ("12am" cut to "2am"): pin it to the edge instead.
+  const half = (i) => (short[i].length * 6.4) / 2;
+  const centre = (i) => i * slot + slot / 2;
+  const labelAnchor = (i) => (centre(i) - half(i) < 0 ? "start" : centre(i) + half(i) > width ? "end" : "middle");
+  const labelX = (i) => (labelAnchor(i) === "start" ? 0 : labelAnchor(i) === "end" ? width : centre(i));
   const max = Math.max(1, ...series.map((b) => Math.abs(b.profitKobo)));
   const hasLoss = series.some((b) => b.profitKobo < 0);
   // Zero line: near the bottom when there is no loss, else in proportion.
@@ -72,12 +83,12 @@ export default function ProfitChart({ series, title }) {
                   )}
                   {i === picked && <rect x={i * slot + 1} y="0" width={slot - 2} height={H} rx="8" className="fill-ink/5" />}
                   <text
-                    x={i * slot + slot / 2}
+                    x={labelX(i)}
                     y={H + 16}
-                    textAnchor="middle"
+                    textAnchor={labelAnchor(i)}
                     className={cx("text-[11px]", i === picked ? "fill-ink font-bold" : "fill-muted")}
                   >
-                    {s.label}
+                    {i % every === 0 ? short[i] : ""}
                   </text>
                 </g>
               );
@@ -96,7 +107,7 @@ export default function ProfitChart({ series, title }) {
             <ChevronLeft aria-hidden="true" />
           </button>
           <dl className="grid flex-1 grid-cols-2 gap-x-3 gap-y-0.5 text-sm">
-            <dt className="col-span-2 font-extrabold text-ink">{b.label}</dt>
+            <dt className="col-span-2 font-extrabold text-ink">{bucketLabel(b.label, { long: true, count: series.length })}</dt>
             <dt className="text-muted">Sales</dt>
             <dd className="text-right font-bold tabular-nums">{formatKobo(b.salesKobo)}</dd>
             <dt className="text-muted">Cost of goods</dt>
@@ -135,7 +146,7 @@ export default function ProfitChart({ series, title }) {
           <tbody>
             {series.map((s) => (
               <tr key={s.label}>
-                <th scope="row">{s.label}</th>
+                <th scope="row">{bucketLabel(s.label, { long: true, count: series.length })}</th>
                 <td>{formatKobo(s.salesKobo)}</td>
                 <td>{formatKobo(s.cogsKobo)}</td>
                 <td>{formatKobo(s.expensesKobo)}</td>
