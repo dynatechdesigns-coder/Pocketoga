@@ -53,8 +53,10 @@ describe("server startup wiring (fake env)", () => {
   assert.ok(deps.photoChecks instanceof PhotoCheckStore);
       assert.equal(typeof deps.model.complete, "function");
 
-      // A debt route runs against built deps: needs ledger + promises.
-      const req = fakeReq({ url: "/report", headers: { "x-shop-id": "wiring-shop" } });
+      // A debt route runs against built deps: needs ledger + promises + a session.
+      const issued = deps.auths.issueCode("wiring-shop", "test-wiring", {});
+      const { token } = deps.auths.exchangeCode("wiring-shop", issued.code, {});
+      const req = fakeReq({ url: "/report", headers: { "x-shop-id": "wiring-shop", authorization: `Bearer ${token}` } });
       const res = fakeRes();
       await handleVoiceRequest(req, res, deps);
       assert.equal(res.statusCode, 200);

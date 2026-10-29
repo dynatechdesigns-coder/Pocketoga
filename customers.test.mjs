@@ -8,13 +8,14 @@ import { Ledger } from "./ledger.mjs";
 import { CustomerStore, normalizePhone, describeCustomers } from "./customers.mjs";
 import { customerDebts } from "./debts.mjs";
 import { handleVoiceRequest, handleWebhookOnlyRequest } from "./server.mjs";
+import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
 
 const SHOP_A = "shop-a";
 const SHOP_B = "shop-b";
 
 function setup() {
   const db = new DatabaseSync(":memory:");
-  return { db, ledger: new Ledger(db), customers: new CustomerStore(db) };
+  return { db, ledger: new Ledger(db), customers: new CustomerStore(db), auths: new AuthStore(db) };
 }
 
 function teardown(ctx) {
@@ -50,10 +51,29 @@ function fakeRes() {
   };
 }
 
+// Tests log in transparently: the first request for a shop mints a session
+// through the real issue+exchange path (the login flow itself is tested in
+// auth.test.mjs). Explicit authorization headers always win.
+function tokenFor(deps, shop) {
+  deps._testTokens ??= new Map();
+  if (!deps._testTokens.has(shop)) {
+    const issued = deps.auths.issueCode(shop, `test-login-${shop}`, {});
+    const exchanged = deps.auths.exchangeCode(shop, issued.code, {});
+    if (!exchanged.ok) throw new Error(`test login failed: ${exchanged.reason}`);
+    deps._testTokens.set(shop, exchanged.token);
+  }
+  return deps._testTokens.get(shop);
+}
+
 async function dispatch(deps, opts) {
+  const headers = { ...(opts.headers ?? {}) };
+  const shop = headers["x-shop-id"];
+  if (shop && shop !== DEMO_SHOP_ID && !headers.authorization && !headers.Authorization && deps.auths) {
+    headers.authorization = `Bearer ${tokenFor(deps, shop)}`;
+  }
   const res = fakeRes();
   try {
-    await handleVoiceRequest(fakeReq(opts), res, deps);
+    await handleVoiceRequest(fakeReq({ ...opts, headers }), res, deps);
   } catch (err) {
     res.writeHead(err.status ?? 500);
     res.end(JSON.stringify({ error: err.message ?? "internal error" }));
@@ -205,7 +225,7 @@ describe("describeCustomers", () => {
 describe("customers routes", () => {
   function routeCtx() {
     const ctx = setup();
-    return { ...ctx, deps: { ledger: ctx.ledger, customers: ctx.customers } };
+    return { ...ctx, deps: { ledger: ctx.ledger, customers: ctx.customers, auths: ctx.auths } };
   }
 
   it("GET /customers returns the directory plus ledger-only names, per shop", async () => {

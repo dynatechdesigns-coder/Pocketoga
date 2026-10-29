@@ -13,6 +13,7 @@ Meta Global AI Developer Hackathon, Indie track. Submission planned for the even
 - Money in integer kobo, never floats. Proposal entry types: sale, payment, restock, expense. Stored corrections use type `correction`. No `debt` type exists.
 - Corrections are new entries (`corrects_id` link, same shop); reasons live in `corrections_log`, never in the ledger or hash.
 - Confirm is idempotent (`alreadyConfirmed`); proposals expire after 30 minutes.
+- Passwordless login: WhatsApp `dashboard` issues a one-time code (hash stored, 10-minute expiry, one use, 5 per number per hour); the code exchanges for a shop-scoped session token (expiring, revocable); every non-demo route needs a live token for exactly that shop; the demo shop stays public.
 - Photos: the AI classifies the type and extracts fields; code runs every check; the trader confirms; raw photos are never stored.
 
 ## 3. Stack and files
@@ -27,6 +28,7 @@ Backend: Node ESM (`.mjs`), `node:http`, `node:sqlite`, `node:crypto`, `node:tes
 - `photos.mjs` — photo pipeline and Alert Guard checks, plus the `payment_checks` store (extracted fields only, never raw photos).
 - `whatsapp.mjs` — webhook processing, commands, voice notes, Save/Fix/Reject buttons, dedupe, allow-list.
 - `server.mjs` — main API plus webhook-only listener; `buildDeps(env)` wires stores without sockets.
+- `auth.mjs` — `AuthStore`: login codes (hash, expiry, one use, rate limits) and sessions (verify, revoke).
 - `messages.mjs` — every user-facing WhatsApp string (cards, debts, chase, report, stock, profit, expenses).
 - `debts.mjs` — balances (oldest-first), chase ranking, Lagos-day helpers. `promises.mjs` — promise store, code-resolved dates, kept/broken. `leak.mjs` — Money Leak Report, including unconfirmed transfers.
 - `products.mjs` — catalog (auto-created on confirm, trader-set prices, stock from ledger, low at ≤3). `customers.mjs` — directory (phones + consent, never in the ledger).
@@ -41,7 +43,7 @@ Run: backend `node server.mjs`; web `cd web && npm install && npm run dev` (`/ap
 
 ## 4. Routes
 
-Main server only, except `/webhook` (served on both ports). Every other route needs the `x-shop-id` header (400 without it); cross-shop access is 403. Errors are `{ error }`. Verified complete against `server.mjs` on 29 Oct 2026: no route in code is missing here, none listed is missing in code.
+Main server only, except `/webhook` (served on both ports). Every route except `/session` and the demo shop needs the `x-shop-id` header (400 without it) plus `Authorization: Bearer <token>` for exactly that shop (401 without a live session, 403 for another shop's token); the demo shop (`demo`) is public. Errors are `{ error }`. Verified complete against `server.mjs` on 29 Oct 2026: no route in code is missing here, none listed is missing in code.
 
 | Route | Request → response | Tests |
 |---|---|---|
@@ -64,6 +66,8 @@ Main server only, except `/webhook` (served on both ports). Every other route ne
 | POST `/customers/:id/clear-phone` | — → `{ customer }` (phone gone, row kept) | customers |
 | GET `/profit?period=` | `today\|week\|month\|year` (missing reads as today) → `{ period, from, to, salesKobo, collectedKobo, cogsKobo, expensesKobo, estimatedProfitKobo, result, resultKobo, owedKobo, itemsWithoutCost, missing_cost_items, series }` | profit |
 | GET `/expenses?period=` | same periods → `{ expenses, byCategory }` | profit |
+| POST `/session` | `{ shop, code }` (no headers) → 201 `{ token, shop_id, expires_at }` (401 wrong/used/expired code, 429 past 5 guesses/hour) | auth |
+| DELETE `/session` | Bearer → `{ revoked: true }` (401 without a live token) | auth |
 | GET `/webhook` | Meta handshake query → challenge text | server, whatsapp |
 | POST `/webhook` | signed Meta payload → `{ ok: true }` (work runs after responding) | whatsapp |
 
@@ -74,7 +78,7 @@ Shapes: `proposal` is `{ id, shop_id, status, heard, question, created_at, entri
 - Main server on `PORT` (default 3000, local only); webhook-only listener on `WEBHOOK_PORT` (default 3001, 404s everything but `/webhook`). Tunnel points at 3001 only. `WEBHOOK_PUBLIC_ONLY=1` hides non-webhook routes from tunnelled traffic.
 - POST signature: HMAC-SHA256 over the raw body compared (timing-safe) with `x-hub-signature-256`, secret `WHATSAPP_APP_SECRET`. GET handshake via `WHATSAPP_VERIFY_TOKEN`. Replies via Graph API (`WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`).
 - Only `WHATSAPP_ALLOWED_NUMBERS` (comma-separated) are served; anyone else gets a not-registered reply. Each sender maps to a shop (`wa-` + 16 hash chars). Duplicate deliveries are deduped; secrets and full numbers are masked in logs.
-- Exact commands, matched before the note flow (case-insensitive): `who owes`, `chase`, `report`, `stock`, `profit`, `profit week`, `profit month`, `balance <name>` — all answered without the model — plus `fix last <text>`, which reads the corrected note with the model and shows a correction card with Save/Fix/Reject (bare `fix last` explains the usage).
+- Exact commands, matched before the note flow (case-insensitive): `who owes`, `chase`, `report`, `stock`, `profit`, `profit week`, `profit month`, `balance <name>` — all answered without the model — plus `fix last <text>`, which reads the corrected note with the model and shows a correction card with Save/Fix/Reject (bare `fix last` explains the usage), and `dashboard`, which texts back a one-time login code (10-minute expiry, one use, 5 per number per hour).
 - Voice notes: media is downloaded immediately, converted with ffmpeg to 16 kHz mono WAV, then sent to the audio model; clear fallback messages when ffmpeg or conversion fails. Text/voice notes get proposal cards with Save/Fix/Reject buttons; per-sender fix state tracks what Fix refers to.
 - Photos: the trader sends a JPG/PNG; Alert Guard classifies it, extracts fields and runs code checks, then shows a result card ("warning signs found" / "no warning signs found") with Save/Fix/Reject. Save records an unconfirmed transfer plus a follow-up card with the "I saw it in my bank" button (four buttons can't fit one WhatsApp card); the tap marks it confirmed. Fix on a photo card asks for the photo again. Never "verified".
 
@@ -86,9 +90,9 @@ Shapes: `proposal` is `{ id, shop_id, status, heard, question, created_at, entri
 
 ## 7. Status
 
-Built and tested: the whole backend above plus all 21 routes. `npm test`: 298 pass, 0 fail, 54 suites, on 29 Oct 2026. Manual log (`test-notes.md` sessions 1–3): typed notes, phone web tests, WhatsApp text + voice; fixes landed for price basis, unit column, payment items, stated-remainder and similar-name checks. Web app: all screens, correction UI, demo seeding, landing page with photo slots.
+Built and tested: the whole backend above plus all 23 routes, incl. passwordless login (`dashboard` code → session token, demo public). `npm test`: 320 pass, 0 fail, 61 suites, on 29 Oct 2026. Manual log (`test-notes.md` sessions 1–3): typed notes, phone web tests, WhatsApp text + voice; fixes landed for price basis, unit column, payment items, stated-remainder and similar-name checks. Web app: all screens, correction UI, demo seeding, landing page with photo slots.
 Built but needing a check: web against the real backend without the dev mock (mock still covers profit/expenses/products/customers/correct; `check:build` guards production); second-opinion live accuracy; spoken-note accuracy (hand-tested only); Alert Guard live photo accuracy (mock-tested only); `audio-test.mjs` predates the current audio path; landing `shop-*` photos and the optimizer run (8 of 12 photos present on 29 Oct).
-Not started: offline notes queue (`occurred_at`), notebook photo import, accuracy numbers and red-team report (`/accuracy` is a "coming soon" placeholder).
+Not started: web login screen (backend sessions ready; web still opens shops by name); offline notes queue (`occurred_at`), notebook photo import, accuracy numbers and red-team report (`/accuracy` is a "coming soon" placeholder).
 
 ## 8. Working rules
 
@@ -99,7 +103,7 @@ Not started: offline notes queue (`occurred_at`), notebook photo import, accurac
 
 ## 9. Open questions and known problems
 
-- The server trusts `x-shop-id` and the web app opens test shops by name with no password. Local testing only; remove before anything goes online.
+- Backend sessions are in (code → token, demo public); the web app still opens shops by name with no login screen. Wire the web login before anything goes online.
 - WhatsApp token lifecycle is manual; setup once hit an expired temporary token.
 - A promise resolves kept only on one payment of at least the promised amount; several small payments totalling it still resolve broken.
 - Two warnings can repeat one question in slightly different words on a card (minor).
@@ -136,3 +140,11 @@ POST /correct-last
 POST /photo-checks
 ← { "photoBase64": string, "photoFormat": "png"|"jpg"|"jpeg" }
 → 201 { "proposal": { "id": int, "shop_id": string, "status": "pending", "heard": "(photo)", "question": string|null, "created_at": string, "entries": [], "totals": null, "flags": string[], "notes": string[], "recorded_ids": null, "name_checked": null, "promise": null, "photoCheck": { "photoType": "payment_alert"|"unknown", "fields": { "status": string|null, "date": "YYYY-MM-DD"|null, "amountKobo": int|null, "amountPhrase": string|null, "sender": string|null, "reference": string|null }|null, "warnings": string[], "matchedCustomer": string|null } } }
+
+POST /session
+← { "shop": string, "code": string } (6-digit code from WhatsApp "dashboard"; no headers needed)
+→ 201 { "token": string, "shop_id": string, "expires_at": string } (400 missing shop/code; 401 wrong, used or expired code; 429 past 5 guesses per shop per hour)
+
+DELETE /session
+(headers: Authorization: Bearer <token>)
+→ { "revoked": true } (401 without a live token)

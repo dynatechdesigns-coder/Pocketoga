@@ -8,6 +8,7 @@ import { createMockModelClient } from "./model.mjs";
 import { propose, confirmProposal, fixProposal, rejectProposal, getProposal } from "./voice.mjs";
 import { renderProposalCard } from "./messages.mjs";
 import { createVoiceServer, handleVoiceRequest } from "./server.mjs";
+import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
 
 // Fake fixtures only. No real customers, items, or amounts.
 const SHOP_A = "shop-a";
@@ -67,13 +68,32 @@ const EACH_PART_PAYMENT = {
 function setup(handler) {
   const ledger = new Ledger(":memory:");
   const proposals = new ProposalStore(":memory:");
+  const auths = new AuthStore(":memory:");
   const model = createMockModelClient(handler);
-  return { ledger, proposals, model, deps: { ledger, proposals, model } };
+  return { ledger, proposals, auths, model, deps: { ledger, proposals, auths, model } };
 }
 
-function teardown({ ledger, proposals }) {
+// Test-only login: mint a real session through the real store, same as prod.
+// Cached per shop: uncapped minting would trip the 5-issues-per-hour limit.
+function tokenFor(deps, shop) {
+  deps._testTokens ??= new Map();
+  if (!deps._testTokens.has(shop)) {
+    const issued = deps.auths.issueCode(shop, `test-login-${shop}`, {});
+    const exchanged = deps.auths.exchangeCode(shop, issued.code, {});
+    if (!exchanged.ok) throw new Error(`test login failed: ${exchanged.reason}`);
+    deps._testTokens.set(shop, exchanged.token);
+  }
+  return deps._testTokens.get(shop);
+}
+
+function hasAuth(headers) {
+  return Object.keys(headers).some((k) => k.toLowerCase() === "authorization");
+}
+
+function teardown({ ledger, proposals, auths }) {
   ledger.close();
   proposals.close();
+  auths.close();
 }
 
 describe("voice loop (mock model, no API calls)", () => {
@@ -684,6 +704,9 @@ describe("voice HTTP server", () => {
   async function dispatch(deps, { method, url, shop, body, raw, headers: extraHeaders }) {
     const headers = { ...extraHeaders };
     if (shop) headers["x-shop-id"] = shop;
+    if (shop && shop !== DEMO_SHOP_ID && deps.auths && !hasAuth(headers)) {
+      headers.authorization = `Bearer ${tokenFor(deps, shop)}`;
+    }
     const req = fakeRequest({ method, url, headers, body, raw });
     const res = fakeResponse();
     try {

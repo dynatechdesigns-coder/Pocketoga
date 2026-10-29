@@ -12,6 +12,7 @@ import { createMockModelClient } from "./model.mjs";
 import { effectiveEntries } from "./debts.mjs";
 import { stockLevels } from "./products.mjs";
 import { handleVoiceRequest, handleWebhookOnlyRequest } from "./server.mjs";
+import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
 
 const SHOP_A = "shop-a";
 const SHOP_B = "shop-b";
@@ -54,10 +55,29 @@ function fakeRes() {
   };
 }
 
+// Tests log in transparently: the first request for a shop mints a session
+// through the real issue+exchange path (the login flow itself is tested in
+// auth.test.mjs). Explicit authorization headers always win.
+function tokenFor(deps, shop) {
+  deps._testTokens ??= new Map();
+  if (!deps._testTokens.has(shop)) {
+    const issued = deps.auths.issueCode(shop, `test-login-${shop}`, {});
+    const exchanged = deps.auths.exchangeCode(shop, issued.code, {});
+    if (!exchanged.ok) throw new Error(`test login failed: ${exchanged.reason}`);
+    deps._testTokens.set(shop, exchanged.token);
+  }
+  return deps._testTokens.get(shop);
+}
+
 async function dispatch(deps, opts) {
+  const headers = { ...(opts.headers ?? {}) };
+  const shop = headers["x-shop-id"];
+  if (shop && shop !== DEMO_SHOP_ID && !headers.authorization && !headers.Authorization && deps.auths) {
+    headers.authorization = `Bearer ${tokenFor(deps, shop)}`;
+  }
   const res = fakeRes();
   try {
-    await handleVoiceRequest(fakeReq(opts), res, deps);
+    await handleVoiceRequest(fakeReq({ ...opts, headers }), res, deps);
   } catch (err) {
     res.writeHead(err.status ?? 500);
     res.end(JSON.stringify({ error: err.message ?? "internal error" }));
@@ -73,7 +93,8 @@ async function dispatchOnly(deps, opts) {
 
 function routeCtx() {
   const ctx = setup();
-  return { ...ctx, deps: { ledger: ctx.ledger, promises: ctx.promises } };
+  const auths = new AuthStore(ctx.db);
+  return { ...ctx, auths, deps: { ledger: ctx.ledger, promises: ctx.promises, auths } };
 }
 
 // Full loop for the propose/confirm correction flow: proposals for the
@@ -88,7 +109,8 @@ function flowCtx(modelHandler = null) {
       throw new Error("model should not be called");
     })
   );
-  return { db, ledger, proposals, promises, model, deps: { ledger, proposals, promises, model } };
+  const auths = new AuthStore(db);
+  return { db, ledger, proposals, promises, model, auths, deps: { ledger, proposals, promises, model, auths } };
 }
 
 describe("corrections_log", () => {

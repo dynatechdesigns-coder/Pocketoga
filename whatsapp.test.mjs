@@ -13,6 +13,7 @@ import { WhatsAppStore, drainWhatsAppJobs, parseCommand } from "./whatsapp.mjs";
 import { PhotoCheckStore } from "./photos.mjs";
 import { createMockModelClient } from "./model.mjs";
 import { handleVoiceRequest, handleWebhookOnlyRequest, createWebhookServer } from "./server.mjs";
+import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
 
 // All fixtures are fake: fake numbers, fake secrets, fake shop data. No real
 // network: fetch, ffmpeg and the clock-facing bits are all mocked.
@@ -138,12 +139,14 @@ function setup(modelHandler, opts = {}) {
   const logs = [];
   const execFile = makeExecFile(opts.execImpl ?? writeFakeWav);
   mkdirSync(TMP_BASE, { recursive: true });
+  const auths = new AuthStore(db);
   const deps = {
     ledger,
     proposals,
     promises,
     products,
     secondOpinions,
+    auths,
     model,
     whatsapp,
     fetch,
@@ -153,7 +156,7 @@ function setup(modelHandler, opts = {}) {
     env: ENV,
     nowMs: opts.nowMs ?? null,
   };
-  return { db, ledger, proposals, promises, products, model, whatsapp, fetch, logs, execFile, deps };
+  return { db, ledger, proposals, promises, products, auths, model, whatsapp, fetch, logs, execFile, deps };
 }
 
 async function teardown(ctx) {
@@ -192,7 +195,29 @@ function fakeResponse() {
   return res;
 }
 
+// Test-only login: mint a real session through the real store, same as prod.
+// Cached per shop: uncapped minting would trip the 5-issues-per-hour limit.
+function tokenFor(deps, shop) {
+  deps._testTokens ??= new Map();
+  if (!deps._testTokens.has(shop)) {
+    const issued = deps.auths.issueCode(shop, `test-login-${shop}`, {});
+    const exchanged = deps.auths.exchangeCode(shop, issued.code, {});
+    if (!exchanged.ok) throw new Error(`test login failed: ${exchanged.reason}`);
+    deps._testTokens.set(shop, exchanged.token);
+  }
+  return deps._testTokens.get(shop);
+}
+
+function hasAuth(headers) {
+  return Object.keys(headers).some((k) => k.toLowerCase() === "authorization");
+}
+
 async function dispatch(deps, { method, url, headers = {}, rawBody }) {
+  headers = { ...headers };
+  const shop = headers["x-shop-id"] ?? headers["X-Shop-Id"];
+  if (shop && shop !== DEMO_SHOP_ID && deps.auths && !hasAuth(headers)) {
+    headers.authorization = `Bearer ${tokenFor(deps, shop)}`;
+  }
   const req = fakeRequest({ method, url, headers, rawBody });
   const res = fakeResponse();
   try {
@@ -1153,6 +1178,57 @@ describe("fix last command", () => {
       await postWebhook(ctx, wrap([waText(FROM_A, mid(), "balance Ada")]));
       assert.match(sends(ctx).at(-1).body.text.body, /owes \*₦12,000\*/);
       assert.equal(ctx.ledger.verify(shop).ok, true);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+});
+
+describe("dashboard login command", () => {
+  it("parses dashboard exactly, case-insensitive, punctuation ignored", () => {
+    assert.deepEqual(parseCommand("dashboard"), { name: "dashboard" });
+    assert.deepEqual(parseCommand("  DASHBOARD! "), { name: "dashboard" });
+    assert.equal(parseCommand("dashboards"), null);
+    assert.equal(parseCommand("my dashboard"), null);
+  });
+
+  it("dashboard replies with a code that logs this sender's shop in, model untouched", async () => {
+    const calls = [];
+    const ctx = setup(async (req) => {
+      calls.push(req);
+      return WA_PART;
+    });
+    try {
+      const shop = ctx.whatsapp.getOrCreateShop(FROM_A);
+      assert.equal((await postWebhook(ctx, wrap([waText(FROM_A, mid(), "dashboard")]))).status, 200);
+      assert.equal(calls.length, 0);
+      const sent = sends(ctx);
+      assert.equal(sent.length, 1);
+      const body = sent[0].body.text.body;
+      const code = /Your PocketOga code is \*(\d{6})\*/.exec(body)?.[1];
+      assert.ok(code, `no code in reply: ${body}`);
+      assert.match(body, /expires in 10 minutes/);
+      const out = ctx.auths.exchangeCode(shop, code, {});
+      assert.equal(out.ok, true);
+      assert.equal(ctx.auths.verifyToken(out.token, {}).shopId, shop);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("the sixth dashboard in an hour is limited, and strangers get no code", async () => {
+    const ctx = setup(async () => WA_PART);
+    try {
+      for (let i = 0; i < 5; i++) {
+        await postWebhook(ctx, wrap([waText(FROM_A, mid(), "dashboard")]));
+      }
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "dashboard")]));
+      assert.match(sends(ctx).at(-1).body.text.body, /Too many codes/);
+      assert.equal(ctx.db.prepare("SELECT COUNT(*) AS c FROM login_codes").get().c, 5);
+
+      await postWebhook(ctx, wrap([waText(STRANGER, mid(), "dashboard")]));
+      assert.ok(!/\d{6}/.test(sends(ctx).at(-1).body.text.body));
+      assert.equal(ctx.db.prepare("SELECT COUNT(*) AS c FROM login_codes").get().c, 5);
     } finally {
       await teardown(ctx);
     }

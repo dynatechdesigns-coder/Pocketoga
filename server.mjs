@@ -1,7 +1,8 @@
 // Minimal HTTP API for the voice-to-confirm loop. Node built-ins only.
-// Identity is deliberately small: the caller names its shop with the
-// x-shop-id header, and every proposal-scoped route refuses cross-shop
-// access with 403. Run directly: `node server.mjs` (PORT/LEDGER_DB env).
+// Identity: real shops need a session token (POST /session swaps a
+// WhatsApp code for one) matching the x-shop-id header; cross-shop access
+// is 403. The demo shop ("demo") stays public. The webhook is Meta's,
+// verified by signature. Run directly: `node server.mjs` (PORT/LEDGER_DB env).
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
@@ -15,6 +16,7 @@ import { ProductStore, withStock, toProductJson } from "./products.mjs";
 import { CustomerStore, describeCustomers, normalizePhone } from "./customers.mjs";
 import { PROFIT_PERIODS, profitForPeriod, expensesForPeriod } from "./profit.mjs";
 import { SecondOpinionStore } from "./secondopinion.mjs";
+import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
 import { PhotoCheckStore } from "./photos.mjs";
 import { createModelClient } from "./model.mjs";
 import { propose, confirmProposal, fixProposal, rejectProposal, getProposal, proposeCorrection } from "./voice.mjs";
@@ -113,6 +115,14 @@ async function handleWebhookRoute(req, res, url, deps) {
   return send(res, 404, { error: "not found" });
 }
 
+// "Bearer <token>" (scheme case-insensitive) to the token, else null.
+function bearerToken(header) {
+  if (typeof header !== "string") return null;
+  const match = /^Bearer (.+)$/i.exec(header.trim());
+  const token = match ? match[1].trim() : "";
+  return token || null;
+}
+
 // Each entry gains correctedById (the latest correcting entry's id in
 // chain order, or null) and correctionReason (the logged reason, or null
 // when uncorrected or corrected before reasons existed).
@@ -148,11 +158,50 @@ export async function handleVoiceRequest(req, res, deps) {
   if (parts.length >= 1 && parts[0] === "webhook") {
     return handleWebhookRoute(req, res, url, deps);
   }
+
+  // Passwordless login: exchange a WhatsApp code for a session token, or
+  // revoke the caller's token. No shop header: the code names the shop and
+  // the token carries it.
+  if (parts.length === 1 && parts[0] === "session") {
+    if (!deps.auths) throw Object.assign(new Error("auth store is required"), { status: 500 });
+    if (req.method === "POST") {
+      const body = await readBody(req);
+      const fields = body && typeof body === "object" ? body : {};
+      if (typeof fields.shop !== "string" || !fields.shop.trim() || typeof fields.code !== "string" || !fields.code.trim()) {
+        return send(res, 400, { error: "shop and code are required" });
+      }
+      const out = deps.auths.exchangeCode(fields.shop.trim(), fields.code, {});
+      if (!out.ok) {
+        if (out.reason === "rate_limited") return send(res, 429, { error: "too many attempts — try again in an hour" });
+        if (out.reason === "used") return send(res, 401, { error: "that code was already used" });
+        if (out.reason === "expired") return send(res, 401, { error: "that code expired — send dashboard for a new one" });
+        return send(res, 401, { error: "wrong code — check and try again" });
+      }
+      return send(res, 201, { token: out.token, shop_id: out.shopId, expires_at: out.expiresAt });
+    }
+    if (req.method === "DELETE") {
+      const session = deps.auths.verifyToken(bearerToken(req.headers.authorization), {});
+      if (!session) return send(res, 401, { error: "login required" });
+      deps.auths.revokeToken(bearerToken(req.headers.authorization), {});
+      return send(res, 200, { revoked: true });
+    }
+    return send(res, 404, { error: "not found" });
+  }
+
   const shopHeader = req.headers["x-shop-id"];
   if (typeof shopHeader !== "string" || !shopHeader.trim()) {
     return send(res, 400, { error: "x-shop-id header is required" });
   }
   const shopId = shopHeader.trim();
+
+  // Auth: the demo shop is public; every other shop needs a session token
+  // for exactly this shop. A missing auth store fails closed, never open.
+  if (shopId !== DEMO_SHOP_ID) {
+    if (!deps.auths) throw Object.assign(new Error("auth store is required"), { status: 500 });
+    const session = deps.auths.verifyToken(bearerToken(req.headers.authorization), {});
+    if (!session) return send(res, 401, { error: "login required" });
+    if (session.shopId !== shopId) return send(res, 403, { error: "this login is for another shop" });
+  }
 
   if (req.method === "POST" && parts.length === 1 && parts[0] === "propose") {
     const body = await readBody(req);
@@ -398,9 +447,9 @@ export async function handleVoiceRequest(req, res, deps) {
   return send(res, 404, { error: "not found" });
 }
 
-export function createVoiceServer({ ledger, proposals, promises, products, customers, secondOpinions, photoChecks, model }) {
+export function createVoiceServer({ ledger, proposals, promises, products, customers, secondOpinions, photoChecks, auths, model }) {
   return createServer((req, res) => {
-    handleVoiceRequest(req, res, { ledger, proposals, promises, products, customers, secondOpinions, photoChecks, model }).catch((err) => {
+    handleVoiceRequest(req, res, { ledger, proposals, promises, products, customers, secondOpinions, photoChecks, auths, model }).catch((err) => {
       if (!res.headersSent) send(res, err.status ?? 500, { error: err.message ?? "internal error" });
     });
   });
@@ -417,9 +466,9 @@ export async function handleWebhookOnlyRequest(req, res, deps) {
   return handleWebhookRoute(req, res, url, deps);
 }
 
-export function createWebhookServer({ ledger, proposals, promises, products, customers, secondOpinions, photoChecks, model }) {
+export function createWebhookServer({ ledger, proposals, promises, products, customers, secondOpinions, photoChecks, auths, model }) {
   return createServer((req, res) => {
-    handleWebhookOnlyRequest(req, res, { ledger, proposals, promises, products, customers, secondOpinions, photoChecks, model }).catch((err) => {
+    handleWebhookOnlyRequest(req, res, { ledger, proposals, promises, products, customers, secondOpinions, photoChecks, auths, model }).catch((err) => {
       if (!res.headersSent) send(res, err.status ?? 500, { error: err.message ?? "internal error" });
     });
   });
@@ -441,6 +490,7 @@ export function buildDeps(env = process.env) {
     customers: new CustomerStore(db),
     secondOpinions: new SecondOpinionStore(db),
     photoChecks: new PhotoCheckStore(db),
+    auths: new AuthStore(db),
     model: createModelClient({ apiKey: env.META_API_KEY ?? null }),
     env,
   };

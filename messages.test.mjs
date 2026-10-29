@@ -26,6 +26,8 @@ import {
   BANK_NOTHING,
   BANK_ALREADY,
   BANK_DONE,
+  DASHBOARD_LIMIT,
+  dashboardCode,
   alreadyConfirmedFix,
   friendlyErrorText,
   escapeMd,
@@ -498,5 +500,18 @@ describe("message rules", () => {
       assert.ok(!/[❓❔]/.test(text), `old emoji in: ${text.slice(0, 120)}`);
       assert.ok(!/⚠(?!\uFE0F)/.test(text), `old emoji in: ${text.slice(0, 120)}`);
     }
+  });
+});
+
+describe("dashboard login card", () => {
+  it("dashboardCode names the code and the 10-minute expiry", () => {
+    assert.equal(
+      dashboardCode("123456"),
+      "Your PocketOga code is *123456*. It expires in 10 minutes — enter it on the dashboard to log in."
+    );
+  });
+
+  it("DASHBOARD_LIMIT asks the trader to wait an hour", () => {
+    assert.equal(DASHBOARD_LIMIT, "Too many codes — try again in an hour.");
   });
 });

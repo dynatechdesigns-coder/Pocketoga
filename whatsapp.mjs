@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { propose, confirmProposal, fixProposal, rejectProposal, proposeCorrectionFromText } from "./voice.mjs";
 import { PhotoCheckStore, proposePhotoCheck } from "./photos.mjs";
+import { AuthStore } from "./auth.mjs";
 import { customerDebts, chaseForShop, lagosDay } from "./debts.mjs";
 import { PromiseStore, refreshPromises, keptRate } from "./promises.mjs";
 import { moneyLeakReport } from "./leak.mjs";
@@ -39,6 +40,8 @@ import {
   BANK_NOTHING,
   BANK_ALREADY,
   BANK_DONE,
+  DASHBOARD_LIMIT,
+  dashboardCode,
   REJECTED,
   MAX_BODY_CHARS,
   alreadyConfirmedFix,
@@ -198,6 +201,13 @@ export function getPhotoCheckStore(deps) {
   return deps._photoCheckStore;
 }
 
+export function getAuthStore(deps) {
+  if (deps.auths) return deps.auths;
+  if (!deps.ledger) return null;
+  deps._authStore ??= new AuthStore(deps.ledger.db);
+  return deps._authStore;
+}
+
 export function buildWhatsAppContext(deps, env = deps.env ?? process.env) {
   const config = readWhatsAppConfig(env);
   const sink = deps.log ?? console.log;
@@ -209,6 +219,7 @@ export function buildWhatsAppContext(deps, env = deps.env ?? process.env) {
     products: deps.products ?? null,
     secondOpinions: deps.secondOpinions ?? null,
     photoChecks: getPhotoCheckStore(deps),
+    auths: getAuthStore(deps),
     model: deps.model,
     nowMs: deps.nowMs ?? Date.now(),
     config,
@@ -225,10 +236,10 @@ function normCustomerName(name) {
 
 // Exact debt, stock and profit commands, matched before any model call:
 // "who owes", "chase", "report", "stock", "profit", "profit week",
-// "profit month", "balance <name>" and "fix last" (case-insensitive,
-// trailing punctuation ignored). "fix last <text>" carries the corrected
-// note; bare "fix last" gets usage help. Anything else returns null and
-// flows to the model as a note.
+// "profit month", "balance <name>", "fix last" and "dashboard"
+// (case-insensitive, trailing punctuation ignored). "fix last <text>"
+// carries the corrected note; bare "fix last" gets usage help. Anything
+// else returns null and flows to the model as a note.
 export function parseCommand(text) {
   const clean = String(text ?? "").trim().replace(/\s+/g, " ").replace(/[?!.\s]+$/, "");
   if (!clean) return null;
@@ -241,6 +252,7 @@ export function parseCommand(text) {
   if (lower === "profit week") return { name: "profit", period: "week" };
   if (lower === "profit month") return { name: "profit", period: "month" };
   if (lower === "fix last") return { name: "fixlast" };
+  if (lower === "dashboard") return { name: "dashboard" };
   const m = /^balance\s+(.+)$/i.exec(clean);
   if (m && m[1].trim()) return { name: "balance", arg: m[1].trim() };
   const fl = /^fix last\s+(.+)$/i.exec(clean);
@@ -313,6 +325,10 @@ async function handleDebtCommand(ctx, sender, shopId, cmd) {
     await sendText(ctx, sender, renderProfit(profitForPeriod(rows, cmd.period, { now: ctx.nowMs })));
     return;
   }
+  if (cmd.name === "dashboard") {
+    await sendLoginCode(ctx, sender, shopId);
+    return;
+  }
   refreshPromises(ctx.promises, ctx.ledger, shopId, { now: ctx.nowMs });
   const promises = ctx.promises ? ctx.promises.listByShop(shopId) : [];
   if (cmd.name === "chase") {
@@ -341,6 +357,22 @@ async function handleDebtCommand(ctx, sender, shopId, cmd) {
     debt = { customer: prom.customer, owedKobo: 0, oldestUnpaidAgeDays: null };
   }
   await sendText(ctx, sender, renderBalance(debt, keptRate(promises, cmd.arg)));
+}
+
+// "dashboard": issues a one-time login code for this sender's shop. The
+// reply carries the code; nothing here logs it (maskForLog cannot redact
+// short codes, so they never reach a log line).
+async function sendLoginCode(ctx, sender, shopId) {
+  if (!ctx.auths) {
+    await sendText(ctx, sender, GENERIC_ERROR);
+    return;
+  }
+  const out = ctx.auths.issueCode(shopId, sender, { now: ctx.nowMs });
+  if (out.limited) {
+    await sendText(ctx, sender, DASHBOARD_LIMIT);
+    return;
+  }
+  await sendText(ctx, sender, dashboardCode(out.code));
 }
 
 // "fix last <text>": the model reads the corrected note and the trader gets

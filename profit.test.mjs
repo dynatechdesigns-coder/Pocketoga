@@ -13,6 +13,7 @@ import { customerDebts } from "./debts.mjs";
 import { renderProposalCard, renderSavedReply, renderProfit, MAX_BODY_CHARS } from "./messages.mjs";
 import { PROFIT_PERIODS, periodRange, profitForPeriod, expensesForPeriod, lagosHour } from "./profit.mjs";
 import { handleVoiceRequest, handleWebhookOnlyRequest } from "./server.mjs";
+import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
 
 const SHOP = "shop-a";
 const OTHER_SHOP = "shop-b";
@@ -26,6 +27,7 @@ function setup() {
     ledger: new Ledger(db),
     proposals: new ProposalStore(db),
     products: new ProductStore(db),
+    auths: new AuthStore(db),
   };
 }
 
@@ -62,10 +64,29 @@ function fakeRes() {
   };
 }
 
+// Tests log in transparently: the first request for a shop mints a session
+// through the real issue+exchange path (the login flow itself is tested in
+// auth.test.mjs). Explicit authorization headers always win.
+function tokenFor(deps, shop) {
+  deps._testTokens ??= new Map();
+  if (!deps._testTokens.has(shop)) {
+    const issued = deps.auths.issueCode(shop, `test-login-${shop}`, {});
+    const exchanged = deps.auths.exchangeCode(shop, issued.code, {});
+    if (!exchanged.ok) throw new Error(`test login failed: ${exchanged.reason}`);
+    deps._testTokens.set(shop, exchanged.token);
+  }
+  return deps._testTokens.get(shop);
+}
+
 async function dispatch(deps, opts) {
+  const headers = { ...(opts.headers ?? {}) };
+  const shop = headers["x-shop-id"];
+  if (shop && shop !== DEMO_SHOP_ID && !headers.authorization && !headers.Authorization && deps.auths) {
+    headers.authorization = `Bearer ${tokenFor(deps, shop)}`;
+  }
   const res = fakeRes();
   try {
-    await handleVoiceRequest(fakeReq(opts), res, deps);
+    await handleVoiceRequest(fakeReq({ ...opts, headers }), res, deps);
   } catch (err) {
     res.writeHead(err.status ?? 500);
     res.end(JSON.stringify({ error: err.message ?? "internal error" }));
@@ -690,7 +711,7 @@ describe("profit and expenses routes", () => {
     const ctx = setup();
     try {
       seedToday(ctx);
-      const deps = { ledger: ctx.ledger };
+      const deps = { ledger: ctx.ledger, auths: ctx.auths };
       const out = await dispatch(deps, { url: "/profit?period=today", headers: { "x-shop-id": SHOP } });
       assert.equal(out.status, 200);
       assert.deepEqual(
@@ -723,7 +744,7 @@ describe("profit and expenses routes", () => {
     const ctx = setup();
     try {
       seedToday(ctx);
-      const deps = { ledger: ctx.ledger };
+      const deps = { ledger: ctx.ledger, auths: ctx.auths };
       const bare = await dispatch(deps, { url: "/profit", headers: { "x-shop-id": SHOP } });
       assert.equal(bare.status, 200);
       assert.equal(bare.json.period, "today");
@@ -739,7 +760,7 @@ describe("profit and expenses routes", () => {
     const ctx = setup();
     try {
       seedToday(ctx);
-      const deps = { ledger: ctx.ledger };
+      const deps = { ledger: ctx.ledger, auths: ctx.auths };
       const out = await dispatch(deps, { url: "/expenses?period=today", headers: { "x-shop-id": SHOP } });
       assert.equal(out.status, 200);
       assert.deepEqual(Object.keys(out.json).sort(), ["byCategory", "expenses"]);
@@ -762,7 +783,7 @@ describe("profit and expenses routes", () => {
   it("the webhook port 404s both routes", async () => {
     const ctx = setup();
     try {
-      const deps = { ledger: ctx.ledger };
+      const deps = { ledger: ctx.ledger, auths: ctx.auths };
       const headers = { "x-shop-id": SHOP };
       assert.equal((await dispatchOnly(deps, { url: "/profit?period=today", headers })).status, 404);
       assert.equal((await dispatchOnly(deps, { url: "/expenses?period=today", headers })).status, 404);

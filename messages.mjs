@@ -51,6 +51,10 @@ export const FIX_PHOTO_AGAIN = "I don't keep your photo — send it again to cha
 export const BANK_NOTHING = "There's no transfer to mark — save a payment alert first.";
 export const BANK_ALREADY = "Already marked as seen in your bank.";
 export const BANK_DONE = "Done — marked as seen in your bank.";
+export const DASHBOARD_LIMIT = "Too many codes — try again in an hour.";
+export function dashboardCode(code) {
+  return `Your PocketOga code is *${code}*. It expires in 10 minutes — enter it on the dashboard to log in.`;
+}
 
 export const alreadyConfirmedFix = (proposalId) =>
   `Proposal ${proposalId} is already confirmed; send a new note to correct it.`;
