@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { propose, confirmProposal, fixProposal, rejectProposal } from "./voice.mjs";
+import { propose, confirmProposal, fixProposal, rejectProposal, proposeCorrectionFromText } from "./voice.mjs";
 import { customerDebts, chaseForShop, lagosDay } from "./debts.mjs";
 import { PromiseStore, refreshPromises, keptRate } from "./promises.mjs";
 import { moneyLeakReport } from "./leak.mjs";
@@ -30,6 +30,9 @@ import {
   HEAR_FAILED,
   BAD_AUDIO_JSON,
   CORRECTION_AS_TEXT,
+  FIX_LAST_HELP,
+  FIX_LAST_NO_ENTRIES,
+  FIX_LAST_ALREADY_FIXED,
   REJECTED,
   MAX_BODY_CHARS,
   alreadyConfirmedFix,
@@ -206,9 +209,10 @@ function normCustomerName(name) {
 
 // Exact debt, stock and profit commands, matched before any model call:
 // "who owes", "chase", "report", "stock", "profit", "profit week",
-// "profit month" and "balance <name>" (case-insensitive, trailing
-// punctuation ignored). Anything else returns null and flows to the model
-// as a note.
+// "profit month", "balance <name>" and "fix last" (case-insensitive,
+// trailing punctuation ignored). "fix last <text>" carries the corrected
+// note; bare "fix last" gets usage help. Anything else returns null and
+// flows to the model as a note.
 export function parseCommand(text) {
   const clean = String(text ?? "").trim().replace(/\s+/g, " ").replace(/[?!.\s]+$/, "");
   if (!clean) return null;
@@ -220,8 +224,11 @@ export function parseCommand(text) {
   if (lower === "profit") return { name: "profit", period: "today" };
   if (lower === "profit week") return { name: "profit", period: "week" };
   if (lower === "profit month") return { name: "profit", period: "month" };
+  if (lower === "fix last") return { name: "fixlast" };
   const m = /^balance\s+(.+)$/i.exec(clean);
   if (m && m[1].trim()) return { name: "balance", arg: m[1].trim() };
+  const fl = /^fix last\s+(.+)$/i.exec(clean);
+  if (fl && fl[1].trim()) return { name: "fixlast", arg: fl[1].trim() };
   return null;
 }
 
@@ -317,6 +324,37 @@ async function handleDebtCommand(ctx, sender, shopId, cmd) {
     debt = { customer: prom.customer, owedKobo: 0, oldestUnpaidAgeDays: null };
   }
   await sendText(ctx, sender, renderBalance(debt, keptRate(promises, cmd.arg)));
+}
+
+// "fix last <text>": the model reads the corrected note and the trader gets
+// the usual proposal card with Save/Fix/Reject. Bare "fix last" explains
+// the usage. Unlike the debt commands above, this one calls the model.
+async function handleFixLast(ctx, sender, shopId, cmd) {
+  if (!cmd.arg) {
+    await sendText(ctx, sender, FIX_LAST_HELP);
+    return;
+  }
+  let proposal;
+  try {
+    proposal = await proposeCorrectionFromText(shopId, null, cmd.arg, {
+      proposals: ctx.proposals,
+      model: ctx.model,
+      ledger: ctx.ledger,
+    });
+  } catch (err) {
+    // With no entryId only two target failures are possible: an empty shop
+    // (404) or a latest entry that was already corrected (409).
+    if (err && err.status === 404) {
+      await sendText(ctx, sender, FIX_LAST_NO_ENTRIES);
+      return;
+    }
+    if (err && err.status === 409) {
+      await sendText(ctx, sender, FIX_LAST_ALREADY_FIXED);
+      return;
+    }
+    throw err;
+  }
+  await sendCard(ctx, sender, proposal, shopId);
 }
 
 // --- Media -----------------------------------------------------------------
@@ -519,8 +557,14 @@ async function handleIncomingMessage(message, ctx) {
     return;
   }
   // Exact debt commands run before any model call and never touch the model.
+  // "fix last" is matched here too but runs separately: it needs the model
+  // to read the corrected note.
   if (message?.type === "text") {
     const cmd = parseCommand(message.text?.body ?? "");
+    if (cmd && cmd.name === "fixlast") {
+      await replyFriendly(ctx, sender, () => handleFixLast(ctx, sender, shopId, cmd));
+      return;
+    }
     if (cmd) {
       await replyFriendly(ctx, sender, () => handleDebtCommand(ctx, sender, shopId, cmd));
       return;

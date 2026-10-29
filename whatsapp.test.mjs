@@ -9,7 +9,7 @@ import { ProposalStore } from "./proposals.mjs";
 import { PromiseStore } from "./promises.mjs";
 import { ProductStore } from "./products.mjs";
 import { SecondOpinionStore } from "./secondopinion.mjs";
-import { WhatsAppStore, drainWhatsAppJobs } from "./whatsapp.mjs";
+import { WhatsAppStore, drainWhatsAppJobs, parseCommand } from "./whatsapp.mjs";
 import { createMockModelClient } from "./model.mjs";
 import { handleVoiceRequest, handleWebhookOnlyRequest, createWebhookServer } from "./server.mjs";
 
@@ -1009,6 +1009,116 @@ describe("webhook-only listener (WEBHOOK_PORT)", () => {
       assert.equal(bad.status, 403);
       await drainWhatsAppJobs();
       assert.equal(proposalCount(ctx), 1);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+});
+
+describe("fix last command", () => {
+  const WA_FIX = {
+    heard: "Ada buy rice, na 12k.",
+    entries: [
+      { type: "sale", customer: "Ada", item: null, quantity: null, unit: null, amountNaira: 12000, amountPhrase: "12k", priceBasis: "total" },
+    ],
+    totals: null,
+    question: null,
+  };
+
+  it("parses fix last with and without text, nothing else", () => {
+    assert.deepEqual(parseCommand("fix last"), { name: "fixlast" });
+    assert.deepEqual(parseCommand("  FIX LAST! "), { name: "fixlast" });
+    assert.deepEqual(parseCommand("fix last Ada paid 12k"), { name: "fixlast", arg: "Ada paid 12k" });
+    assert.equal(parseCommand("fix"), null);
+    assert.equal(parseCommand("fix lastly"), null);
+  });
+
+  it("fix last with text proposes a correction card with Save, Fix and Reject", async () => {
+    const ctx = setup(async () => WA_FIX);
+    try {
+      const shop = ctx.whatsapp.getOrCreateShop(FROM_A);
+      const sale = ctx.ledger.append({ shopId: shop, type: "sale", amountKobo: 1500000, customer: "Ada" });
+      assert.equal((await postWebhook(ctx, wrap([waText(FROM_A, mid(), "fix last Ada buy rice, na 12k")]))).status, 200);
+      const sent = sends(ctx);
+      assert.equal(sent.length, 1);
+      assert.equal(sent[0].body.type, "interactive");
+      const card = sent[0].body.interactive;
+      assert.match(card.body.text, /Fixes entry #\d+/);
+      assert.match(card.body.text, /₦12,000/);
+      assert.deepEqual(
+        card.action.buttons.map((b) => b.reply.title),
+        ["Save", "Fix", "Reject"]
+      );
+      const id = ctx.proposals.listByShop(shop)[0].id;
+      assert.deepEqual(
+        card.action.buttons.map((b) => b.reply.id),
+        [`confirm:${id}`, `fix:${id}`, `reject:${id}`]
+      );
+      assert.equal(ctx.ledger.list(shop).length, 1);
+      assert.equal(JSON.parse(ctx.proposals.listByShop(shop)[0].entries_json).correctionOf, sale.id);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("bare fix last explains the usage and proposes nothing", async () => {
+    const ctx = setup(async () => WA_FIX);
+    try {
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "fix last")]));
+      assert.equal(sends(ctx).length, 1);
+      assert.match(sends(ctx)[0].body.text.body, /fix last followed by/);
+      assert.equal(proposalCount(ctx), 0);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("fix last with no entries answers plainly", async () => {
+    const ctx = setup(async () => WA_FIX);
+    try {
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "fix last Ada paid 1k")]));
+      assert.match(sends(ctx)[0].body.text.body, /no entries yet/);
+      assert.equal(proposalCount(ctx), 0);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("a two-entry reading is refused one at a time", async () => {
+    const ctx = setup(async () => WA_PART);
+    try {
+      const shop = ctx.whatsapp.getOrCreateShop(FROM_A);
+      ctx.ledger.append({ shopId: shop, type: "sale", amountKobo: 1500000, customer: "Ada" });
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "fix last Ada buy rice 2 bags, na 15k. She pay 10k")]));
+      assert.match(sends(ctx)[0].body.text.body, /one entry at a time/);
+      assert.equal(proposalCount(ctx), 0);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("Save records the correction once; balance shows the corrected values", async () => {
+    const ctx = setup(async () => WA_FIX);
+    try {
+      const shop = ctx.whatsapp.getOrCreateShop(FROM_A);
+      const sale = ctx.ledger.append({ shopId: shop, type: "sale", amountKobo: 1500000, customer: "Ada", item: "rice", quantity: 2, unit: "bag" });
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "fix last Ada buy rice, na 12k")]));
+      const id = ctx.proposals.listByShop(shop)[0].id;
+      await postWebhook(ctx, wrap([waButton(FROM_A, mid(), `confirm:${id}`)]));
+      const rows = ctx.ledger.list(shop);
+      assert.equal(rows.length, 2);
+      const created = rows.find((r) => r.type === "correction");
+      assert.equal(created.corrects_id, sale.id);
+      assert.deepEqual([created.amount_kobo, created.item, created.quantity, created.unit], [1200000, "rice", 2, "bag"]);
+      assert.match(sends(ctx).at(-1).body.text.body, /✅ \*Saved\*/);
+
+      await postWebhook(ctx, wrap([waButton(FROM_A, mid(), `confirm:${id}`)]));
+      assert.equal(ctx.ledger.list(shop).length, 2);
+      assert.match(sends(ctx).at(-1).body.text.body, /Already saved/);
+
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "balance Ada")]));
+      assert.match(sends(ctx).at(-1).body.text.body, /owes \*₦12,000\*/);
+      assert.equal(ctx.ledger.verify(shop).ok, true);
     } finally {
       await teardown(ctx);
     }

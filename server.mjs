@@ -16,7 +16,7 @@ import { CustomerStore, describeCustomers, normalizePhone } from "./customers.mj
 import { PROFIT_PERIODS, profitForPeriod, expensesForPeriod } from "./profit.mjs";
 import { SecondOpinionStore } from "./secondopinion.mjs";
 import { createModelClient } from "./model.mjs";
-import { propose, confirmProposal, fixProposal, rejectProposal, getProposal } from "./voice.mjs";
+import { propose, confirmProposal, fixProposal, rejectProposal, getProposal, proposeCorrection } from "./voice.mjs";
 import {
   verifyWhatsAppSignature,
   verifyWebhookSubscription,
@@ -238,6 +238,26 @@ export async function handleVoiceRequest(req, res, deps) {
       throw err;
     }
     return send(res, 200, { entry, verify: deps.ledger.verify(shopId) });
+  }
+
+  // Proposes a correction of the shop's latest entry. Nothing is recorded:
+  // the trader confirms the proposal as usual (POST /confirm/:id). entryId
+  // is optional and must name the latest entry when given; the target is
+  // revalidated at confirm time. Omitted values inherit the original;
+  // explicit null clears item, quantity and unit.
+  if (req.method === "POST" && parts.length === 1 && parts[0] === "correct-last") {
+    const body = await readBody(req);
+    const fields = body && typeof body === "object" ? body : {};
+    if (fields.entryId !== undefined && fields.entryId !== null && (!Number.isInteger(fields.entryId) || fields.entryId <= 0)) {
+      return send(res, 400, { error: "entryId must be a positive integer" });
+    }
+    const { amountKobo, customer, item, quantity, unit, reason } = fields;
+    const proposal = proposeCorrection(shopId, fields.entryId ?? null, { amountKobo, customer, item, quantity, unit }, {
+      proposals: deps.proposals,
+      ledger: deps.ledger,
+      reason,
+    });
+    return send(res, 201, { proposal });
   }
 
   // Read-only debt views for the caller's own shop: what the WhatsApp debt

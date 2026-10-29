@@ -18,6 +18,9 @@ import {
   HEAR_FAILED,
   BAD_AUDIO_JSON,
   CORRECTION_AS_TEXT,
+  FIX_LAST_HELP,
+  FIX_LAST_NO_ENTRIES,
+  FIX_LAST_ALREADY_FIXED,
   alreadyConfirmedFix,
   friendlyErrorText,
   escapeMd,
@@ -108,6 +111,31 @@ describe("message goldens (fake data)", () => {
       card.text,
       `🛒 *Ada*\n\n2 bags of rice: *₦15,000*\n💵 Paid: *₦10,000*\n\n⚖️ Ada owes *₦20,000* after saving\n\n_"Ada buy rice 2 bags, na 15k. She pay 10k, remain 5k."_`
     );
+  });
+
+  it("correction card names the entry it fixes; normal cards are untouched", () => {
+    const base = {
+      heard: "make am 12k",
+      entries: [saleEntry({ amountNaira: 12000, amountPhrase: "12k" })],
+      totals: null,
+      question: null,
+    };
+    const p = proposal(30, base);
+    p.correctionOf = 7;
+    const card = renderProposalCard(p, { existing: [], shopId: SHOP });
+    assert.ok(card.text.startsWith("Fixes entry #7\n\n"), card.text);
+    assert.deepEqual(
+      card.buttons.map((b) => b.reply.id),
+      ["confirm:30", "fix:30", "reject:30"]
+    );
+
+    const blocked = proposal(31, { ...base, question: "is that right?" });
+    blocked.correctionOf = 7;
+    const blockedText = renderProposalCard(blocked).text;
+    assert.ok(blockedText.includes("⚠️ *Check this one*\n\nFixes entry #7\n\n"), blockedText);
+
+    const plain = renderProposalCard(proposal(32, base), { existing: [], shopId: SHOP });
+    assert.ok(!plain.text.includes("Fixes entry"), plain.text);
   });
 
   it("needs-checking card shows arithmetic then the flag once, no Save", () => {
@@ -361,7 +389,7 @@ describe("message rules", () => {
         existing: [],
       })
     );
-    for (const line of [REJECTED, FIX_ASK, ALREADY_SAVED, NOT_REGISTERED, UNSUPPORTED, EXPIRED_PROPOSAL, GENERIC_ERROR, UNKNOWN_BUTTON, PROPOSAL_NOT_FOUND, OTHER_SHOP, FFMPEG_MISSING, AUDIO_FAILED, HEAR_FAILED, BAD_AUDIO_JSON, CORRECTION_AS_TEXT]) {
+    for (const line of [REJECTED, FIX_ASK, ALREADY_SAVED, NOT_REGISTERED, UNSUPPORTED, EXPIRED_PROPOSAL, GENERIC_ERROR, UNKNOWN_BUTTON, PROPOSAL_NOT_FOUND, OTHER_SHOP, FFMPEG_MISSING, AUDIO_FAILED, HEAR_FAILED, BAD_AUDIO_JSON, CORRECTION_AS_TEXT, FIX_LAST_HELP, FIX_LAST_NO_ENTRIES, FIX_LAST_ALREADY_FIXED]) {
       bodies.push(line);
     }
     for (const body of bodies) assert.ok(body.length <= MAX_BODY_CHARS, `over limit (${body.length}): ${body.slice(0, 80)}`);
@@ -391,6 +419,7 @@ describe("message rules", () => {
         }),
         REJECTED, FIX_ASK, ALREADY_SAVED, NOT_REGISTERED, UNSUPPORTED, EXPIRED_PROPOSAL,
         GENERIC_ERROR, UNKNOWN_BUTTON, PROPOSAL_NOT_FOUND, OTHER_SHOP,
+        FIX_LAST_HELP, FIX_LAST_NO_ENTRIES, FIX_LAST_ALREADY_FIXED,
       ];
       for (const body of bodies) {
         assert.ok(!/\d{7,}/.test(body), `digit run in: ${body.slice(0, 120)}`);

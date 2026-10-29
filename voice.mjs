@@ -52,6 +52,8 @@ export function toProposal(row) {
     recorded_ids: row.recorded_ids ? JSON.parse(row.recorded_ids) : null,
     name_checked: row.name_checked ? JSON.parse(row.name_checked) : null,
     promise: env.promise ?? null,
+    correctionOf: env.correctionOf ?? null,
+    correctionReason: env.correctionReason ?? null,
   };
 }
 
@@ -608,6 +610,164 @@ export async function propose(
   return toProposal(row);
 }
 
+// --- Correct-last-entry flow -------------------------------------------------
+//
+// A correction of the shop's latest entry, proposed first and recorded only
+// on confirm — the same rule as notes. The proposal carries exactly one
+// entry (the corrected values, in the original's type) plus correctionOf /
+// correctionReason; confirm appends a type "correction" row and never edits.
+
+function latestEntry(ledger, shopId) {
+  let best = null;
+  for (const r of ledger.list(shopId)) {
+    if (!best || r.seq > best.seq || (r.seq === best.seq && r.id > best.id)) best = r;
+  }
+  return best;
+}
+
+function isAlreadyCorrected(ledger, shopId, entryId) {
+  return ledger.list(shopId).some((r) => r.corrects_id === entryId);
+}
+
+// Resolves and validates a correction target. entryId null/undefined means
+// the shop's latest. Throws 404 (missing entry / empty shop), 403 (another
+// shop), 409 (already corrected, or not the latest).
+export function resolveCorrectionTarget(ledger, shopId, entryId) {
+  if (!ledger) throw new Error("resolveCorrectionTarget needs a ledger");
+  if (entryId === null || entryId === undefined) {
+    const latest = latestEntry(ledger, shopId);
+    if (!latest) throw voiceError(404, `shop ${shopId} has no entries to correct`);
+    if (isAlreadyCorrected(ledger, shopId, latest.id)) {
+      throw voiceError(409, `entry ${latest.id} was already corrected`);
+    }
+    return latest;
+  }
+  if (!Number.isInteger(entryId) || entryId <= 0) throw voiceError(400, `bad entry id: ${String(entryId)}`);
+  const row = ledger.get(entryId);
+  if (!row) throw voiceError(404, `entry ${entryId} not found`);
+  if (row.shop_id !== shopId) throw voiceError(403, `entry ${entryId} belongs to another shop`);
+  if (isAlreadyCorrected(ledger, shopId, row.id)) throw voiceError(409, `entry ${entryId} was already corrected`);
+  const latest = latestEntry(ledger, shopId);
+  if (!latest || latest.id !== row.id) throw voiceError(409, `entry ${entryId} is not the shop's latest entry`);
+  return row;
+}
+
+// Trader-supplied corrected values, same rules as the immediate correct
+// route: whole non-negative kobo, non-empty text, positive quantities.
+// Undefined inherits the original; explicit null clears item/quantity/unit.
+function checkCorrectionValues(values) {
+  const v = values && typeof values === "object" ? values : {};
+  const { amountKobo, customer, item, quantity, unit } = v;
+  if (amountKobo !== undefined && (!Number.isInteger(amountKobo) || amountKobo < 0)) {
+    throw voiceError(400, "amountKobo must be a non-negative integer (kobo)");
+  }
+  if (customer !== undefined && customer !== null && (typeof customer !== "string" || customer.length === 0)) {
+    throw voiceError(400, "customer must be text");
+  }
+  if (item !== undefined && item !== null && (typeof item !== "string" || item.length === 0)) {
+    throw voiceError(400, "item must be text");
+  }
+  if (quantity !== undefined && quantity !== null && (!Number.isInteger(quantity) || quantity <= 0)) {
+    throw voiceError(400, "quantity must be a positive integer");
+  }
+  if (unit !== undefined && unit !== null && (typeof unit !== "string" || unit.trim().length === 0)) {
+    throw voiceError(400, "unit must be text");
+  }
+  return { amountKobo, customer, item, quantity, unit };
+}
+
+function checkCorrectionReason(reason) {
+  const clean = typeof reason === "string" ? reason.trim() : "";
+  if (!clean) throw voiceError(400, "correction reason is required");
+  return clean;
+}
+
+function correctionEnvelope(entry, target, reason, { flags = [], question = null, notes = [] } = {}) {
+  return {
+    version: 1,
+    entries: [entry],
+    totals: null,
+    flags,
+    notes: [`corrects entry ${target.id}`, ...notes],
+    promise: null,
+    correctionOf: target.id,
+    correctionReason: reason,
+  };
+}
+
+// Proposes a correction with explicit values (the /correct-last route).
+// Nothing is recorded; the trader confirms the proposal as usual.
+export function proposeCorrection(shopId, entryId, values, { proposals, ledger, reason, heard = null }) {
+  if (!proposals || !ledger) throw new Error("proposeCorrection needs { proposals, ledger }");
+  if (!shopId || typeof shopId !== "string") throw voiceError(400, "shopId is required");
+  const target = resolveCorrectionTarget(ledger, shopId, entryId);
+  const cleanReason = checkCorrectionReason(reason);
+  const v = checkCorrectionValues(values);
+  const amountKobo = v.amountKobo ?? target.amount_kobo;
+  const entry = {
+    type: target.type,
+    customer: v.customer ?? target.customer,
+    item: v.item === undefined ? target.item : v.item,
+    quantity: v.quantity === undefined ? target.quantity : v.quantity,
+    unit: v.unit === undefined ? target.unit : v.unit,
+    priceBasis: "total",
+    amountNaira: amountKobo % 100 === 0 ? amountKobo / 100 : null,
+    amountKobo,
+    amountPhrase: null,
+    eachNaira: null,
+    eachKobo: null,
+  };
+  const row = proposals.create({
+    shopId,
+    envelope: correctionEnvelope(entry, target, cleanReason),
+    heard: heard ?? cleanReason,
+    question: null,
+  });
+  return toProposal(row);
+}
+
+// Proposes a correction from free text (WhatsApp "fix last <text>"). The
+// model reads the note; exactly one entry must come back. Fields the model
+// leaves empty inherit the original — the trader states what changes, and
+// only that. The entry type always stays the original's.
+export async function proposeCorrectionFromText(shopId, entryId, text, { proposals, model, ledger, reason = null }) {
+  if (!proposals || !model || !ledger) throw new Error("proposeCorrectionFromText needs { proposals, model, ledger }");
+  if (!shopId || typeof shopId !== "string") throw voiceError(400, "shopId is required");
+  if (!text || typeof text !== "string" || !text.trim()) throw voiceError(400, "correction text is required");
+  const target = resolveCorrectionTarget(ledger, shopId, entryId);
+  const raw = await model.complete({ text: text.trim() });
+  const checked = checkModelOutput(raw, shopId, { existingCustomers: shopCustomers(ledger, shopId) });
+  if (checked.entries.length === 0) {
+    throw voiceError(400, "I no hear any entry to correct — abeg talk am again.");
+  }
+  if (checked.entries.length > 1) {
+    throw voiceError(400, `I heard ${checked.entries.length} entries — send the correction for one entry at a time.`);
+  }
+  const e = checked.entries[0];
+  const amountKobo = Number.isInteger(e.amountKobo) ? e.amountKobo : target.amount_kobo;
+  const entry = {
+    type: target.type,
+    customer: e.customer ?? target.customer,
+    item: e.item ?? target.item,
+    quantity: Number.isInteger(e.quantity) ? e.quantity : target.quantity,
+    unit: e.unit ?? target.unit,
+    priceBasis: "total",
+    amountNaira: amountKobo % 100 === 0 ? amountKobo / 100 : null,
+    amountKobo,
+    amountPhrase: e.amountPhrase ?? null,
+    eachNaira: null,
+    eachKobo: null,
+  };
+  const cleanReason = checkCorrectionReason(reason ?? checked.heard);
+  const row = proposals.create({
+    shopId,
+    envelope: correctionEnvelope(entry, target, cleanReason, { flags: checked.flags, notes: checked.notes }),
+    heard: checked.heard,
+    question: checked.question,
+  });
+  return toProposal(row);
+}
+
 // The per-shop check every proposal-scoped operation goes through.
 function getOwnedRow(proposals, proposalId, shopId) {
   const id = Number(proposalId);
@@ -636,33 +796,54 @@ export function confirmProposal(proposalId, shopId, { proposals, ledger, promise
   if (row.status === "rejected") throw voiceError(409, `proposal ${row.id} was rejected`);
   if (row.status === "expired") throw voiceError(410, `proposal ${row.id} expired; send the note again`);
   const proposal = toProposal(row);
+  const isCorrection = proposal.correctionOf !== null && proposal.correctionOf !== undefined;
   if (proposal.flags.length > 0) {
     throw voiceError(400, `cannot confirm proposal ${row.id}: ${proposal.flags.join("; ")} — send a fix first`);
   }
   if (proposal.entries.length === 0) {
     throw voiceError(400, `cannot confirm proposal ${row.id}: no entries to record`);
   }
+  if (isCorrection && proposal.entries.length !== 1) {
+    throw voiceError(400, `cannot confirm proposal ${row.id}: a correction records exactly one entry`);
+  }
   for (const e of proposal.entries) {
     if (!Number.isInteger(e.amountKobo) || e.amountKobo < 0 || !e.customer) {
       throw voiceError(400, `cannot confirm proposal ${row.id}: an entry failed final checks`);
     }
   }
+  // Corrections revalidate their target at confirm time: another entry may
+  // have landed since the proposal, or the target may have been corrected
+  // another way. Reads only, so this runs before the transaction opens.
+  if (isCorrection) resolveCorrectionTarget(ledger, row.shop_id, proposal.correctionOf);
   // One transaction so a mid-confirm failure records nothing. The proposal is
   // marked confirmed right after; a crash in between would need manual review.
   ledger.db.exec("BEGIN IMMEDIATE");
   let recorded;
   try {
-    recorded = proposal.entries.map((e) =>
-      ledger.append({
-        shopId: row.shop_id,
-        type: e.type,
+    if (isCorrection) {
+      const e = proposal.entries[0];
+      const created = ledger.appendCorrection(proposal.correctionOf, {
         amountKobo: e.amountKobo,
         customer: e.customer,
         item: e.item,
         quantity: e.quantity,
         unit: e.unit,
-      })
-    );
+      });
+      ledger.recordCorrectionReason(created.id, proposal.correctionReason);
+      recorded = [created];
+    } else {
+      recorded = proposal.entries.map((e) =>
+        ledger.append({
+          shopId: row.shop_id,
+          type: e.type,
+          amountKobo: e.amountKobo,
+          customer: e.customer,
+          item: e.item,
+          quantity: e.quantity,
+          unit: e.unit,
+        })
+      );
+    }
     ledger.db.exec("COMMIT");
   } catch (err) {
     try {
@@ -720,9 +901,10 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
     raw = null;
   }
   const stamp = new Date().toISOString();
+  const priorCorrection = { correctionOf: prior.correctionOf ?? null, correctionReason: prior.correctionReason ?? null };
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     const msg = "I no understand the correction — abeg talk am again.";
-    const envelope = { version: 1, entries: prior.entries, totals: prior.totals, flags: [msg], notes: prior.notes, promise: prior.promise ?? null };
+    const envelope = { version: 1, entries: prior.entries, totals: prior.totals, flags: [msg], notes: prior.notes, promise: prior.promise ?? null, ...priorCorrection };
     const updated = proposals.update(row.id, {
       status: "pending",
       envelope,
@@ -742,7 +924,15 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
   const merged = [...new Set([...priorChecked, ...checked.questionedNames])];
   const updated = proposals.update(row.id, {
     status: "pending",
-    envelope: { version: 1, entries: checked.entries, totals: checked.totals, flags: checked.flags, notes: checked.notes, promise: checked.promise },
+    envelope: {
+      version: 1,
+      entries: checked.entries,
+      totals: checked.totals,
+      flags: checked.flags,
+      notes: prior.correctionOf == null ? checked.notes : [`corrects entry ${prior.correctionOf}`, ...checked.notes],
+      promise: checked.promise,
+      ...priorCorrection,
+    },
     heard: checked.heard !== "(no transcript)" ? checked.heard : `${prior.heard}\nTrader: ${correctionText.trim()}`,
     question: checked.question,
     createdAt: stamp,

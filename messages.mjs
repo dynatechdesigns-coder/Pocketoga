@@ -43,6 +43,9 @@ export const AUDIO_FAILED = "Sorry, I couldn't process that voice note. Please s
 export const HEAR_FAILED = "I couldn't hear that — please send the correction again.";
 export const BAD_AUDIO_JSON = "I no hear am well — abeg talk am again.";
 export const CORRECTION_AS_TEXT = "Please send the correction as text or a voice note.";
+export const FIX_LAST_HELP = "To fix your last entry, send: fix last followed by what it should be. Example: fix last Ada paid 12k.";
+export const FIX_LAST_NO_ENTRIES = "You have no entries yet — nothing to fix.";
+export const FIX_LAST_ALREADY_FIXED = "Your last entry was already corrected. Send a new note if something else is wrong.";
 
 export const alreadyConfirmedFix = (proposalId) =>
   `Proposal ${proposalId} is already confirmed; send a new note to correct it.`;
@@ -311,10 +314,19 @@ function usualPriceLines(entries, products) {
   return lines;
 }
 
+// Correction proposals say which entry they fix; normal proposals are
+// untouched (correctionOf is null for them).
+function correctionLine(proposal) {
+  return proposal.correctionOf === null || proposal.correctionOf === undefined
+    ? null
+    : `Fixes entry #${proposal.correctionOf}`;
+}
+
 function renderCleanCard(proposal, { existing = [], shopId = null, products = [], heardMax = MAX_HEARD_CHARS }) {
   const multi = multipleCustomers(proposal.entries);
   const entries = proposal.entries.map((e) => entryLine(e, multi)).join("\n");
   return joinBlocks([
+    correctionLine(proposal),
     cardHeader(proposal, shopId),
     entries,
     usualPriceLines(proposal.entries, products).join("\n"),
@@ -331,6 +343,7 @@ function renderCheckCard(proposal, { products = [], heardMax = MAX_HEARD_CHARS }
     .join("\n");
   return joinBlocks([
     `${EMOJI.check} *Check this one*`,
+    correctionLine(proposal),
     arithmetic,
     usualPriceLines(proposal.entries, products).join("\n"),
     dedupeChecks(proposal).join("\n"),
