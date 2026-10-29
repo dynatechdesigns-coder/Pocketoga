@@ -131,7 +131,8 @@ function pluralize(n, one, many) {
 // promise dates). Returns { differingFields, line }: field names in
 // comparison order, and the single code-built line for the first money or
 // customer difference (null when the readings agree). Item, heard-text and
-// question wording never count; neither does casing.
+// question wording never count; neither does casing. The one exception is
+// the expense category, which lives in item and is compared as "category".
 export function compareReadings(primaryEntries, primaryPromise, secondRaw, { shopId, now = Date.now() } = {}) {
   const second = checkModelOutput(secondRaw, shopId, { existingCustomers: [], now });
   const fields = [];
@@ -180,6 +181,14 @@ export function compareReadings(primaryEntries, primaryPromise, secondRaw, { sho
       note(
         "priceBasis",
         `Two readings differ: price basis is ${showText(x.priceBasis)} in one and ${showText(y.priceBasis)} in the other. Which one na correct?`
+      );
+    }
+    // Categories live in item, which is otherwise ignored — but for two
+    // expense entries the category is the reading's substance, so compare it.
+    if (x.type === "expense" && y.type === "expense" && normText(x.item) !== normText(y.item)) {
+      note(
+        "category",
+        `Two readings differ: expense category is ${showText(x.item)} in one and ${showText(y.item)} in the other. Which one na correct?`
       );
     }
   }

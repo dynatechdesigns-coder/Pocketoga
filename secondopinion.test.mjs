@@ -431,3 +431,61 @@ describe("second-opinion plumbing", () => {
     }
   });
 });
+
+describe("second-opinion expense comparison", () => {
+  const EXPENSE_PRIMARY = {
+    heard: "Paid NEPA 5k for power.",
+    entries: [
+      { type: "expense", customer: "NEPA", item: "power", quantity: null, unit: null, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" },
+    ],
+    totals: null,
+    promise: null,
+    question: null,
+  };
+
+  it("agreeing expense readings stay silent", async () => {
+    const ctx = setup();
+    try {
+      const second = {
+        heard: "nepa power 5k",
+        entries: [
+          { type: "expense", customer: "nepa", item: "Power", quantity: null, unit: null, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" },
+        ],
+        totals: null,
+        promise: null,
+        question: null,
+      };
+      const { proposal } = await proposeWithSecond(ctx, EXPENSE_PRIMARY, second);
+      assert.deepEqual(proposal.flags, []);
+      assert.equal(proposal.question, null);
+      assert.equal(statsRow(ctx, proposal.id).agreed, "yes");
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("a category disagreement flags with the category line", async () => {
+    const ctx = setup();
+    try {
+      const second = {
+        heard: EXPENSE_PRIMARY.heard,
+        entries: [
+          { type: "expense", customer: "NEPA", item: "rent", quantity: null, unit: null, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" },
+        ],
+        totals: null,
+        promise: null,
+        question: null,
+      };
+      const { proposal } = await proposeWithSecond(ctx, EXPENSE_PRIMARY, second);
+      const line = "Two readings differ: expense category is power in one and rent in the other. Which one na correct?";
+      assert.deepEqual(proposal.flags, [line]);
+      // The primary entry keeps its category.
+      assert.equal(proposal.entries[0].item, "power");
+      const row = statsRow(ctx, proposal.id);
+      assert.equal(row.agreed, "no");
+      assert.deepEqual(JSON.parse(row.differing_fields), ["category"]);
+    } finally {
+      teardown(ctx);
+    }
+  });
+});

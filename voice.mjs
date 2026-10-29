@@ -9,7 +9,10 @@ import { resolvePromiseDate } from "./promises.mjs";
 import { runSecondOpinion, SECOND_OPINION_TIMEOUT_MS } from "./secondopinion.mjs";
 
 export const PROPOSAL_TTL_MS = 30 * 60 * 1000;
-export const ENTRY_TYPES = ["sale", "payment", "restock"];
+export const ENTRY_TYPES = ["sale", "payment", "restock", "expense"];
+// Expense categories, stored in the item field. Anything the model sends
+// that is not on this list becomes "other" in pickExpenseCategory.
+export const EXPENSE_CATEGORIES = ["transport", "rent", "power", "wages", "stock-related", "other"];
 export const PRICE_BASES = ["each", "total", "unclear"];
 // Words that mean a price is per item. Checked against the note when the
 // model claims the amount is a total.
@@ -56,6 +59,13 @@ function cleanText(v) {
   return typeof v === "string" && v.trim() ? v.trim() : null;
 }
 
+// Code picks the expense category: a list member survives (case-insensitive),
+// anything else — including a missing value — becomes "other".
+function pickExpenseCategory(raw) {
+  const norm = typeof raw === "string" ? raw.trim().toLowerCase().replace(/\s+/g, " ") : "";
+  return EXPENSE_CATEGORIES.includes(norm) ? norm : "other";
+}
+
 // --- Plain-code checks (never the model) -----------------------------------
 
 // Validates one amount leg: whole non-negative naira + parser cross-check of
@@ -94,7 +104,7 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard) {
   const label = `entry ${index + 1}`;
   const e = rawEntry && typeof rawEntry === "object" ? rawEntry : {};
   if (!ENTRY_TYPES.includes(e.type)) {
-    flags.push(`${label}: unknown type "${String(e.type)}" (want sale, payment or restock)`);
+    flags.push(`${label}: unknown type "${String(e.type)}" (want sale, payment, restock or expense)`);
     return null;
   }
   const { naira, kobo, phrase } = checkLeg(e.amountNaira, e.amountPhrase, label, flags, notes, true);
@@ -110,6 +120,9 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard) {
     if (e.type === "restock") {
       customer = shopId; // stock moves into the shop itself
       notes.push(`${label}: no supplier given, recorded for the shop`);
+    } else if (e.type === "expense") {
+      customer = shopId; // the shop itself paid
+      notes.push(`${label}: no payee given, recorded for the shop`);
     } else {
       flags.push(`${label}: missing customer name`);
     }
@@ -159,6 +172,21 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard) {
   if (e.type === "restock") {
     if (item === null) flags.push(`${label}: restock needs an item`);
     if (e.quantity === null || e.quantity === undefined) flags.push(`${label}: restock needs a quantity`);
+  }
+
+  // Expenses store money and a category only: quantity and unit never reach
+  // the ledger, the amount is always a total, and code picks the category.
+  if (e.type === "expense") {
+    if (basis === "each") {
+      flags.push(`${label}: an expense is a total, not an each-price`);
+      basis = "total";
+    }
+    if (quantity !== null || unit !== null) {
+      notes.push(`${label}: expense quantity and unit are not stored`);
+      quantity = null;
+      unit = null;
+    }
+    item = pickExpenseCategory(e.item);
   }
   if (e.type === "sale" && item !== null && (e.quantity === null || e.quantity === undefined)) {
     flags.push(`${label}: how many ${item}? quantity is missing`);

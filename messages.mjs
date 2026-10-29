@@ -3,8 +3,9 @@
 // calls in here to render replies.
 //
 // Conventions: WhatsApp *bold* / _italic_, short lines, blank lines between
-// blocks. Only these emojis: sale, payment, restock, needs-checking,
-// saved, balance, promise (see EMOJI). Amounts via formatKobo: naira sign with
+// blocks. Only these emojis: sale, payment, restock, expense,
+// needs-checking, saved, balance, promise (see EMOJI). Amounts via
+// formatKobo: naira sign with
 // thousands separators, kobo only when non-zero. Interactive bodies stay
 // under 1024 characters (the heard quote shrinks first); button titles stay
 // under 20 characters; no footer unless a card ever needs one.
@@ -17,6 +18,7 @@ export const EMOJI = {
   sale: "🛒",
   payment: "💵",
   restock: "📦",
+  expense: "🧾",
   check: "⚠️",
   saved: "✅",
   balance: "⚖️",
@@ -105,12 +107,20 @@ function restockBody(e) {
   return `${goods}: ${total}`;
 }
 
+// "Transport: *₦5,000*". The category lives in item, picked by code.
+function expenseBody(e) {
+  const raw = typeof e.item === "string" && e.item ? e.item : "other";
+  const category = raw[0].toUpperCase() + raw.slice(1);
+  return `${escapeMd(category)}: ${boldAmount(e.amountKobo)}`;
+}
+
 // One proposal entry as a card line. In multi-customer cards every line is
 // prefixed with its customer; otherwise the header already names them.
 function entryLine(e, prefixCustomer) {
   const pre = prefixCustomer && e.customer ? `*${escapeMd(e.customer)}*: ` : "";
   if (e.type === "payment") return `${pre}${EMOJI.payment} Paid: ${boldAmount(e.amountKobo)}`;
   if (e.type === "restock") return `${pre}${EMOJI.restock} ${restockBody(e)}`;
+  if (e.type === "expense") return `${pre}${EMOJI.expense} ${expenseBody(e)}`;
   return `${pre}${saleBody(e)}`;
 }
 
@@ -371,6 +381,7 @@ function savedLeg(row) {
   const goods = describeGoods(row);
   if (row.type === "restock") return goods ? `restock ${goods} ${amount}` : `restock ${amount}`;
   if (row.type === "sale") return goods ? `sale ${goods} ${amount}` : `sale ${amount}`;
+  if (row.type === "expense") return goods ? `expense ${goods} ${amount}` : `expense ${amount}`;
   return `${row.type} ${amount}`;
 }
 
@@ -511,6 +522,27 @@ export function renderBalance(debt, rate) {
 export function unknownCustomer(name) {
   const clean = String(name ?? "").trim();
   return fitBody(`Sorry, I have no record for "${escapeMd(clean || "?")}". Check the spelling and try again.`);
+}
+
+const PROFIT_TITLES = { today: "Profit today", week: "Profit this week", month: "Profit this month", year: "Profit this year" };
+
+// Profit for a period: five separate figures, never merged, plus a quiet
+// line when some sold items have no restock cost behind them.
+export function renderProfit(profit) {
+  const p = profit ?? {};
+  const title = PROFIT_TITLES[p.period] ?? "Profit";
+  const lines = [
+    `${EMOJI.payment} *${title}*`,
+    `Sales *${formatKobo(p.salesKobo ?? 0)}*`,
+    `Collected *${formatKobo(p.collectedKobo ?? 0)}*`,
+    `Cost of goods *${formatKobo(p.cogsKobo ?? 0)}*`,
+    `Expenses *${formatKobo(p.expensesKobo ?? 0)}*`,
+    `Estimated profit *${formatKobo(p.estimatedProfitKobo ?? 0)}*`,
+  ];
+  if (Number.isInteger(p.itemsWithoutCost) && p.itemsWithoutCost > 0) {
+    lines.push(`No cost record for ${p.itemsWithoutCost} item${p.itemsWithoutCost === 1 ? "" : "s"}.`);
+  }
+  return fitBody(lines.join("\n"));
 }
 
 // Money check: one block per non-zero leak category, top 3 per list with

@@ -15,6 +15,7 @@ import { customerDebts, chaseForShop, lagosDay } from "./debts.mjs";
 import { PromiseStore, refreshPromises, keptRate } from "./promises.mjs";
 import { moneyLeakReport } from "./leak.mjs";
 import { withStock } from "./products.mjs";
+import { profitForPeriod } from "./profit.mjs";
 import {
   NOT_REGISTERED,
   FFMPEG_MISSING,
@@ -42,6 +43,7 @@ import {
   dueTodayLines,
   renderReport,
   renderStock,
+  renderProfit,
 } from "./messages.mjs";
 
 export const GRAPH_VERSION = "v25.0";
@@ -202,10 +204,11 @@ function normCustomerName(name) {
   return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-// Exact debt and stock commands, matched before any model call: "who owes",
-// "chase", "report", "stock" and "balance <name>" (case-insensitive,
-// trailing punctuation ignored). Anything else returns null and flows to
-// the model as a note.
+// Exact debt, stock and profit commands, matched before any model call:
+// "who owes", "chase", "report", "stock", "profit", "profit week",
+// "profit month" and "balance <name>" (case-insensitive, trailing
+// punctuation ignored). Anything else returns null and flows to the model
+// as a note.
 export function parseCommand(text) {
   const clean = String(text ?? "").trim().replace(/\s+/g, " ").replace(/[?!.\s]+$/, "");
   if (!clean) return null;
@@ -214,6 +217,9 @@ export function parseCommand(text) {
   if (lower === "chase") return { name: "chase" };
   if (lower === "report") return { name: "report" };
   if (lower === "stock") return { name: "stock" };
+  if (lower === "profit") return { name: "profit", period: "today" };
+  if (lower === "profit week") return { name: "profit", period: "week" };
+  if (lower === "profit month") return { name: "profit", period: "month" };
   const m = /^balance\s+(.+)$/i.exec(clean);
   if (m && m[1].trim()) return { name: "balance", arg: m[1].trim() };
   return null;
@@ -278,6 +284,10 @@ async function handleDebtCommand(ctx, sender, shopId, cmd) {
   const rows = ctx.ledger.list(shopId);
   if (cmd.name === "whoowes") {
     await sendText(ctx, sender, renderWhoOwes(customerDebts(rows, { now: ctx.nowMs })));
+    return;
+  }
+  if (cmd.name === "profit") {
+    await sendText(ctx, sender, renderProfit(profitForPeriod(rows, cmd.period, { now: ctx.nowMs })));
     return;
   }
   refreshPromises(ctx.promises, ctx.ledger, shopId, { now: ctx.nowMs });

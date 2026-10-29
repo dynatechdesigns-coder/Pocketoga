@@ -13,6 +13,7 @@ import { customerDebts, chaseForShop } from "./debts.mjs";
 import { moneyLeakReport } from "./leak.mjs";
 import { ProductStore, withStock, toProductJson } from "./products.mjs";
 import { CustomerStore, describeCustomers, normalizePhone } from "./customers.mjs";
+import { PROFIT_PERIODS, profitForPeriod, expensesForPeriod } from "./profit.mjs";
 import { SecondOpinionStore } from "./secondopinion.mjs";
 import { createModelClient } from "./model.mjs";
 import { propose, confirmProposal, fixProposal, rejectProposal, getProposal } from "./voice.mjs";
@@ -336,6 +337,25 @@ export async function handleVoiceRequest(req, res, deps) {
     const cleared = deps.customers.clearPhone(id);
     const customer = describeCustomers([cleared], deps.ledger.list(shopId), shopId).find((c) => c.id === cleared.id);
     return send(res, 200, { customer });
+  }
+
+  // Profit for a period, this shop only. Read-only; all maths in profit.mjs.
+  // A missing period reads as today; anything else must name a real period.
+  if (req.method === "GET" && parts.length === 1 && parts[0] === "profit") {
+    const period = url.searchParams.get("period") ?? "today";
+    if (!PROFIT_PERIODS.includes(period)) {
+      return send(res, 400, { error: `unknown period "${period}" (want today, week, month or year)` });
+    }
+    return send(res, 200, profitForPeriod(deps.ledger.list(shopId), period, {}));
+  }
+
+  // Expenses recorded in a period, this shop only. Read-only.
+  if (req.method === "GET" && parts.length === 1 && parts[0] === "expenses") {
+    const period = url.searchParams.get("period") ?? "today";
+    if (!PROFIT_PERIODS.includes(period)) {
+      return send(res, 400, { error: `unknown period "${period}" (want today, week, month or year)` });
+    }
+    return send(res, 200, expensesForPeriod(deps.ledger.list(shopId), period, {}));
   }
 
   return send(res, 404, { error: "not found" });

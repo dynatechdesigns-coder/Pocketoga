@@ -816,6 +816,66 @@ describe("debt commands (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", () =
     }
   });
 
+  it("profit answers today, week and month without calling the model", async () => {
+    const calls = [];
+    const ctx = setup(
+      async (req) => {
+        calls.push(req);
+        return WA_PART;
+      },
+      { nowMs: NOW }
+    );
+    try {
+      const shop = shopOf(ctx);
+      const stamp = new Date(NOW).toISOString();
+      ctx.ledger.append({ shopId: shop, type: "restock", amountKobo: 6000000, customer: shop, item: "rice", quantity: 10, unit: "bag", createdAt: "2026-10-01T10:00:00.000Z" });
+      ctx.ledger.append({ shopId: shop, type: "sale", amountKobo: 4000000, customer: "Ada", item: "rice", quantity: 4, unit: "bag", createdAt: stamp });
+      ctx.ledger.append({ shopId: shop, type: "payment", amountKobo: 1000000, customer: "Ada", createdAt: stamp });
+      ctx.ledger.append({ shopId: shop, type: "expense", amountKobo: 500000, customer: "NEPA", item: "power", createdAt: stamp });
+
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "profit")]));
+      assert.equal(calls.length, 0);
+      const reply = sends(ctx).at(-1).body;
+      assert.equal(reply.type, "text");
+      assert.match(reply.text.body, /\*Profit today\*/);
+      assert.match(reply.text.body, /Sales \*₦40,000\*/);
+      assert.match(reply.text.body, /Collected \*₦10,000\*/);
+      assert.match(reply.text.body, /Cost of goods \*₦24,000\*/);
+      assert.match(reply.text.body, /Expenses \*₦5,000\*/);
+      assert.match(reply.text.body, /Estimated profit \*₦11,000\*/);
+      assert.ok(reply.text.body.length <= 1024);
+
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "profit week")]));
+      assert.equal(calls.length, 0);
+      assert.match(sends(ctx).at(-1).body.text.body, /\*Profit this week\*/);
+
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "PROFIT MONTH!")]));
+      assert.equal(calls.length, 0);
+      assert.match(sends(ctx).at(-1).body.text.body, /\*Profit this month\*/);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("anything but the three profit commands is a note", async () => {
+    const calls = [];
+    const ctx = setup(
+      async (req) => {
+        calls.push(req);
+        return WA_PART;
+      },
+      { nowMs: NOW }
+    );
+    try {
+      shopOf(ctx);
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "profit year")]));
+      assert.equal(calls.length, 1);
+      assert.equal(sends(ctx).at(-1).body.type, "interactive");
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
   it("GET /report serves the shop only, never on the webhook port", async () => {
     const ctx = setup(async () => WA_PART, { nowMs: NOW });
     try {

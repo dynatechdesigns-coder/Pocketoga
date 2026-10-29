@@ -267,6 +267,12 @@ export class Ledger {
     if (type === "payment" && (cleanItem !== null || cleanQuantity !== null || cleanUnit !== null)) {
       throw new Error("payment entries must have item, quantity and unit null");
     }
+    if (type === "expense" && (cleanQuantity !== null || cleanUnit !== null)) {
+      throw new Error("expense entries must have quantity and unit null");
+    }
+    if (type === "expense" && cleanItem === null) {
+      throw new Error("expense entries must have a category");
+    }
     const stamp = createdAt ?? new Date().toISOString();
 
     if (correctsId !== null) {

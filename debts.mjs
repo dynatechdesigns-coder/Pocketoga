@@ -172,6 +172,23 @@ export function stockKind(row, rows) {
   return null;
 }
 
+// Effective expense kind of one row: "expense" for expenses, anything else
+// null. Corrections take the corrected entry's kind, followed through
+// chains; dangling or circular corrections count nothing.
+export function expenseKind(row, rows) {
+  const byId = new Map((rows ?? []).map((r) => [r.id, r]));
+  let cur = row;
+  const seen = new Set();
+  while (cur && cur.type === "correction") {
+    if (cur.corrects_id === null || cur.corrects_id === undefined || seen.has(cur.id)) return null;
+    seen.add(cur.id);
+    cur = byId.get(cur.corrects_id);
+  }
+  if (!cur) return null;
+  if (cur.type === "expense") return "expense";
+  return null;
+}
+
 // Debtors only, biggest debt first.
 export function owingDebts(rows, opts = {}) {
   return customerDebts(rows, opts)
