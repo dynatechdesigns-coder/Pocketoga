@@ -14,6 +14,7 @@ import { propose, confirmProposal, fixProposal, rejectProposal } from "./voice.m
 import { customerDebts, chaseForShop, lagosDay } from "./debts.mjs";
 import { PromiseStore, refreshPromises, keptRate } from "./promises.mjs";
 import { moneyLeakReport } from "./leak.mjs";
+import { withStock } from "./products.mjs";
 import {
   NOT_REGISTERED,
   FFMPEG_MISSING,
@@ -40,6 +41,7 @@ import {
   unknownCustomer,
   dueTodayLines,
   renderReport,
+  renderStock,
 } from "./messages.mjs";
 
 export const GRAPH_VERSION = "v25.0";
@@ -184,6 +186,7 @@ export function buildWhatsAppContext(deps, env = deps.env ?? process.env) {
     ledger: deps.ledger,
     proposals: deps.proposals,
     promises: getPromiseStore(deps),
+    products: deps.products ?? null,
     model: deps.model,
     nowMs: deps.nowMs ?? Date.now(),
     config,
@@ -198,9 +201,10 @@ function normCustomerName(name) {
   return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-// Exact debt commands, matched before any model call: "who owes", "chase",
-// "report" and "balance <name>" (case-insensitive, trailing punctuation
-// ignored). Anything else returns null and flows to the model as a note.
+// Exact debt and stock commands, matched before any model call: "who owes",
+// "chase", "report", "stock" and "balance <name>" (case-insensitive,
+// trailing punctuation ignored). Anything else returns null and flows to
+// the model as a note.
 export function parseCommand(text) {
   const clean = String(text ?? "").trim().replace(/\s+/g, " ").replace(/[?!.\s]+$/, "");
   if (!clean) return null;
@@ -208,6 +212,7 @@ export function parseCommand(text) {
   if (lower === "who owes") return { name: "whoowes" };
   if (lower === "chase") return { name: "chase" };
   if (lower === "report") return { name: "report" };
+  if (lower === "stock") return { name: "stock" };
   const m = /^balance\s+(.+)$/i.exec(clean);
   if (m && m[1].trim()) return { name: "balance", arg: m[1].trim() };
   return null;
@@ -244,7 +249,8 @@ async function sendText(ctx, to, body) {
 
 async function sendCard(ctx, to, proposal, shopId) {
   const existing = ctx.ledger && shopId ? ctx.ledger.list(shopId) : [];
-  const { text: cardText, buttons } = renderProposalCard(proposal, { existing, shopId });
+  const products = ctx.products && shopId ? ctx.products.listByShop(shopId) : [];
+  const { text: cardText, buttons } = renderProposalCard(proposal, { existing, shopId, products });
   let text = cardText;
   const extra = dueTodayBlock(ctx, shopId);
   if (extra && text.length + extra.length <= MAX_BODY_CHARS) text += extra;
@@ -281,6 +287,11 @@ async function handleDebtCommand(ctx, sender, shopId, cmd) {
   }
   if (cmd.name === "report") {
     await sendText(ctx, sender, renderReport(moneyLeakReport(rows, promises, { now: ctx.nowMs })));
+    return;
+  }
+  if (cmd.name === "stock") {
+    const catalog = ctx.products ? ctx.products.listByShop(shopId) : [];
+    await sendText(ctx, sender, renderStock(withStock(catalog, rows)));
     return;
   }
   const want = normCustomerName(cmd.arg);
@@ -379,7 +390,7 @@ async function handleButtonReply(ctx, sender, shopId, reply) {
   }
   await replyFriendly(ctx, sender, async () => {
     if (action === "confirm") {
-      const out = confirmProposal(proposalId, shopId, { proposals: ctx.proposals, ledger: ctx.ledger, promises: ctx.promises });
+      const out = confirmProposal(proposalId, shopId, { proposals: ctx.proposals, ledger: ctx.ledger, promises: ctx.promises, products: ctx.products });
       ctx.store.clearFixState(sender);
       if (out.alreadyConfirmed) {
         await sendText(ctx, sender, ALREADY_SAVED);

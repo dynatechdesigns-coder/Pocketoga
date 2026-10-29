@@ -46,6 +46,13 @@ BEFORE DELETE ON ledger_entries
 BEGIN
   SELECT RAISE(ABORT, 'ledger_entries is append-only: DELETE not allowed');
 END;
+-- Human reasons for corrections. The ledger has no reason column by design,
+-- so each reason lives here keyed by the correcting entry's id.
+CREATE TABLE IF NOT EXISTS corrections_log (
+  entry_id INTEGER PRIMARY KEY REFERENCES ledger_entries(id),
+  reason TEXT NOT NULL CHECK (length(reason) > 0),
+  created_at TEXT NOT NULL
+);
 `;
 
 // Unambiguous canonical encoding: a JSON array of the hashed fields in fixed
@@ -321,6 +328,25 @@ export class Ledger {
       correctsId: originalId,
       createdAt,
     });
+  }
+
+  // Records the human reason for a correcting entry. Reasons live only
+  // in corrections_log — never in ledger rows or hashes.
+  recordCorrectionReason(entryId, reason, createdAt = null) {
+    if (typeof reason !== "string" || !reason.trim()) {
+      throw new Error("correction reason is required");
+    }
+    this.db
+      .prepare("INSERT OR REPLACE INTO corrections_log (entry_id, reason, created_at) VALUES (?, ?, ?)")
+      .run(entryId, reason.trim(), createdAt ?? new Date().toISOString());
+    return this.correctionReason(entryId);
+  }
+
+  // The logged reason for one correcting entry, or null when none (legacy
+  // corrections made before reasons existed).
+  correctionReason(entryId) {
+    const row = this.db.prepare("SELECT reason FROM corrections_log WHERE entry_id = ?").get(entryId);
+    return row ? row.reason : null;
   }
 
   get(id) {

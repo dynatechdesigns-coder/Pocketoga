@@ -7,6 +7,8 @@ import { buildDeps, handleVoiceRequest, handleWebhookOnlyRequest } from "./serve
 import { Ledger } from "./ledger.mjs";
 import { ProposalStore } from "./proposals.mjs";
 import { PromiseStore } from "./promises.mjs";
+import { ProductStore } from "./products.mjs";
+import { CustomerStore } from "./customers.mjs";
 
 const FAKE_ENV = {
   LEDGER_DB: ":memory:",
@@ -43,6 +45,8 @@ describe("server startup wiring (fake env)", () => {
       assert.ok(deps.ledger instanceof Ledger);
       assert.ok(deps.proposals instanceof ProposalStore);
       assert.ok(deps.promises instanceof PromiseStore);
+      assert.ok(deps.products instanceof ProductStore);
+      assert.ok(deps.customers instanceof CustomerStore);
       assert.equal(typeof deps.model.complete, "function");
 
       // A debt route runs against built deps: needs ledger + promises.

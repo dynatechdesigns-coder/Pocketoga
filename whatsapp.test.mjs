@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Ledger } from "./ledger.mjs";
 import { ProposalStore } from "./proposals.mjs";
 import { PromiseStore } from "./promises.mjs";
+import { ProductStore } from "./products.mjs";
 import { WhatsAppStore, drainWhatsAppJobs } from "./whatsapp.mjs";
 import { createMockModelClient } from "./model.mjs";
 import { handleVoiceRequest, handleWebhookOnlyRequest, createWebhookServer } from "./server.mjs";
@@ -124,6 +125,7 @@ function setup(modelHandler, opts = {}) {
   const ledger = new Ledger(db);
   const proposals = new ProposalStore(db);
   const promises = new PromiseStore(db);
+  const products = new ProductStore(db);
   const whatsapp = new WhatsAppStore(db);
   const model = createMockModelClient(modelHandler);
   const fetch = makeFetch();
@@ -134,6 +136,7 @@ function setup(modelHandler, opts = {}) {
     ledger,
     proposals,
     promises,
+    products,
     model,
     whatsapp,
     fetch,
@@ -143,7 +146,7 @@ function setup(modelHandler, opts = {}) {
     env: ENV,
     nowMs: opts.nowMs ?? null,
   };
-  return { db, ledger, proposals, promises, model, whatsapp, fetch, logs, execFile, deps };
+  return { db, ledger, proposals, promises, products, model, whatsapp, fetch, logs, execFile, deps };
 }
 
 async function teardown(ctx) {
@@ -777,6 +780,34 @@ describe("debt commands (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", () =
       assert.equal(reply.type, "text");
       assert.match(reply.text.body, /Money check/);
       assert.match(reply.text.body, /Owed \*₦20,000\* \(1 customer\), \*₦20,000\* over 30 days/);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("stock lists the lowest-stock items without calling the model", async () => {
+    const calls = [];
+    const ctx = setup(
+      async (req) => {
+        calls.push(req);
+        return WA_PART;
+      },
+      { nowMs: NOW }
+    );
+    try {
+      const shop = shopOf(ctx);
+      ctx.ledger.append({ shopId: shop, type: "restock", amountKobo: 10000000, customer: shop, item: "rice", quantity: 10, unit: "bag" });
+      ctx.ledger.append({ shopId: shop, type: "sale", amountKobo: 9000000, customer: "Ada", item: "rice", quantity: 9, unit: "bag" });
+      ctx.products.ensure({ shopId: shop, name: "rice", unit: "bag" });
+      ctx.products.ensure({ shopId: shop, name: "yam", unit: "tuber" });
+      await postWebhook(ctx, wrap([waText(FROM_A, mid(), "stock")]));
+      assert.equal(calls.length, 0);
+      const reply = sends(ctx).at(-1).body;
+      assert.equal(reply.type, "text");
+      assert.match(reply.text.body, /Stock/);
+      assert.match(reply.text.body, /yam \(tuber\): 0 left/);
+      assert.match(reply.text.body, /rice \(bag\): 1 left/);
+      assert.ok(reply.text.body.length <= 1024);
     } finally {
       await teardown(ctx);
     }

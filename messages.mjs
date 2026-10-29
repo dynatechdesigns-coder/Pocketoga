@@ -265,19 +265,56 @@ function joinBlocks(blocks) {
   return blocks.filter((b) => b && b.length > 0).join("\n\n");
 }
 
-function renderCleanCard(proposal, { existing = [], shopId = null, heardMax = MAX_HEARD_CHARS }) {
+function normProductText(value) {
+  return String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+// Gentle, never blocking: one "usual price ₦X" line per sale entry whose
+// unit price differs from the catalog's known sell price for that item and
+// unit. Entries without an item or a computable unit price, and products
+// without a sell price, stay silent. Display lookup only — no flags.
+function usualPriceLines(entries, products) {
+  const catalog = new Map();
+  for (const p of products ?? []) {
+    if (!Number.isInteger(p.sell_price_kobo)) continue;
+    catalog.set(`${normProductText(p.name)}|${normProductText(p.unit)}`, p.sell_price_kobo);
+  }
+  if (catalog.size === 0) return [];
+  const lines = [];
+  const seen = new Set();
+  for (const e of entries ?? []) {
+    if (e.type !== "sale" || !e.item) continue;
+    const unitPrice =
+      Number.isInteger(e.eachKobo) ? e.eachKobo
+      : Number.isInteger(e.quantity) && e.quantity > 0 && Number.isInteger(e.amountKobo)
+        ? e.amountKobo / e.quantity
+        : null;
+    if (unitPrice === null) continue;
+    const usual = catalog.get(`${normProductText(e.item)}|${normProductText(e.unit)}`);
+    if (usual === undefined || usual === unitPrice) continue;
+    const line = `usual price ${formatKobo(usual)}`;
+    if (!seen.has(line)) {
+      seen.add(line);
+      lines.push(line);
+    }
+  }
+  return lines;
+}
+
+function renderCleanCard(proposal, { existing = [], shopId = null, products = [], heardMax = MAX_HEARD_CHARS }) {
   const multi = multipleCustomers(proposal.entries);
   const entries = proposal.entries.map((e) => entryLine(e, multi)).join("\n");
   return joinBlocks([
     cardHeader(proposal, shopId),
     entries,
+    usualPriceLines(proposal.entries, products).join("\n"),
     promiseCardLine(proposal.promise),
     owesLines(proposal, existing, shopId, " after saving").join("\n"),
     heardLine(proposal.heard, heardMax),
   ]);
 }
 
-function renderCheckCard(proposal, { heardMax = MAX_HEARD_CHARS }) {
+function renderCheckCard(proposal, { products = [], heardMax = MAX_HEARD_CHARS }) {
   const multi = multipleCustomers(proposal.entries);
   const arithmetic = [...proposal.entries.map((e) => entryLine(e, multi)), ...totalsLines(proposal.totals), promiseCardLine(proposal.promise)]
     .filter(Boolean)
@@ -285,6 +322,7 @@ function renderCheckCard(proposal, { heardMax = MAX_HEARD_CHARS }) {
   return joinBlocks([
     `${EMOJI.check} *Check this one*`,
     arithmetic,
+    usualPriceLines(proposal.entries, products).join("\n"),
     dedupeChecks(proposal).join("\n"),
     heardLine(proposal.heard, heardMax),
   ]);
@@ -309,12 +347,12 @@ export function cardButtons(proposal, blocked) {
 
 // Full card: { text, buttons }. The heard quote shrinks first when the body
 // would exceed 1024 characters; the body itself is the last resort.
-export function renderProposalCard(proposal, { existing = [], shopId = null } = {}) {
+export function renderProposalCard(proposal, { existing = [], shopId = null, products = [] } = {}) {
   const blocked = proposal.flags.length > 0 || !!proposal.question;
   const render = (heardMax) =>
     blocked
-      ? renderCheckCard(proposal, { heardMax })
-      : renderCleanCard(proposal, { existing, shopId, heardMax });
+      ? renderCheckCard(proposal, { products, heardMax })
+      : renderCleanCard(proposal, { existing, shopId, products, heardMax });
   let heardMax = MAX_HEARD_CHARS;
   let text = render(heardMax);
   while (text.length > MAX_BODY_CHARS && heardMax > 0) {
@@ -393,6 +431,22 @@ export function promiseCardLine(promise) {
   const name = escapeMd(String(promise.customer ?? "?").trim() || "?");
   const amount = Number.isInteger(promise.amountKobo) ? ` to pay ${formatKobo(promise.amountKobo)}` : " to pay";
   return `${EMOJI.promise} ${name}${amount} by ${formatDueDay(promise.dueDate)}`;
+}
+
+// The 5 lowest-stock catalog items, lowest first; "+N more" past 5.
+// A quiet line when the catalog is empty. Capped like every reply.
+export function renderStock(items) {
+  const rows = [...(items ?? [])].sort(
+    (a, b) => a.stockOnHand - b.stockOnHand || String(a.name).localeCompare(String(b.name))
+  );
+  if (rows.length === 0) return `${EMOJI.restock} *Stock*\nNothing in the catalog yet.`;
+  const lines = rows.slice(0, 5).map((r) => {
+    const name = escapeMd(r.name);
+    const display = r.unit ? `${name} (${escapeMd(r.unit)})` : name;
+    return `${display}: ${r.stockOnHand} left`;
+  });
+  if (rows.length > 5) lines.push(`+${rows.length - 5} more`);
+  return fitBody(`${EMOJI.restock} *Stock*\n${lines.join("\n")}`);
 }
 
 export function renderWhoOwes(debts) {

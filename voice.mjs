@@ -545,7 +545,7 @@ function applyExpiry(proposals, row) {
 
 // The ONLY path that appends to the ledger. Idempotent: confirming twice
 // records once and reports alreadyConfirmed the second time.
-export function confirmProposal(proposalId, shopId, { proposals, ledger, promises = null }) {
+export function confirmProposal(proposalId, shopId, { proposals, ledger, promises = null, products = null }) {
   if (!proposals || !ledger) throw new Error("confirmProposal needs { proposals, ledger }");
   const row = applyExpiry(proposals, getOwnedRow(proposals, proposalId, shopId));
   if (row.status === "confirmed") {
@@ -589,6 +589,16 @@ export function confirmProposal(proposalId, shopId, { proposals, ledger, promise
       // Already rolled back.
     }
     throw err;
+  }
+  // Confirmed restocks and sales enter the products catalog (prices stay
+  // empty until the trader sets them). Outside the ledger transaction like
+  // promise creation; a missing store simply skips the catalog.
+  if (products) {
+    for (const r of recorded) {
+      if ((r.type === "sale" || r.type === "restock") && r.item) {
+        products.ensure({ shopId: row.shop_id, name: r.item, unit: r.unit });
+      }
+    }
   }
   // A promise on the proposal is created only now, on confirm — never on
   // propose. Same crash window as the confirmed mark below; the data was
