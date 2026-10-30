@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
 import { parseNaira, formatKobo, extractNairaAmounts } from "./money.mjs";
-import { escapeMd, customerOwedKobo, MISMATCH_PREFIX, BAD_AUDIO_JSON, TEXT_FAILED, MODEL_RETRY_FAILED } from "./messages.mjs";
+import { escapeMd, customerOwedKobo, MISMATCH_PREFIX, BAD_AUDIO_JSON, TEXT_FAILED, MODEL_RETRY_FAILED, AUDIO_EMPTY_RETRY } from "./messages.mjs";
 import { resolvePromiseDate } from "./promises.mjs";
 import { fetchSecondReading, compareReadings, SECOND_OPINION_TIMEOUT_MS, SECOND_CHECK_UNAVAILABLE, SECOND_CHECK_CREDIT, NORMALISED_AMOUNT } from "./secondopinion.mjs";
 import { stockLevels, productKey } from "./products.mjs";
@@ -448,6 +448,17 @@ function editDistance(a, b) {
 // True when two already-normalized, non-equal names may be the same person:
 // a small typo, one name extending the other, or a title difference.
 // Exported for the photo pipeline's sender check.
+// Strict whole-name equality for scoring: lowercase, titles stripped, all
+// spaces removed. Deliberately tighter than namesSimilar (which tolerates
+// two edits and prefix extension): "Mama Chine du" still matches
+// "Mama Chinedu", but "Jimusa" never matches "Musa".
+export function sameCustomerName(a, b) {
+  const norm = (s) => stripTitle(normalizeName(s)).replace(/ /g, "");
+  const na = norm(a);
+  const nb = norm(b);
+  return na !== "" && na === nb;
+}
+
 export function namesSimilar(a, b) {
   if (editDistance(a, b) <= 2) return true;
   const short = a.length <= b.length ? a : b;
@@ -667,6 +678,12 @@ function modelContext(ledgerRows, catalog) {
   const parts = [];
   if (customers.length > 0) parts.push(`customers: ${customers.join(", ")}`);
   if (items.length > 0) parts.push(`products: ${items.join(", ")}`);
+  const debts = [];
+  for (const name of customers) {
+    const owed = customerOwedKobo({ existing: ledgerRows, proposalEntries: [], customer: name });
+    if (Number.isInteger(owed) && owed > 0 && owed % 100 === 0) debts.push(`${name} owes ${owed / 100}`);
+  }
+  if (debts.length > 0) parts.push(`balances owed (naira): ${debts.join(", ")}`);
   return `Known names (exact spellings; prefer these when the note sounds like them) — ${parts.join("; ")}.`;
 }
 
@@ -746,7 +763,26 @@ function checkOverpayment(entries, ledgerRows, flags) {
 // already blocks above; this adds the soft side, Save enabled: a payment for
 // a customer with no recorded debt, and a "remain"/"balance" payment that
 // does not match the recorded balance.
-const REMAINDER_PHRASE_RE = /\b(remains?|remaining|remainder|balances?|left)\b/i;
+const REMAINDER_PHRASE_RE = /\b(remains?|remaining|remainder|balances?|rest|left)\b/i;
+// "The remain / the balance / the rest" with no stated amount: the amount is
+// the customer's recorded balance. Fills amountNaira/amountKobo from the
+// ledger (whole naira only) with a soft line; an unknown or zero balance
+// keeps blocking as missing. A spoken amount always wins and is checked
+// separately against the balance.
+function fillRemainFromBalance(entries, ledgerRows, heard, assumptions) {
+  if (!ledgerRows) return;
+  for (const e of entries) {
+    if (e.type !== "payment" || Number.isInteger(e.amountKobo) || !e.customer) continue;
+    if (!REMAINDER_PHRASE_RE.test(`${e.amountPhrase ?? ""} ${heard ?? ""}`)) continue;
+    const owed = customerOwedKobo({ existing: ledgerRows, proposalEntries: [], customer: e.customer });
+    if (!Number.isInteger(owed) || owed <= 0 || owed % 100 !== 0) continue;
+    e.amountNaira = owed / 100;
+    e.amountKobo = owed;
+    const line = `Taken as ${formatKobo(owed)} (the balance ${e.customer} owes).`;
+    if (!assumptions.includes(line)) assumptions.push(line);
+  }
+}
+
 function checkPaymentBalance(entries, ledgerRows, flags, assumptions) {
   if (!ledgerRows) return;
   const paidBy = new Map();
@@ -810,6 +846,31 @@ function heardNumbersKobo(heard) {
   // crates ... seventeen thousand") would false-flag.
   return extractNairaAmounts(heard).map((n) => Math.round(n * 100)).filter((k) => k > 0);
 }
+// Exact-duplicate entries (a model stutter: the same payment twice) merge
+// into one — a payment must never be duplicated in a proposal. Compares the
+// final checked fields; only entries with a known amount merge, so questions
+// about missing amounts are unaffected. The merge is a soft assumption line
+// so the trader sees it; entries are otherwise untouched.
+function dedupeEntries(entries, assumptions) {
+  const seen = new Map();
+  const out = [];
+  for (const e of entries) {
+    if (!Number.isInteger(e.amountKobo)) {
+      out.push(e);
+      continue;
+    }
+    const key = JSON.stringify([e.type, e.customer, e.item, e.quantity, e.unit, e.amountKobo, e.priceBasis]);
+    if (seen.has(key)) {
+      const line = `Merged a repeated ${e.type} of ${formatKobo(e.amountKobo)} into one.`;
+      if (!assumptions.includes(line)) assumptions.push(line);
+      continue;
+    }
+    seen.set(key, true);
+    out.push(e);
+  }
+  return out;
+}
+
 function checkHeardMagnitude(heard, entries, flags) {
   const nums = heardNumbersKobo(heard);
   if (nums.length === 0) return;
@@ -970,8 +1031,10 @@ export function checkModelOutput(
   const totals = checkTotals(raw?.totals, flags, notes, assumptions);
   checkStatedRemainder(heard, entries, flags, assumptions);
   const matcher = checkSimilarNames(entries, shopId, existingCustomers, checkedNames, flags, questionedNames, assumptions);
+  fillRemainFromBalance(entries, ledgerRows, heard, assumptions);
   checkSimilarProducts(entries, catalog, assumptions, checkedNames);
   resolveUnclearBasis(entries, catalog, assumptions);
+  entries = dedupeEntries(entries, assumptions);
   const promise = checkPromise(raw?.promise, notes, now);
   if (promise && promise.customer) {
     // The promise customer resolves exactly like entry customers, so the
@@ -1090,10 +1153,10 @@ function isTruncated(err) {
   return !!err && err.code === "MODEL_TRUNCATED";
 }
 
-function confusedEnvelope(heard, kind, modelFailed = false) {
+function confusedEnvelope(heard, kind, modelFailed = false, message = null) {
   // A text note was never heard, so it never gets the didn't-hear line —
   // only voice notes do.
-  const msg = modelFailed ? MODEL_RETRY_FAILED : kind === "text" ? TEXT_FAILED : BAD_AUDIO_JSON;
+  const msg = message ?? (modelFailed ? MODEL_RETRY_FAILED : kind === "text" ? TEXT_FAILED : BAD_AUDIO_JSON);
   return { envelope: { version: 1, entries: [], totals: null, flags: [msg], notes: [], assumptions: [] }, heard, question: msg };
 }
 
@@ -1209,7 +1272,7 @@ export async function propose(
     }
   }
   const tChecks = Date.now();
-  const { heard, question, questionedNames, ...envelope } = checkModelOutput(raw, shopId, {
+  let { heard, question, questionedNames, ...envelope } = checkModelOutput(raw, shopId, {
     existingCustomers: customersOf(ledgerRows),
     now,
     ledgerRows,
@@ -1217,6 +1280,48 @@ export async function propose(
     hint: cleanHint,
   });
   if (timings) timings.checksMs = Date.now() - tChecks;
+  if (norm.kind === "audio" && envelope.entries.length === 0) {
+    // Empty audio result: one silent retry with the same input before
+    // telling the trader. A stale second-opinion fetch (if any) is dropped
+    // and restarted from the final transcript below. Text notes never retry.
+    try {
+      const raw2 = await model.complete({ audio: norm.audio, ...(cleanHint ? { hint: cleanHint } : null), ...contextArg });
+      if (raw2 && typeof raw2 === "object" && !Array.isArray(raw2)) {
+        raw = raw2;
+        secondFetchPromise = null;
+        ({ heard, question, questionedNames, ...envelope } = checkModelOutput(raw, shopId, {
+          existingCustomers: customersOf(ledgerRows),
+          now,
+          ledgerRows,
+          catalog,
+          hint: cleanHint,
+        }));
+      }
+    } catch {
+      // Keep the first empty result.
+    }
+  }
+  if (norm.kind === "audio" && envelope.entries.length === 0) {
+    const retryHeard = heard !== "(no transcript)" ? heard : fallbackHeard;
+    const c = confusedEnvelope(retryHeard, source, false, AUDIO_EMPTY_RETRY);
+    const confused = proposals.create({ shopId, envelope: c.envelope, heard: c.heard, question: c.question, source });
+    if (secondOpinions) {
+      secondOpinions.record({ proposalId: confused.id, agreed: "no_second_opinion", differingFields: [], latencyMs: 0 });
+    }
+    return toProposal(confused);
+  }
+  if (!secondOff && norm.kind === "audio" && !secondFetchPromise) {
+    const heardText = typeof raw.heard === "string" ? raw.heard.trim() : "";
+    if (heardText && heardText !== "(no transcript)") {
+      secondFetchPromise = fetchSecondReading(raw.heard, {
+        apiKey: secondApiKey,
+        model: secondModel,
+        fetchFn: secondOpinionFetch,
+        timeoutMs: secondOpinionTimeoutMs,
+      });
+      secondFetchPromise.catch(() => {});
+    }
+  }
   envelope.hint = cleanHint;
   envelope.hintNote = hintMismatchNote(cleanHint, envelope.entries);
   // Second opinion: await the parallel fetch and compare with plain code.

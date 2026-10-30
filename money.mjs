@@ -40,7 +40,7 @@ const TENS = {
 
 const SCALES = { hundred: 100, thousand: 1000, million: 1000000, billion: 1000000000 };
 
-const REMAINDER_WORDS = "remains|remain|remaining|remainder|balances?|left";
+const REMAINDER_WORDS = "remains|remain|remaining|remainder|balances?|rest|left";
 
 function fail(phrase) {
   throw new Error(`could not parse amount: "${phrase}"`);

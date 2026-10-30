@@ -45,6 +45,7 @@ export const HEAR_FAILED = "I couldn't hear that — please send the correction 
 export const BAD_AUDIO_JSON = "I no hear am well — abeg talk am again.";
 export const TEXT_FAILED = "I no understand that note — abeg send am again.";
 export const MODEL_RETRY_FAILED = "Something went wrong on my side, please send it again.";
+export const AUDIO_EMPTY_RETRY = "I no catch that, say am again.";
 export const CORRECTION_AS_TEXT = "Please send the correction as text or a voice note.";
 export const FIX_LAST_HELP = "To fix your last entry, send: fix last followed by what it should be. Example: fix last Ada paid 12k.";
 export const FIX_LAST_NO_ENTRIES = "You have no entries yet — nothing to fix.";

@@ -85,7 +85,7 @@ describe("length-cutoff retry (fake data)", () => {
   });
 
   it("system prompt carries the Pidgin glossary, payment rule and hearing rule", () => {
-    for (const phrase of ["don pay", "never a sale", "wey", "owe me", "remain am", "pay the balance", "I buy", "known customers", "forty-five hundred", "two k", "mudu", "[unclear]", "computed by code"]) {
+    for (const phrase of ["don pay", "never a sale", "wey", "owe me", "remain am", "pay the balance", "the rest", "balance owed", "I buy", "known customers", "forty-five hundred", "two k", "mudu", "[unclear]", "computed by code"]) {
       assert.ok(SYSTEM_PROMPT.includes(phrase), `prompt is missing: ${phrase}`);
     }
   });

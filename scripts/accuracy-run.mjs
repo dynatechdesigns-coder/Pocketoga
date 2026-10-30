@@ -37,7 +37,7 @@ import { ProductStore } from "../products.mjs";
 import { SecondOpinionStore } from "../secondopinion.mjs";
 import { SECOND_CHECK_UNAVAILABLE } from "../secondopinion.mjs";
 import { createModelClient, TEXT_MODEL, AUDIO_MODEL, MODEL_TEMPERATURE, MODEL_SEED } from "../model.mjs";
-import { propose, namesSimilar } from "../voice.mjs";
+import { propose, sameCustomerName } from "../voice.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TEST_AUDIO = join(ROOT, "test-audio");
@@ -51,22 +51,29 @@ function normType(t) {
   return t === "purchase" ? "restock" : t;
 }
 
-// Customer names the way the app matches them: lowercase, collapsed spacing,
-// titles stripped and the similar-name rule (typo tolerance) from voice.mjs.
-// "Auntie Ngozi" and "Mama Chine du" match; "Jimusa" and "busy" do not.
-function normCustomer(s) {
-  return String(s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
-}
-
+// Customer names score by whole-name equality after normalisation
+// (lowercase, titles stripped, all spaces removed): "Auntie Ngozi" and
+// "Mama Chine du" match; "Jimusa" and "busy" do not. Substring and typo
+// matches never count.
 function customersMatch(got, want) {
   if (want === null || want === undefined) return true;
-  return namesSimilar(normCustomer(got), normCustomer(want));
+  return sameCustomerName(got, want);
+}
+
+// Item names normalise for the consistency check only: lowercase, trimmed,
+// singular/plural unified, trader spelling variants unified. Correctness
+// still compares the raw spelling.
+function normItem(s) {
+  let n = String(s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  if (n === "gari") n = "garri";
+  if (!n.endsWith("ss") && n.endsWith("s") && n.length > 3) n = n.slice(0, -1);
+  return n;
 }
 
 // Trader-visible core of a proposal for the consistency check.
 function canonical(proposal) {
   return JSON.stringify({
-    entries: (proposal.entries ?? []).map((e) => [e.type, e.customer, e.item, e.quantity, e.unit, e.amountKobo, e.priceBasis]),
+    entries: (proposal.entries ?? []).map((e) => [e.type, e.customer, normItem(e.item), e.quantity, e.unit, e.amountKobo, e.priceBasis]),
     question: proposal.question ?? null,
     promise: proposal.promise ? [proposal.promise.customer, proposal.promise.datePhrase, proposal.promise.amountKobo] : null,
   });
@@ -309,7 +316,7 @@ async function main() {
     `through the real WhatsApp voice-note path (\`propose\` with \`{ audioPath }\`, real Meta client, ` +
     `nothing confirmed). Audio model \`${AUDIO_MODEL}\`, sampling \`temperature: ${MODEL_TEMPERATURE}\` + ` +
     `\`seed: ${MODEL_SEED}\` (text model \`${TEXT_MODEL}\` unused here); second opinion ${secondOn ? "on" : "off"}. ` +
-    `Customer names score the way the app matches them (titles stripped, spacing/case ignored, similar-name rule). ` +
+    `Customer names score by whole-name equality after normalisation (lowercase, titles stripped, all spaces removed): titles, case and spacing forgiven; substring and typo matches never count. ` +
     `Flagged = question, warning, locked Save, second-opinion disagreement or usual-price note. ` +
     `Cells show runs out of ${RUNS}. Consistency is the largest group of identical runs.`,
     "",

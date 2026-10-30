@@ -5,8 +5,8 @@ import { writeFileSync, unlinkSync } from "node:fs";
 import { Ledger } from "./ledger.mjs";
 import { ProposalStore } from "./proposals.mjs";
 import { createMockModelClient } from "./model.mjs";
-import { propose, confirmProposal, fixProposal, rejectProposal, getProposal } from "./voice.mjs";
-import { renderProposalCard, BAD_AUDIO_JSON, TEXT_FAILED, MODEL_RETRY_FAILED } from "./messages.mjs";
+import { propose, confirmProposal, fixProposal, rejectProposal, getProposal, sameCustomerName } from "./voice.mjs";
+import { renderProposalCard, BAD_AUDIO_JSON, TEXT_FAILED, MODEL_RETRY_FAILED, AUDIO_EMPTY_RETRY } from "./messages.mjs";
 import { createVoiceServer, handleVoiceRequest } from "./server.mjs";
 import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
 
@@ -867,6 +867,78 @@ describe("similar-name check (fake data)", () => {
       const p = await propose(SHOP_A, "fake note", ctx.deps);
       assert.deepEqual(p.flags, []);
       assert.equal(p.question, null);
+    } finally {
+      teardown(ctx);
+    }
+  });
+});
+
+describe("strict customer-name equality for scoring (fake data)", () => {
+  it("titles, case and spacing match; mishearings do not", () => {
+    assert.equal(sameCustomerName("Auntie Ngozi", "Ngozi"), true);
+    assert.equal(sameCustomerName("Oga Tunde", "Tunde"), true);
+    assert.equal(sameCustomerName("Mama Chine du", "Mama Chinedu"), true);
+    assert.equal(sameCustomerName("ADA", "ada"), true);
+    assert.equal(sameCustomerName("Alhaji Musa", "Musa"), true);
+    assert.equal(sameCustomerName("Jimusa", "Musa"), false);
+    assert.equal(sameCustomerName("Jimusa", "Alhaji Musa"), false);
+    assert.equal(sameCustomerName("busy", "Bisi"), false);
+    assert.equal(sameCustomerName("busy", "Mama Bisi"), false);
+    assert.equal(sameCustomerName("Ada", "Adaboy"), false);
+    assert.equal(sameCustomerName("", "Ada"), false);
+  });
+});
+
+describe("empty audio result retries once (fake data)", () => {
+  const wavPath = `test-audio-retry-${process.pid}.wav`;
+  const emptyReading = { heard: "lowam", entries: [], totals: null, promise: null, question: null };
+
+  it("audio: empty then good proposes from the retry, model called twice", async () => {
+    writeFileSync(wavPath, Buffer.from("RIFFfake-wav-bytes"));
+    let calls = 0;
+    const ctx = setup(async () => {
+      calls++;
+      return calls === 1 ? emptyReading : PART_PAYMENT;
+    });
+    try {
+      const p = await propose(SHOP_A, { audioPath: wavPath }, ctx.deps);
+      assert.equal(calls, 2);
+      assert.equal(p.entries.length, 2);
+      assert.equal(p.question, null);
+    } finally {
+      unlinkSync(wavPath);
+      teardown(ctx);
+    }
+  });
+
+  it("audio: empty twice shows the retry line", async () => {
+    writeFileSync(wavPath, Buffer.from("RIFFfake-wav-bytes"));
+    let calls = 0;
+    const ctx = setup(async () => {
+      calls++;
+      return emptyReading;
+    });
+    try {
+      const p = await propose(SHOP_A, { audioPath: wavPath }, ctx.deps);
+      assert.equal(calls, 2);
+      assert.equal(p.entries.length, 0);
+      assert.equal(p.question, AUDIO_EMPTY_RETRY);
+    } finally {
+      unlinkSync(wavPath);
+      teardown(ctx);
+    }
+  });
+
+  it("text: empty never retries and keeps its own wording", async () => {
+    let calls = 0;
+    const ctx = setup(async () => {
+      calls++;
+      return { heard: "fake note", entries: [], totals: null, promise: null, question: null };
+    });
+    try {
+      const p = await propose(SHOP_A, "fake note", ctx.deps);
+      assert.equal(calls, 1);
+      assert.equal(p.question, "no entries to record");
     } finally {
       teardown(ctx);
     }
