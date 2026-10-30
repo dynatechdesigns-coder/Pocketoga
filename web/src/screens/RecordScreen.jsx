@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Check, Keyboard, Mic, Send, Square, X } from "lucide-react";
-import { ApiError, friendlyError, getProposal, proposeAudio, proposeText } from "../api.js";
+import { getProposal, proposeAudio, proposeText } from "../api.js";
+import { MESSAGES, STAGES, canRetry, isEmptyRecording, toWaitError, waitForProposal } from "../recordWait.js";
 import { recordingToWavBase64 } from "../wav.js";
 import { plural } from "../format.js";
 import { Button, Card, Pill, ScreenHeader, Sheet, cx, rise } from "../ui.jsx";
@@ -48,8 +49,9 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
   const [proposal, setProposal] = useState(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [outcome, setOutcome] = useState(null); // { kind: "saved"|"rejected", count?, already? }
-  const [busy, setBusy] = useState(null); // loading message, or null
-  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(null); // current stage text while waiting, or null
+  const [error, setError] = useState(null); // { message, retry? }
+  const retryRef = useRef(null);
   const [text, setText] = useState(intent?.text ?? "");
   const [hint, setHint] = useState(intent?.hint ?? null);
   const [formOpen, setFormOpen] = useState(false);
@@ -121,11 +123,12 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
 
   async function startRecording() {
     setError(null);
+    retryRef.current = null;
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
-      setError("PocketOga needs your microphone. Allow it in your browser settings, or type the note below.");
+      setError({ message: MESSAGES.mic });
       return;
     }
     const chunks = [];
@@ -144,11 +147,12 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
     rec.onstop = () => {
       rec.cleanup();
       setRecording(false);
-      if (Date.now() - started < 1000) {
-        setError("That was too short. Tap the mic, talk, then tap again to stop.");
+      const blob = new Blob(chunks, { type: rec.mimeType });
+      if (Date.now() - started < 1000 || isEmptyRecording(blob)) {
+        setError({ message: MESSAGES.empty });
         return;
       }
-      sendAudio(new Blob(chunks, { type: rec.mimeType }));
+      sendAudio(blob);
     };
     recorderRef.current = rec;
     setSeconds(0);
@@ -161,32 +165,51 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
     if (rec && rec.state === "recording") rec.stop();
   }
 
-  async function sendAudio(blob) {
-    setBusy("Getting your note ready…");
+  // One place that waits for a proposal: shows the stages, then either the
+  // confirm card or a plain message (with Try again when a retry can help).
+  // Nothing here saves anything; only Save on the card does.
+  async function runProposal(call, { startAt = 0, onDone } = {}) {
+    setError(null);
+    setSheetOpen(false);
+    retryRef.current = () => runProposal(call, { startAt, onDone });
     try {
-      const wav = await recordingToWavBase64(blob);
-      setBusy("PocketOga is listening…");
-      showProposal(await proposeAudio(wav, "wav", hint ?? undefined));
+      const p = await waitForProposal(call, { onStage: setBusy, startAt });
+      onDone?.();
+      showProposal(p);
     } catch (err) {
-      setError(err instanceof ApiError ? friendlyError(err) : "Could not read that recording. Try again, or type it.");
+      const e = toWaitError(err);
+      setError({ message: e.message, retry: canRetry(e) });
     } finally {
       setBusy(null);
     }
   }
 
-  async function sendText(e) {
-    e.preventDefault();
-    if (!text.trim()) return;
-    setError(null);
-    setBusy("PocketOga is reading…");
+  async function sendAudio(blob) {
+    setBusy(STAGES[0]); // "Listening…" at once, before anything else
+    let wav;
     try {
-      showProposal(await proposeText(text.trim(), hint ?? undefined));
-      setText("");
-    } catch (err) {
-      setError(friendlyError(err));
-    } finally {
+      wav = await recordingToWavBase64(blob);
+    } catch {
       setBusy(null);
+      setError({ message: MESSAGES.unreadable });
+      return;
     }
+    await runProposal((signal) => proposeAudio(wav, "wav", hint ?? undefined, signal));
+  }
+
+  function sendText(e) {
+    e.preventDefault();
+    const note = text.trim();
+    if (!note) return;
+    runProposal((signal) => proposeText(note, hint ?? undefined, signal), { startAt: 1, onDone: () => setText("") });
+  }
+
+  // The trader corrected the heard text: read it again from that text. No audio
+  // goes up again, and the old note is simply left unsaved.
+  function rerunFromText(corrected) {
+    const note = corrected.trim();
+    if (!note) return;
+    runProposal((signal) => proposeText(note, proposal?.hint ?? hint ?? undefined, signal), { startAt: 1 });
   }
 
   const mmss = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
@@ -232,9 +255,12 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
       {/* Same height idle, recording and busy, so nothing below jumps. */}
       <div {...rise(0, "grid min-h-[300px] content-center justify-items-center gap-4 py-4")}>
         {busy ? (
-          <div className="grid justify-items-center gap-4 font-bold" role="status">
-            <div className="size-11 animate-spin rounded-full border-4 border-lavender border-t-accent" aria-hidden="true" />
-            <p>{busy}</p>
+          <div data-part="waiting" className="grid w-full max-w-xs justify-items-center gap-4 font-bold" role="status">
+            {/* A bar that only says "working": no percentage, ever. */}
+            <div className="h-2 w-full overflow-hidden rounded-full bg-lavender" aria-hidden="true">
+              <div className="h-full w-2/5 rounded-full bg-accent motion-safe:animate-sweep" />
+            </div>
+            <p data-part="stage" className="text-lg">{busy}</p>
           </div>
         ) : canRecord ? (
           <>
@@ -272,8 +298,13 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
       </div>
 
       {error && (
-        <Card className="mb-4" role="alert">
-          <p>{error}</p>
+        <Card data-part="record-error" className="mb-4 grid gap-3" role="alert">
+          <p>{error.message}</p>
+          {error.retry && retryRef.current && (
+            <Button data-part="retry" variant="secondary" onClick={() => retryRef.current()}>
+              Try again
+            </Button>
+          )}
         </Card>
       )}
 
@@ -311,7 +342,7 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
         {outcome ? (
           <Outcome outcome={outcome} onAgain={closeSheet} onLedger={() => onGo("ledger")} />
         ) : proposal ? (
-          <ConfirmCard proposal={proposal} shopId={shop.id} onUpdate={showProposal} onFinish={finish} onStartOver={() => finish({ kind: "rejected" })} />
+          <ConfirmCard proposal={proposal} shopId={shop.id} onRerun={rerunFromText} onUpdate={showProposal} onFinish={finish} onStartOver={() => finish({ kind: "rejected" })} />
         ) : null}
       </Sheet>
     </section>

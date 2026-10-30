@@ -39,7 +39,7 @@ export class ApiError extends Error {
   }
 }
 
-async function request(method, path, body) {
+async function request(method, path, body, signal) {
   if (!shopId) throw new ApiError(400, "No shop is open.");
   let res;
   try {
@@ -47,6 +47,7 @@ async function request(method, path, body) {
       method,
       headers: { ...authHeaders(), ...(body ? { "Content-Type": "application/json" } : {}) },
       body: body ? JSON.stringify(body) : undefined,
+      signal,
     });
   } catch {
     throw new ApiError(0, "network");
@@ -99,13 +100,13 @@ const withHint = (body, hint) => (hint ? { ...body, hint } : body);
 // POST /propose { text, hint? } -> { proposal }
 // proposal: { id, status, heard, question, entries[], totals, flags[], promise,
 //   effects[], source, hint, hintNote }
-export async function proposeText(text, hint) {
-  return (await request("POST", "/propose", withHint({ text }, hint))).proposal;
+export async function proposeText(text, hint, signal) {
+  return (await request("POST", "/propose", withHint({ text }, hint), signal)).proposal;
 }
 
 // POST /propose { audioBase64, audioFormat, hint? } -> { proposal }. Format: wav|mp3.
-export async function proposeAudio(audioBase64, audioFormat = "wav", hint) {
-  return (await request("POST", "/propose", withHint({ audioBase64, audioFormat }, hint))).proposal;
+export async function proposeAudio(audioBase64, audioFormat = "wav", hint, signal) {
+  return (await request("POST", "/propose", withHint({ audioBase64, audioFormat }, hint), signal)).proposal;
 }
 
 // POST /propose-form <fields from recordForm.js> -> 201 { proposal }. No model

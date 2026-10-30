@@ -12,11 +12,15 @@ export { inputClass };
 
 // What PocketOga heard and wants to save, shown inside the bottom sheet.
 // Save stays locked while anything needs checking.
-export default function ConfirmCard({ proposal, shopId, onUpdate, onFinish, onStartOver }) {
+export default function ConfirmCard({ proposal, shopId, onRerun, onUpdate, onFinish, onStartOver }) {
   const [busy, setBusy] = useState(null); // "save" | "fix" | "reject" | null
   const [error, setError] = useState(null);
   const [fixing, setFixing] = useState(false);
   const [correction, setCorrection] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [heardDraft, setHeardDraft] = useState("");
+  // Only a spoken or typed note can be re-read from corrected text.
+  const canEditHeard = !!onRerun && (proposal.source === "voice" || proposal.source === "text") && !proposal.correctionOf && !proposal.photoCheck;
 
   const problems = problemsOf(proposal);
   const canSave = isSaveable(proposal);
@@ -83,9 +87,48 @@ export default function ConfirmCard({ proposal, shopId, onUpdate, onFinish, onSt
         </p>
       )}
 
-      <figure className="border-l-[3px] border-lavender py-1 pl-3.5">
-        <figcaption className="text-sm font-semibold text-muted">PocketOga heard</figcaption>
-        <blockquote className="mt-0.5 whitespace-pre-line">“{proposal.heard}”</blockquote>
+      <figure data-part="heard" className="border-l-[3px] border-lavender py-1 pl-3.5">
+        <figcaption className="text-sm font-semibold text-muted">PocketOga heard:</figcaption>
+        {editing ? (
+          <form
+            className="mt-1 grid gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (heardDraft.trim()) onRerun(heardDraft);
+            }}
+          >
+            <label htmlFor="heard-text" className="sr-only">
+              What you said, corrected
+            </label>
+            <textarea id="heard-text" rows={3} autoFocus value={heardDraft} onChange={(e) => setHeardDraft(e.target.value)} className={inputClass} />
+            <div className="flex gap-2 *:flex-1">
+              <Button type="button" variant="quiet" onClick={() => setEditing(false)}>
+                Cancel
+              </Button>
+              <Button data-part="heard-rerun" disabled={!heardDraft.trim()}>
+                Read it again
+              </Button>
+            </div>
+          </form>
+        ) : canEditHeard ? (
+          <button
+            type="button"
+            data-part="heard-edit"
+            onClick={() => {
+              setHeardDraft(proposal.heard);
+              setEditing(true);
+            }}
+            aria-label={`PocketOga heard: ${proposal.heard}. Tap to correct it.`}
+            className="mt-0.5 block min-h-11 w-full rounded-lg text-left whitespace-pre-line"
+          >
+            <blockquote>“{proposal.heard}”</blockquote>
+            <span className="inline-flex items-center gap-1 text-sm font-bold text-link underline [&_svg]:size-4">
+              <Pencil aria-hidden="true" /> Not right? Tap to correct
+            </span>
+          </button>
+        ) : (
+          <blockquote className="mt-0.5 whitespace-pre-line">“{proposal.heard}”</blockquote>
+        )}
       </figure>
 
       {proposal.entries.length > 0 ? (
