@@ -11,6 +11,11 @@ export const TIMEOUT_MS = 40_000;
 export const STAGES = ["Listening…", "Reading your note…", "Checking the numbers…"];
 export const STAGE_DELAYS_MS = [2500, 6000]; // when stages 2 and 3 start
 
+// Voice notes wait longer: a slow-wait line at 30 s, a failure at 60 s.
+export const VOICE_STAGES = [...STAGES, "Still working… this is taking longer than usual."];
+export const VOICE_STAGE_DELAYS_MS = [2500, 6000, 30_000];
+export const VOICE_TIMEOUT_MS = 60_000;
+
 export const MESSAGES = {
   mic: "PocketOga needs your microphone. Allow it in your browser settings, or type the note below.",
   empty: "We did not catch anything. Tap the mic, talk, then tap again to stop.",
@@ -40,14 +45,16 @@ export function toWaitError(err) {
 // Runs `call(signal)` (which returns the proposal), reporting each stage to
 // `onStage(text)` as it starts. Rejects with a WaitError; after the limit the
 // request is aborted and a late answer is never used.
-export async function waitForProposal(call, { onStage, startAt = 0, delays = STAGE_DELAYS_MS, timeoutMs = TIMEOUT_MS } = {}) {
+export async function waitForProposal(call, { onStage, startAt = 0, delays = STAGE_DELAYS_MS, timeoutMs = TIMEOUT_MS, stages = STAGES, outer } = {}) {
   const controller = new AbortController();
+  // `outer`: the screen's own Cancel; it stops the request the same way.
+  outer?.addEventListener("abort", () => controller.abort(), { once: true });
   let timedOut = false;
   const timers = [];
-  onStage?.(STAGES[startAt]);
+  onStage?.(stages[startAt]);
   delays.forEach((ms, i) => {
     const stage = i + 1;
-    if (stage > startAt) timers.push(setTimeout(() => onStage?.(STAGES[stage]), ms));
+    if (stage > startAt) timers.push(setTimeout(() => onStage?.(stages[stage]), ms));
   });
   timers.push(
     setTimeout(() => {

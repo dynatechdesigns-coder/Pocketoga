@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, Keyboard, Mic, Send, Square, X } from "lucide-react";
+import { ArrowLeft, Check, Keyboard, Mic, ScanSearch, Send, Square, X } from "lucide-react";
 import { getProposal, proposeAudio, proposeText } from "../api.js";
-import { MESSAGES, STAGES, canRetry, isEmptyRecording, toWaitError, waitForProposal } from "../recordWait.js";
+import { MESSAGES, STAGES, VOICE_STAGES, VOICE_STAGE_DELAYS_MS, VOICE_TIMEOUT_MS, canRetry, isEmptyRecording, toWaitError, waitForProposal } from "../recordWait.js";
+import { TIME_UP_MESSAGE, VOICE_HINT, createRecordTimer } from "../recordLimits.js";
 import { recordingToWavBase64 } from "../wav.js";
 import { plural } from "../format.js";
 import { Button, Card, Pill, ScreenHeader, Sheet, cx, rise } from "../ui.jsx";
@@ -10,8 +11,6 @@ import RecordForm from "./RecordForm.jsx";
 
 // What each hint says in the header chip.
 const HINT_WORDS = { sale: "a sale", payment: "a payment", purchase: "stock you bought", expense: "an expense" };
-
-const MAX_SECONDS = 120; // keeps the upload well under the server's 12 MB limit
 
 // sessionStorage that shrugs when storage is blocked (private mode).
 const session = {
@@ -57,6 +56,7 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
   const [formOpen, setFormOpen] = useState(false);
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
+  const [held, setHeld] = useState(null); // audio kept when the 45 s limit stopped it
   const recorderRef = useRef(null);
   const toggleRef = useRef(null);
   const textRef = useRef(null);
@@ -123,6 +123,7 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
 
   async function startRecording() {
     setError(null);
+    setHeld(null);
     retryRef.current = null;
     let stream;
     try {
@@ -134,13 +135,16 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
     const chunks = [];
     const rec = new MediaRecorder(stream);
     const started = Date.now();
-    const timer = setInterval(() => {
-      const s = Math.floor((Date.now() - started) / 1000);
-      setSeconds(s);
-      if (s >= MAX_SECONDS) stopRecording();
-    }, 250);
+    let timeUp = false;
+    const stopTimer = createRecordTimer({
+      onTick: setSeconds,
+      onLimit: () => {
+        timeUp = true;
+        stopRecording();
+      },
+    });
     rec.cleanup = () => {
-      clearInterval(timer);
+      stopTimer();
       stream.getTracks().forEach((t) => t.stop());
     };
     rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
@@ -150,6 +154,11 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
       const blob = new Blob(chunks, { type: rec.mimeType });
       if (Date.now() - started < 1000 || isEmptyRecording(blob)) {
         setError({ message: MESSAGES.empty });
+        return;
+      }
+      if (timeUp) {
+        // Keep the audio; the trader decides whether to send it.
+        setHeld(blob);
         return;
       }
       sendAudio(blob);
@@ -168,12 +177,12 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
   // One place that waits for a proposal: shows the stages, then either the
   // confirm card or a plain message (with Try again when a retry can help).
   // Nothing here saves anything; only Save on the card does.
-  async function runProposal(call, { startAt = 0, onDone } = {}) {
+  async function runProposal(call, { startAt = 0, onDone, wait } = {}) {
     setError(null);
     setSheetOpen(false);
-    retryRef.current = () => runProposal(call, { startAt, onDone });
+    retryRef.current = () => runProposal(call, { startAt, onDone, wait });
     try {
-      const p = await waitForProposal(call, { onStage: setBusy, startAt });
+      const p = await waitForProposal(call, { onStage: setBusy, startAt, ...wait });
       onDone?.();
       showProposal(p);
     } catch (err) {
@@ -194,7 +203,10 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
       setError({ message: MESSAGES.unreadable });
       return;
     }
-    await runProposal((signal) => proposeAudio(wav, "wav", hint ?? undefined, signal));
+    await runProposal((signal) => proposeAudio(wav, "wav", hint ?? undefined, signal), {
+      startAt: 0,
+      wait: { stages: VOICE_STAGES, delays: VOICE_STAGE_DELAYS_MS, timeoutMs: VOICE_TIMEOUT_MS },
+    });
   }
 
   function sendText(e) {
@@ -286,6 +298,7 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
                 "Tap and talk"
               )}
             </p>
+            <p data-part="voice-hint" className="text-center text-sm font-semibold text-muted">{VOICE_HINT}</p>
             <p className="text-center text-sm text-muted">“Mama Bisi buy 2 bags of rice, 15k. She pay 10k, remain 5k.”</p>
             <TypeInstead onOpen={() => setFormOpen(true)} />
           </>
@@ -296,6 +309,25 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
           </>
         )}
       </div>
+
+      {held && !busy && (
+        <Card data-part="time-up" role="status" className="mb-4 grid gap-3">
+          <p className="font-bold">{TIME_UP_MESSAGE}</p>
+          <Button
+            data-part="send-held"
+            onClick={() => {
+              const blob = held;
+              setHeld(null);
+              sendAudio(blob);
+            }}
+          >
+            <Send aria-hidden="true" /> Send it
+          </Button>
+          <Button variant="quiet" onClick={startRecording}>
+            <Mic aria-hidden="true" /> Record again
+          </Button>
+        </Card>
+      )}
 
       {error && (
         <Card data-part="record-error" className="mb-4 grid gap-3" role="alert">
@@ -326,6 +358,10 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
           <Send aria-hidden="true" /> Send
         </Button>
       </Card>
+
+      <Button data-part="check-alert" variant="quiet" className="mt-4" onClick={() => onGo("alert")}>
+        <ScanSearch aria-hidden="true" /> Check alert
+      </Button>
 
       <RecordForm
         key={hint ?? "none"}

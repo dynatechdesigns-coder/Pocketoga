@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BarChart3, Check, ChevronRight, Ellipsis, Mic, Package, Receipt, ScrollText, Settings, ShoppingBag, Users, UserRound, Wallet } from "lucide-react";
+import { BarChart3, ScanSearch, Check, ChevronRight, Ellipsis, Mic, Package, Receipt, ScrollText, Settings, ShoppingBag, Users, UserRound, Wallet } from "lucide-react";
 import { setShop } from "./api.js";
 import DevBanner from "./DevBanner.jsx";
 import { greeting } from "./format.js";
@@ -14,6 +14,7 @@ import SalesScreen from "./screens/SalesScreen.jsx";
 import ProductsScreen from "./screens/ProductsScreen.jsx";
 import ExpensesScreen from "./screens/ExpensesScreen.jsx";
 import CustomersScreen from "./screens/CustomersScreen.jsx";
+import AlertCheckScreen from "./screens/AlertCheckScreen.jsx";
 import SettingsScreen from "./screens/SettingsScreen.jsx";
 
 // The dock: five equal slots, the raised mic in the middle one, so it is
@@ -25,6 +26,7 @@ const LEFT = [
 
 // Screens behind the More sheet, in the order the sheet lists them.
 const MORE = [
+  { key: "alert", label: "Check alert", icon: ScanSearch, hint: "Look for warning signs before you hand over goods" },
   { key: "sales", label: "Sales", icon: ShoppingBag, hint: "Every sale, by day" },
   { key: "products", label: "Products", icon: Package, hint: "Stock and prices" },
   { key: "expenses", label: "Expenses", icon: Receipt, hint: "What the shop spends" },
@@ -140,6 +142,7 @@ export default function App({ shop, onExit }) {
         {tab === "expenses" && <ExpensesScreen onGo={go} />}
         {tab === "customers" && <CustomersScreen />}
         {tab === "ledger" && <LedgerScreen shop={shop} intent={intent} onGo={go} />}
+        {tab === "alert" && <AlertCheckScreen />}
         {tab === "settings" && <SettingsScreen shop={shop} onExit={onExit} />}
       </main>
 

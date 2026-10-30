@@ -139,6 +139,43 @@ export async function getProposal(id) {
   return (await request("GET", `/proposals/${encodeURIComponent(id)}`)).proposal;
 }
 
+// --- Check alert ---------------------------------------------------------------
+
+// POST /photo-checks { photoBase64, photoFormat: png|jpg|jpeg } -> 201 { proposal }
+// proposal.photoCheck: { photoType: payment_alert|unknown, fields: { status,
+//   date, amountKobo, amountPhrase, sender, reference } | null, warnings[],
+//   matchedCustomer }. Confirming it (POST /confirm/:id) records an
+//   unconfirmed payment check, never a ledger entry; recordedIds is
+//   { paymentCheckId }. The photo itself is never stored.
+export async function proposePhoto(photoBase64, photoFormat = "jpg", signal) {
+  return (await request("POST", "/photo-checks", { photoBase64, photoFormat }, signal)).proposal;
+}
+
+// GET /photo-checks/unconfirmed -> { checks[]: { id, amount_kobo, sender,
+//   alert_date, created_at, warnings[] } }, oldest first. Returned here as
+//   items: { id, amountKobo, customer (the sender), createdAt, warned }.
+export async function getUnconfirmed() {
+  const { checks = [] } = await request("GET", "/photo-checks/unconfirmed");
+  return {
+    items: checks.map((c) => ({
+      id: c.id,
+      amountKobo: c.amount_kobo,
+      customer: c.sender ?? null,
+      createdAt: c.created_at,
+      warned: (c.warnings ?? []).length > 0,
+    })),
+  };
+}
+
+// POST /photo-checks/:id/bank-confirm -> { check } with check_status
+// "confirmed" and seen_at. Idempotent (confirming twice returns the same
+// check); 404 unknown id, 403 another shop's check.
+export async function markSeenInBank(id) {
+  const res = await request("POST", `/photo-checks/${encodeURIComponent(id)}/bank-confirm`);
+  notifyDataChanged();
+  return res.check;
+}
+
 // --- Read-only views ---------------------------------------------------------
 
 // GET /ledger -> { entries: rows ordered by seq, verify }
