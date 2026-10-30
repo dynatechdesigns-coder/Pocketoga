@@ -1,8 +1,8 @@
 import { useCallback, useState } from "react";
-import { Plus, Receipt } from "lucide-react";
+import { Receipt } from "lucide-react";
 import { getExpenses } from "../api.js";
 import { PERIODS, dayLabel, formatKobo } from "../format.js";
-import { Button, Card, EmptyState, ErrorState, IconCircle, NotAvailable, PeriodTabs, ScreenHeader, Skeleton, rise, useLoad } from "../ui.jsx";
+import { Card, EmptyState, ErrorState, IconCircle, NotAvailable, PeriodTabs, RecordShortcut, ScreenHeader, Skeleton, rise, useLoad } from "../ui.jsx";
 
 // GET /expenses for the period: category totals (from the server) as chips,
 // then each expense. "Add expense" only pre-fills a note on Record; it is
@@ -53,12 +53,9 @@ export default function ExpensesScreen({ onGo }) {
 
   return (
     <section>
-      <ScreenHeader title="Expenses" />
+      <ScreenHeader title="Expenses" action={<RecordShortcut onClick={() => onGo("record", { hint: "expense" })}>Record an expense</RecordShortcut>} />
       <div className="mb-4 grid gap-3">
         {!unavailable && <PeriodTabs periods={PERIODS} value={period} onChange={setPeriod} label="Expenses period" />}
-        <Button data-part="add-expense" onClick={() => onGo("record", { text: "I spend ₦" })}>
-          <Plus aria-hidden="true" /> Add expense
-        </Button>
       </div>
       {body}
     </section>

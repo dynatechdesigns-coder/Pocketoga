@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Mic, Send, Square, X } from "lucide-react";
+import { ArrowLeft, Check, Keyboard, Mic, Send, Square, X } from "lucide-react";
 import { ApiError, friendlyError, getProposal, proposeAudio, proposeText } from "../api.js";
 import { recordingToWavBase64 } from "../wav.js";
 import { plural } from "../format.js";
 import { Button, Card, Pill, ScreenHeader, Sheet, cx, rise } from "../ui.jsx";
 import ConfirmCard, { inputClass } from "./ConfirmCard.jsx";
+import RecordForm from "./RecordForm.jsx";
+
+// What each hint says in the header chip.
+const HINT_WORDS = { sale: "a sale", payment: "a payment", purchase: "stock you bought", expense: "an expense" };
 
 const MAX_SECONDS = 120; // keeps the upload well under the server's 12 MB limit
 
@@ -35,14 +39,20 @@ const session = {
 
 // Record a voice note (or type one), send it to /propose, then check it in
 // a bottom sheet. Closing the sheet keeps the note waiting; nothing saves
-// without Save. `intent.text` pre-fills the typed note (e.g. "I restock ").
-export default function RecordScreen({ shop, intent, onGo }) {
+// without Save. `intent.text` pre-fills the typed note (e.g. "I restock ");
+// `intent.hint` (sale, payment, purchase or expense) says what is being
+// recorded and goes to the route with the note. `origin` ({ label }) is the
+// screen the trader came from: Back returns there, and so does Save
+// (`onSaved`). Nothing about the hint or the origin is required.
+export default function RecordScreen({ shop, intent, origin, onBack, onSaved, onGo }) {
   const [proposal, setProposal] = useState(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [outcome, setOutcome] = useState(null); // { kind: "saved"|"rejected", count?, already? }
   const [busy, setBusy] = useState(null); // loading message, or null
   const [error, setError] = useState(null);
   const [text, setText] = useState(intent?.text ?? "");
+  const [hint, setHint] = useState(intent?.hint ?? null);
+  const [formOpen, setFormOpen] = useState(false);
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const recorderRef = useRef(null);
@@ -94,6 +104,13 @@ export default function RecordScreen({ shop, intent, onGo }) {
   function finish(result) {
     session.remove(pendingKey);
     setProposal(null);
+    setHint(null);
+    if (result.kind === "saved" && origin) {
+      // Back to the screen the trader came from, which shows the new numbers.
+      setSheetOpen(false);
+      onSaved(result);
+      return;
+    }
     setOutcome(result);
   }
 
@@ -149,7 +166,7 @@ export default function RecordScreen({ shop, intent, onGo }) {
     try {
       const wav = await recordingToWavBase64(blob);
       setBusy("PocketOga is listening…");
-      showProposal(await proposeAudio(wav, "wav"));
+      showProposal(await proposeAudio(wav, "wav", hint ?? undefined));
     } catch (err) {
       setError(err instanceof ApiError ? friendlyError(err) : "Could not read that recording. Try again, or type it.");
     } finally {
@@ -163,7 +180,7 @@ export default function RecordScreen({ shop, intent, onGo }) {
     setError(null);
     setBusy("PocketOga is reading…");
     try {
-      showProposal(await proposeText(text.trim()));
+      showProposal(await proposeText(text.trim(), hint ?? undefined));
       setText("");
     } catch (err) {
       setError(friendlyError(err));
@@ -176,7 +193,26 @@ export default function RecordScreen({ shop, intent, onGo }) {
 
   return (
     <section>
+      {origin && (
+        <button
+          type="button"
+          data-part="record-back"
+          onClick={onBack}
+          className="mb-1 inline-flex min-h-12 items-center gap-1.5 rounded-full pr-3 font-extrabold text-link [&_svg]:size-5"
+        >
+          <ArrowLeft aria-hidden="true" /> Back to {origin.label}
+        </button>
+      )}
       <ScreenHeader title="Record" sub="Talk am, check am, save am" />
+
+      {hint && (
+        <p data-part="hint-chip" className="mb-3 flex items-center justify-between gap-2 rounded-2xl border border-line bg-lavender px-4 py-1 text-link">
+          <span className="py-2 font-bold">Recording {HINT_WORDS[hint]}</span>
+          <button type="button" onClick={() => setHint(null)} className="min-h-12 rounded-full px-3 text-sm font-bold underline">
+            Not this
+          </button>
+        </p>
+      )}
 
       {proposal && !sheetOpen && (
         <Card
@@ -225,9 +261,13 @@ export default function RecordScreen({ shop, intent, onGo }) {
               )}
             </p>
             <p className="text-center text-sm text-muted">“Mama Bisi buy 2 bags of rice, 15k. She pay 10k, remain 5k.”</p>
+            <TypeInstead onOpen={() => setFormOpen(true)} />
           </>
         ) : (
-          <p className="text-center text-muted">Voice recording is not available in this browser here. Type your note below.</p>
+          <>
+            <p className="text-center text-muted">Voice recording is not available in this browser here. Type your note below.</p>
+            <TypeInstead onOpen={() => setFormOpen(true)} />
+          </>
         )}
       </div>
 
@@ -256,6 +296,17 @@ export default function RecordScreen({ shop, intent, onGo }) {
         </Button>
       </Card>
 
+      <RecordForm
+        key={hint ?? "none"}
+        open={formOpen}
+        onClose={() => setFormOpen(false)}
+        startType={hint ?? "sale"}
+        onProposal={(p) => {
+          setFormOpen(false);
+          showProposal(p);
+        }}
+      />
+
       <Sheet open={sheetOpen} onClose={closeSheet} title={outcome ? (outcome.kind === "saved" ? "Saved" : "Not saved") : "Check before you save"}>
         {outcome ? (
           <Outcome outcome={outcome} onAgain={closeSheet} onLedger={() => onGo("ledger")} />
@@ -264,6 +315,20 @@ export default function RecordScreen({ shop, intent, onGo }) {
         ) : null}
       </Sheet>
     </section>
+  );
+}
+
+// A small, optional link: the short typed form instead of talking.
+function TypeInstead({ onOpen }) {
+  return (
+    <button
+      type="button"
+      data-part="type-instead"
+      onClick={onOpen}
+      className="inline-flex min-h-12 items-center gap-1.5 rounded-full px-4 text-[0.9375rem] font-bold text-link underline [&_svg]:size-4"
+    >
+      <Keyboard aria-hidden="true" /> Type it instead
+    </button>
   );
 }
 

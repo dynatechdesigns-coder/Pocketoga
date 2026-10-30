@@ -11,6 +11,8 @@ const API_BASE = (import.meta.env?.VITE_API_BASE ?? "/api").replace(/\/$/, "");
 // The shop scripts/seed-demo.mjs fills with fake data.
 export const DEMO_SHOP_ID = "demo";
 
+import { notifyDataChanged } from "./refresh.js";
+
 let shopId = null;
 let token = null;
 
@@ -89,20 +91,36 @@ export async function logout(sessionToken) {
 
 // --- Voice-to-confirm loop ---------------------------------------------------
 
-// POST /propose { text } -> { proposal }
-// proposal: { id, status, heard, question, entries[], totals, flags[], promise }
-export async function proposeText(text) {
-  return (await request("POST", "/propose", { text })).proposal;
+// `hint` (optional): sale | payment | purchase | expense, the kind of note the
+// trader said they were recording. It only guides the reading; when the note
+// clearly says something else the proposal's hintNote says so.
+const withHint = (body, hint) => (hint ? { ...body, hint } : body);
+
+// POST /propose { text, hint? } -> { proposal }
+// proposal: { id, status, heard, question, entries[], totals, flags[], promise,
+//   effects[], source, hint, hintNote }
+export async function proposeText(text, hint) {
+  return (await request("POST", "/propose", withHint({ text }, hint))).proposal;
 }
 
-// POST /propose { audioBase64, audioFormat } -> { proposal }. Format: wav|mp3.
-export async function proposeAudio(audioBase64, audioFormat = "wav") {
-  return (await request("POST", "/propose", { audioBase64, audioFormat })).proposal;
+// POST /propose { audioBase64, audioFormat, hint? } -> { proposal }. Format: wav|mp3.
+export async function proposeAudio(audioBase64, audioFormat = "wav", hint) {
+  return (await request("POST", "/propose", withHint({ audioBase64, audioFormat }, hint))).proposal;
+}
+
+// POST /propose-form <fields from recordForm.js> -> 201 { proposal }. No model
+// call; the same proposal object, checked by the same code, saved only by
+// POST /confirm/:id.
+export async function proposeForm(fields) {
+  return (await request("POST", "/propose-form", fields)).proposal;
 }
 
 // POST /confirm/:id -> { proposal, recordedIds, alreadyConfirmed }
-export function confirmProposal(id) {
-  return request("POST", `/confirm/${encodeURIComponent(id)}`);
+// A new save tells every open screen to reload its numbers.
+export async function confirmProposal(id) {
+  const res = await request("POST", `/confirm/${encodeURIComponent(id)}`);
+  if (!res.alreadyConfirmed) notifyDataChanged();
+  return res;
 }
 
 // POST /fix/:id { correctionText } -> { proposal }

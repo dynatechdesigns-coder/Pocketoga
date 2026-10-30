@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { ChevronRight, Package, Plus } from "lucide-react";
+import { ChevronRight, Package } from "lucide-react";
 import { friendlyError, getProducts, setProductPrices } from "../api.js";
 import { formatKobo, nairaInput, parseNaira, plural } from "../format.js";
-import { Button, Card, EmptyState, ErrorState, Field, IconCircle, NotAvailable, Pill, ScreenHeader, Sheet, Skeleton, rise, useLoad } from "../ui.jsx";
+import { Button, Card, EmptyState, ErrorState, Field, IconCircle, NotAvailable, Pill, RecordShortcut, ScreenHeader, Sheet, Skeleton, rise, useLoad } from "../ui.jsx";
 import { inputClass } from "./ConfirmCard.jsx";
 
 // GET /products: stock on hand, a low-stock pill, and a sheet to set the sell
@@ -64,14 +64,7 @@ export default function ProductsScreen({ onGo }) {
 
   return (
     <section>
-      <ScreenHeader title="Products" />
-      {!unavailable && (
-        <div className="mb-4">
-          <Button data-part="add-product" variant="secondary" onClick={() => onGo("record", { text: "I restock " })}>
-            <Plus aria-hidden="true" /> Add product
-          </Button>
-        </div>
-      )}
+      <ScreenHeader title="Products" action={<RecordShortcut onClick={() => onGo("record", { hint: "purchase" })}>Record stock</RecordShortcut>} />
       {body}
       <Sheet open={!!open} onClose={() => setOpen(null)} title={shown ? `${shown.name} prices` : ""}>
         {shown && (

@@ -3,7 +3,7 @@ import { CalendarX2, Check, ChevronRight, Copy, MessageCircle, Search, Users } f
 import { getCustomers, getDebts, getPromises } from "../api.js";
 import { ageText, dueText, formatDueDay, formatKobo, sameCustomer } from "../format.js";
 import { draftReminder, TONES, whatsappLink } from "../reminders.js";
-import { Avatar, Button, Card, EmptyState, ErrorState, Pill, ScreenHeader, SectionTitle, Sheet, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
+import { Avatar, Button, Card, EmptyState, ErrorState, Pill, RecordShortcut, ScreenHeader, SectionTitle, Sheet, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
 
 // All reads in one go: the ranked chase list, every promise, and customers
 // (for phone numbers stored with consent; optional, so Debts still works
@@ -140,7 +140,7 @@ export default function DebtsScreen({ intent, onGo }) {
 
   return (
     <section>
-      <ScreenHeader title="Who owes you" />
+      <ScreenHeader title="Who owes you" action={<RecordShortcut onClick={() => onGo("record", { hint: "payment" })}>Record a payment</RecordShortcut>} />
       {body}
       <Sheet open={!!row} onClose={closeSheet} title={r ? r.customer : ""}>
         {r && (

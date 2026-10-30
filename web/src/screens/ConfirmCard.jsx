@@ -1,24 +1,14 @@
 import { useState } from "react";
-import { ArrowDownLeft, CalendarClock, Check, PackagePlus, Pencil, ShoppingBag, TriangleAlert, X } from "lucide-react";
+import { ArrowDownLeft, CalendarClock, Check, Info, PackagePlus, Pencil, Receipt, ShoppingBag, TriangleAlert, X } from "lucide-react";
 import { confirmProposal, fixProposal, friendlyError, rejectProposal } from "../api.js";
-import { formatDueDay, formatKobo, itemText, typeLabel } from "../format.js";
+import { formatDueDay, formatKobo, itemText } from "../format.js";
+import { canSave as isSaveable, describeEntry, hintLine, problemsOf } from "../entryWords.js";
 import { Button, Card, IconCircle, cx, figure, inputClass } from "../ui.jsx";
 
-const TYPE_ICON = { sale: ShoppingBag, payment: ArrowDownLeft, restock: PackagePlus };
+const TYPE_ICON = { sale: ShoppingBag, payment: ArrowDownLeft, restock: PackagePlus, expense: Receipt };
 
 // Re-exported for the screens that import it from here.
 export { inputClass };
-
-// Server flags are written for developers ("entry 1: missing customer name").
-// Make them read like plain words, and drop repeats.
-function plainFlag(flag) {
-  const s = flag
-    .replace(/^needs clarification:\s*/i, "")
-    .replace(/^entry (\d+):\s*/i, "Line $1: ")
-    .replace(/^remainder:\s*/i, "Still owed: ")
-    .replace(/\*/g, "");
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
 
 // What PocketOga heard and wants to save, shown inside the bottom sheet.
 // Save stays locked while anything needs checking.
@@ -28,9 +18,9 @@ export default function ConfirmCard({ proposal, shopId, onUpdate, onFinish, onSt
   const [fixing, setFixing] = useState(false);
   const [correction, setCorrection] = useState("");
 
-  const problems = [...new Set(proposal.flags.map(plainFlag))];
-  if (problems.length === 0 && proposal.question) problems.push(proposal.question);
-  const canSave = proposal.status === "pending" && problems.length === 0 && proposal.entries.length > 0;
+  const problems = problemsOf(proposal);
+  const canSave = isSaveable(proposal);
+  const hint = hintLine(proposal);
 
   // Runs one button's action with a loading state and a friendly error.
   async function run(kind, action) {
@@ -86,6 +76,13 @@ export default function ConfirmCard({ proposal, shopId, onUpdate, onFinish, onSt
         </div>
       )}
 
+      {/* "You said X but it sounds like Y": information, not an error. */}
+      {hint && (
+        <p data-part="hint-note" className="flex items-start gap-2 rounded-2xl border border-line bg-lavender px-4 py-3 text-link [&_svg]:mt-0.5 [&_svg]:size-5 [&_svg]:shrink-0">
+          <Info aria-hidden="true" /> <span>{hint}</span>
+        </p>
+      )}
+
       <figure className="border-l-[3px] border-lavender py-1 pl-3.5">
         <figcaption className="text-sm font-semibold text-muted">PocketOga heard</figcaption>
         <blockquote className="mt-0.5 whitespace-pre-line">“{proposal.heard}”</blockquote>
@@ -93,12 +90,14 @@ export default function ConfirmCard({ proposal, shopId, onUpdate, onFinish, onSt
 
       {proposal.entries.length > 0 ? (
         <ul className="grid gap-2" aria-label="Entries to save">
-          {proposal.entries.map((e, i) => (
+          {proposal.entries.map((e, i) => {
+            const words = describeEntry(proposal, i);
+            return (
             <Card as="li" key={i} className="flex items-start gap-3.5">
               <IconCircle icon={TYPE_ICON[e.type] ?? ShoppingBag} tone={e.type === "restock" ? "slate" : e.type === "payment" ? "blue" : "lavender"} />
               <div className="grid min-w-0 flex-1 gap-0.5">
                 <p className="flex flex-wrap justify-between gap-x-2 gap-y-0.5">
-                  <span className="text-sm font-semibold text-muted">{typeLabel(e.type)}</span>
+                  <span data-part="entry-type" className="text-sm font-semibold text-muted">{words.type}</span>
                   <span className="font-bold">{e.customer === shopId ? "Your shop" : e.customer ?? <em className="text-lg text-amber-ink not-italic">No name</em>}</span>
                 </p>
                 <p data-part="entry-amount" className={cx(figure, "text-4xl")}>
@@ -111,9 +110,21 @@ export default function ConfirmCard({ proposal, shopId, onUpdate, onFinish, onSt
                     {e.quantity > 1 && e.priceBasis === "each" && " · price is for each one"}
                   </p>
                 )}
+                {words.destination && (
+                  <p data-part="entry-destination" className="text-sm font-bold text-link">
+                    {words.destination}
+                  </p>
+                )}
+                {words.stock && <p className="text-sm text-muted">{words.stock}</p>}
+                {words.notes.map((n) => (
+                  <p key={n} className="text-sm font-semibold text-ink">
+                    {n}
+                  </p>
+                ))}
               </div>
             </Card>
-          ))}
+            );
+          })}
         </ul>
       ) : (
         <p className="text-muted">Nothing to save yet.</p>

@@ -1,8 +1,9 @@
-import { useState } from "react";
-import { BarChart3, ChevronRight, Ellipsis, Mic, Package, Receipt, ScrollText, Settings, ShoppingBag, Users, UserRound, Wallet } from "lucide-react";
+import { useEffect, useState } from "react";
+import { BarChart3, Check, ChevronRight, Ellipsis, Mic, Package, Receipt, ScrollText, Settings, ShoppingBag, Users, UserRound, Wallet } from "lucide-react";
 import { setShop } from "./api.js";
 import DevBanner from "./DevBanner.jsx";
 import { greeting } from "./format.js";
+import { plural } from "./format.js";
 import { Avatar, IconCircle, Sheet, ThemeToggle, cx } from "./ui.jsx";
 import RecordScreen from "./screens/RecordScreen.jsx";
 import MoneyScreen from "./screens/MoneyScreen.jsx";
@@ -33,6 +34,14 @@ const MORE = [
 ];
 const MORE_KEYS = MORE.map((m) => m.key);
 
+// The name of a screen, for "Back to Sales".
+const SCREEN_LABELS = {
+  money: "Money",
+  debts: "Debts",
+  report: "Reports",
+  ...Object.fromEntries(MORE.map((m) => [m.key, m.label])),
+};
+
 // Every slot has the same shape (24px icon row, then the label, pinned to
 // the bottom), so all labels and icons share one baseline.
 const SLOT = "flex h-[72px] flex-col items-center justify-end gap-1 pb-2 text-xs font-semibold";
@@ -46,6 +55,10 @@ export default function App({ shop, onExit }) {
   // { item, unit, display } (Ledger: that item's sales).
   const [intent, setIntent] = useState(null);
   const [more, setMore] = useState(false);
+  // Where Record was opened from, so Back and Save return there: { tab, label },
+  // or null when Record was not opened from another screen.
+  const [origin, setOrigin] = useState(null);
+  const [saved, setSaved] = useState(null); // { count } for the "Saved" note on the screen we return to
 
   // Tell the API layer which shop we are, before any screen makes a call.
   setShop(shop.id, shop.token);
@@ -53,10 +66,26 @@ export default function App({ shop, onExit }) {
   // Screens move between tabs with go("debts") or go("debts", "chase").
   function go(next, nextIntent = null) {
     setMore(false);
+    // The mic and the Record shortcuts open Record from any screen; remember it.
+    setOrigin(next === "record" && tab !== "record" ? { tab, label: SCREEN_LABELS[tab] ?? "where you were" } : next === "record" ? origin : null);
     setIntent(nextIntent);
     setTab(next);
     window.scrollTo(0, 0);
   }
+
+  // After Save, back to the screen Record was opened from, with a short note.
+  function savedAndBack(result) {
+    const to = origin?.tab ?? "money";
+    go(to);
+    setSaved({ count: result.count, already: result.already });
+  }
+
+  // The "Saved" note goes away by itself.
+  useEffect(() => {
+    if (!saved) return undefined;
+    const t = setTimeout(() => setSaved(null), 7000);
+    return () => clearTimeout(t);
+  }, [saved]);
 
   // The centre mic opens Record; on Record it starts or stops recording.
   function pressMic() {
@@ -104,7 +133,7 @@ export default function App({ shop, onExit }) {
       <main id="main" className="mx-auto max-w-[680px] px-5 pt-6 pb-[calc(128px+env(safe-area-inset-bottom))]">
         {tab === "money" && <MoneyScreen shop={shop} onGo={go} />}
         {tab === "debts" && <DebtsScreen intent={intent} onGo={go} />}
-        {tab === "record" && <RecordScreen shop={shop} intent={intent} onGo={go} />}
+        {tab === "record" && <RecordScreen shop={shop} intent={intent} origin={origin} onBack={() => go(origin.tab)} onSaved={savedAndBack} onGo={go} />}
         {tab === "report" && <ReportScreen shop={shop} onGo={go} />}
         {tab === "sales" && <SalesScreen shop={shop} onGo={go} />}
         {tab === "products" && <ProductsScreen onGo={go} />}
@@ -113,6 +142,29 @@ export default function App({ shop, onExit }) {
         {tab === "ledger" && <LedgerScreen shop={shop} intent={intent} onGo={go} />}
         {tab === "settings" && <SettingsScreen shop={shop} onExit={onExit} />}
       </main>
+
+      {saved && (
+        <div
+          data-part="saved-note"
+          role="status"
+          className="fixed inset-x-0 bottom-[calc(96px+env(safe-area-inset-bottom))] z-30 mx-auto flex w-[calc(100%-40px)] max-w-[560px] animate-rise items-center gap-3 rounded-card border border-teal bg-card px-4 py-2 shadow-lift md:bottom-[100px]"
+        >
+          <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-full bg-teal-soft text-teal-ink [&_svg]:size-4">
+            <Check strokeWidth={3} />
+          </span>
+          <p className="flex-1 font-bold">{saved.already ? "Already saved. Nothing was added twice." : `Saved. ${plural(saved.count, "entry", "entries")} added.`}</p>
+          <button
+            type="button"
+            onClick={() => {
+              setSaved(null);
+              go("ledger");
+            }}
+            className="min-h-12 rounded-full px-3 text-sm font-bold text-link underline"
+          >
+            See ledger
+          </button>
+        </div>
+      )}
 
       <nav
         data-part="dock"

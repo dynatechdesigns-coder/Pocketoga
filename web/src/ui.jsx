@@ -7,6 +7,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { createPortal } from "react-dom";
 import { Hourglass, Moon, Sun, X } from "lucide-react";
 import { friendlyError, isNotBuilt } from "./api.js";
+import { onDataChanged } from "./refresh.js";
 import { isDark, setTheme } from "./theme.js";
 export { setTheme };
 
@@ -29,6 +30,8 @@ export function useLoad(loader) {
   useEffect(() => {
     reload();
   }, [reload]);
+  // A save anywhere in the app reloads what this screen shows.
+  useEffect(() => onDataChanged(reload), [reload]);
   return { ...state, reload };
 }
 
@@ -290,12 +293,26 @@ export function EmptyState({ icon, title, children, action, onAction }) {
   );
 }
 
-export function ScreenHeader({ title, sub }) {
+// `action`: an optional quiet button (a secondary Button) beside the title.
+export function ScreenHeader({ title, sub, action }) {
   return (
-    <header className="mb-4">
-      {sub && <p className="mb-0.5 text-sm font-semibold text-muted">{sub}</p>}
-      <h1 className="text-2xl font-extrabold leading-tight tracking-tight">{title}</h1>
+    <header className={cx("mb-4", action && "flex items-end justify-between gap-3")}>
+      <div className="min-w-0">
+        {sub && <p className="mb-0.5 text-sm font-semibold text-muted">{sub}</p>}
+        <h1 className="text-2xl font-extrabold leading-tight tracking-tight">{title}</h1>
+      </div>
+      {action}
     </header>
+  );
+}
+
+// The quiet, optional shortcut beside a screen's title ("Record a sale"). A
+// secondary button on purpose: the mic in the dock stays the main way in.
+export function RecordShortcut({ children, ...props }) {
+  return (
+    <Button variant="secondary" size="sm" data-part="record-shortcut" className="w-auto! shrink-0 whitespace-nowrap" {...props}>
+      {children}
+    </Button>
   );
 }
 

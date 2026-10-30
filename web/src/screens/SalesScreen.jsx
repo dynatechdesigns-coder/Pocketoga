@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { ShoppingBag } from "lucide-react";
 import { getLedger, getProfit } from "../api.js";
 import { PERIODS, dayLabel, formatKobo, itemText, lagosDay, periodStartDay, plural, timeLabel } from "../format.js";
-import { Card, EmptyState, ErrorState, IconCircle, PeriodTabs, Pill, ScreenHeader, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
+import { Card, EmptyState, ErrorState, IconCircle, PeriodTabs, Pill, RecordShortcut, ScreenHeader, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
 
 // Sale entries from GET /ledger in the chosen period, newest first, grouped by
 // Lagos day. The total is the server's (GET /profit); the app only counts rows.
@@ -43,7 +43,7 @@ export default function SalesScreen({ shop, onGo }) {
           </p>
         </Card>
         {days.length === 0 ? (
-          <EmptyState icon={ShoppingBag} title="No sales in this period" action="Record a sale" onAction={() => onGo("record")}>
+          <EmptyState icon={ShoppingBag} title="No sales in this period" action="Record a sale" onAction={() => onGo("record", { hint: "sale" })}>
             Sales you save show here, newest first.
           </EmptyState>
         ) : (
@@ -77,7 +77,7 @@ export default function SalesScreen({ shop, onGo }) {
 
   return (
     <section>
-      <ScreenHeader title="Sales" />
+      <ScreenHeader title="Sales" action={<RecordShortcut onClick={() => onGo("record", { hint: "sale" })}>Record a sale</RecordShortcut>} />
       <div className="mb-4">
         <PeriodTabs periods={PERIODS} value={period} onChange={setPeriod} label="Sales period" />
       </div>
