@@ -3,9 +3,10 @@
 // folder is removed afterwards. No network, no real database touched.
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { EventEmitter } from "node:events";
 import {
@@ -481,5 +482,143 @@ describe("safe logging (fake data, silenced sink)", () => {
     }
     assert.equal(lines.length, 1, lines.join("\n"));
     assert.ok(/^POST \/session 500 \d+ms shop=- err=/.test(lines[0]), lines[0]);
+  });
+});
+
+describe("docker image completeness (Dockerfile)", () => {
+  // Guards the mistake that took down voice/photo notes: a new runtime
+  // module (log.mjs) that the Dockerfile's explicit COPY list did not
+  // include, so the image booted without it. Every relative import
+  // reachable from the container entrypoint must resolve to a file the
+  // Dockerfile copies into the image.
+  const ROOT = dirname(fileURLToPath(import.meta.url));
+
+  function readLines(p) {
+    return readFileSync(p, "utf8").split("\n").map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));
+  }
+
+  function globToRegExp(pat) {
+    const esc = (s) => s.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    return esc(pat).split("**").join(".*").split("*").join("[^/]*").split("?").join("[^/]");
+  }
+
+  // Minimal .dockerignore matcher: dir/ prefixes, basename globs and
+  // anchored path globs, with last-match-wins (no negation in this repo).
+  function ignoreChecker() {
+    const rules = readLines(join(ROOT, ".dockerignore")).filter((l) => l && !l.startsWith("#")).map((p) => {
+      if (p.startsWith("/")) p = p.slice(1);
+      if (p.endsWith("/")) return { dir: true, re: new RegExp(`^${globToRegExp(p.slice(0, -1))}/`) };
+      if (!p.includes("/")) return { dir: false, re: new RegExp(`^(?:.*/)?${globToRegExp(p)}$`) };
+      return { dir: false, re: new RegExp(`^${globToRegExp(p)}$`) };
+    });
+    return (rel) => {
+      let out = false;
+      for (const r of rules) if (r.re.test(rel)) out = true;
+      return out;
+    };
+  }
+
+  function listFiles(relDir, recursive = true) {
+    const abs = join(ROOT, relDir);
+    let names;
+    try {
+      names = readdirSync(abs);
+    } catch {
+      return [];
+    }
+    const out = [];
+    for (const name of names) {
+      const rel = relDir ? `${relDir}/${name}` : name;
+      let isDir = false;
+      try {
+        isDir = statSync(join(ROOT, rel)).isDirectory();
+      } catch {
+        continue;
+      }
+      if (isDir && recursive) out.push(...listFiles(rel));
+      else if (!isDir) out.push(rel);
+    }
+    return out;
+  }
+
+  // Files the Dockerfile places in the image, as repo-relative paths.
+  function imageFiles() {
+    const isIgnored = ignoreChecker();
+    const joined = readFileSync(join(ROOT, "Dockerfile"), "utf8").replace(/\\\r?\n/g, " ");
+    const files = new Set();
+    const add = (rel) => {
+      if (!isIgnored(rel)) files.add(rel);
+    };
+    for (const raw of joined.split("\n")) {
+      const line = raw.trim();
+      if (!line.startsWith("COPY ")) continue;
+      const toks = line.slice(5).trim().split(/\s+/).filter((t) => !t.startsWith("--"));
+      const dest = toks.pop();
+      const destDir = dest === "./" || dest === "/app" || dest === "/app/" ? "" : dest.replace(/^\/app\//, "").replace(/\/$/, "");
+      for (const src of toks) {
+        if (src.endsWith("/")) {
+          const base = src.slice(0, -1);
+          for (const f of listFiles(base)) add(destDir ? `${destDir}/${f.slice(base.length + 1)}` : f);
+        } else if (src.includes("*") || src.includes("?")) {
+          const slash = src.lastIndexOf("/");
+          const dir = slash === -1 ? "" : src.slice(0, slash);
+          const base = slash === -1 ? src : src.slice(slash + 1);
+          const re = new RegExp(`^${globToRegExp(base)}$`);
+          for (const f of listFiles(dir, false)) {
+            const name = f.includes("/") ? f.slice(f.lastIndexOf("/") + 1) : f;
+            if (re.test(name)) add(destDir ? `${destDir}/${name}` : f);
+          }
+        } else {
+          try {
+            if (statSync(join(ROOT, src)).isFile()) add(destDir ? `${destDir}/${src.split("/").pop()}` : src);
+          } catch {
+            // Missing source: COPY itself would fail the build; ignore here.
+          }
+        }
+      }
+    }
+    return files;
+  }
+
+  function relativeImports(file) {
+    const body = readFileSync(join(ROOT, file), "utf8");
+    const out = [];
+    for (const m of body.matchAll(/from\s+["'](\.[^"']+)["']/g)) out.push(m[1]);
+    for (const m of body.matchAll(/import\s*\(\s*["'](\.[^"']+)["']\s*\)/g)) out.push(m[1]);
+    return out;
+  }
+
+  function resolveImport(fromFile, spec) {
+    const dir = fromFile.includes("/") ? fromFile.slice(0, fromFile.lastIndexOf("/")) : "";
+    const parts = [];
+    for (const seg of `${dir ? `${dir}/` : ""}${spec}`.split("/")) {
+      if (seg === "" || seg === ".") continue;
+      if (seg === "..") parts.pop();
+      else parts.push(seg);
+    }
+    return parts.join("/");
+  }
+
+  it("every runtime import reachable from the entrypoint is copied into the image", () => {
+    const images = imageFiles();
+    assert.ok(images.has("server.mjs"), "Dockerfile must copy server.mjs");
+    const seen = new Set();
+    const missing = [];
+    const queue = ["server.mjs"]; // CMD ["node", "server.mjs"]
+    while (queue.length > 0) {
+      const file = queue.pop();
+      if (seen.has(file)) continue;
+      seen.add(file);
+      if (!existsSync(join(ROOT, file))) {
+        missing.push(`${file} (imported but missing on disk)`);
+        continue;
+      }
+      for (const spec of relativeImports(file)) {
+        const target = resolveImport(file, spec);
+        if (!seen.has(target)) queue.push(target);
+        if (!images.has(target)) missing.push(`${file} -> ${target}`);
+      }
+    }
+    assert.deepEqual(missing, []);
   });
 });
