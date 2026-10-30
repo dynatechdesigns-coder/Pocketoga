@@ -652,9 +652,9 @@ export async function handleVoiceRequest(req, res, deps) {
   return send(res, 404, { error: "not found" });
 }
 
-export function createVoiceServer({ ledger, proposals, promises, products, customers, secondOpinions, photoChecks, auths, model }) {
+export function createVoiceServer(deps) {
   return createServer((req, res) => {
-    handleVoiceRequest(req, res, { ledger, proposals, promises, products, customers, secondOpinions, photoChecks, auths, model }).catch((err) => {
+    handleVoiceRequest(req, res, deps).catch((err) => {
       if (!res.headersSent) send(res, err.status ?? 500, { error: err.message ?? "internal error" });
     });
   });
@@ -671,9 +671,9 @@ export async function handleWebhookOnlyRequest(req, res, deps) {
   return handleWebhookRoute(req, res, url, deps);
 }
 
-export function createWebhookServer({ ledger, proposals, promises, products, customers, secondOpinions, photoChecks, auths, model }) {
+export function createWebhookServer(deps) {
   return createServer((req, res) => {
-    handleWebhookOnlyRequest(req, res, { ledger, proposals, promises, products, customers, secondOpinions, photoChecks, auths, model }).catch((err) => {
+    handleWebhookOnlyRequest(req, res, deps).catch((err) => {
       if (!res.headersSent) send(res, err.status ?? 500, { error: err.message ?? "internal error" });
     });
   });

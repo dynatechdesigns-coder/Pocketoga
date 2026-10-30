@@ -7,9 +7,11 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { EventEmitter } from "node:events";
 import {
   buildDeps,
   createStaticHandler,
+  createVoiceServer,
   findStaticRoot,
   handleVoiceRequest,
   resolveDataDir,
@@ -221,5 +223,59 @@ describe("deploy static app (temp folder)", () => {
     mkdirSync(present, { recursive: true });
     assert.equal(findStaticRoot([join(scratch, "nope"), present]), present);
     assert.equal(findStaticRoot([join(scratch, "nope")]), null);
+  });
+
+  it("the production server wiring serves / (same factory the main block uses)", async () => {
+    // Goes through createVoiceServer — the layer that wires the handler to
+    // real sockets — instead of calling the handler directly, so a dropped
+    // dep in that factory fails here. No listening socket: the request is
+    // emitted straight into the server's listener.
+    const root = join(scratch, "dist-prod");
+    mkdirSync(join(root, "assets"), { recursive: true });
+    writeFileSync(join(root, "index.html"), "<html>prod app</html>");
+    writeFileSync(join(root, "assets", "app-2.js"), "console.log(2)");
+    const deps = buildDeps(FAKE_ENV);
+    try {
+      deps.static = createStaticHandler(root);
+      const server = createVoiceServer(deps);
+      const run = (method, url, headers = {}) =>
+        new Promise((done) => {
+          const req = new EventEmitter();
+          req.method = method;
+          req.url = url;
+          req.headers = headers;
+          req.destroy = () => {};
+          let text = "";
+          const res = new EventEmitter();
+          res.headersSent = false;
+          res.writeHead = (status) => {
+            res.statusCode = status;
+            res.headersSent = true;
+          };
+          res.end = (chunk) => {
+            if (chunk) text += chunk;
+            done({ status: res.statusCode, text });
+          };
+          server.emit("request", req, res);
+        });
+      const none = {};
+      let res = await run("GET", "/", none);
+      assert.equal(res.status, 200);
+      assert.ok(res.text.includes("<html>prod app</html>"));
+      res = await run("GET", "/assets/app-2.js", none);
+      assert.equal(res.status, 200);
+      assert.ok(res.text.includes("console.log(2)"));
+      res = await run("GET", "/settings", none);
+      assert.equal(res.status, 200);
+      assert.ok(res.text.includes("<html>prod app</html>"));
+      res = await run("GET", "/health", none);
+      assert.equal(res.status, 200);
+      assert.deepEqual(JSON.parse(res.text), { ok: true });
+      res = await run("GET", "/ledger", none);
+      assert.equal(res.status, 400);
+      assert.deepEqual(JSON.parse(res.text), { error: "x-shop-id header is required" });
+    } finally {
+      deps.db.close();
+    }
   });
 });
