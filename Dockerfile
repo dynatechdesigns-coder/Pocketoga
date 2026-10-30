@@ -23,10 +23,7 @@ RUN cd web && VITE_API_BASE="" npm run build
 RUN test -f web/dist/index.html
 
 # Backend sources only: no tests, scripts, audio, or local state.
-COPY server.mjs auth.mjs backup.mjs customers.mjs debts.mjs demo-seed.mjs \
-  ledger.mjs leak.mjs messages.mjs model.mjs money.mjs photos.mjs \
-  promises.mjs products.mjs proposals.mjs secondopinion.mjs summary.mjs \
-  profit.mjs voice.mjs whatsapp.mjs ./
+COPY *.mjs ./
 
 ENV NODE_ENV=production
 ENV DATA_DIR=/app/data
