@@ -11,8 +11,8 @@ WORKDIR /app
 
 # Backend has zero runtime dependencies; install only what each side needs.
 COPY package.json ./
-COPY web/package.json web/package.json
-RUN cd web && npm ci
+COPY web/package*.json web/
+RUN cd web && (npm ci || npm install)
 
 # Build the web app against a relative API base: same origin, no CORS.
 # (VITE_API_BASE="" makes api.js call the server it was served from.)
