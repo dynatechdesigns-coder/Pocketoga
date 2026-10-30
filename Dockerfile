@@ -1,0 +1,33 @@
+# PocketOga: one Docker service serving the API and the built web app on the
+# same origin (Render free plan). Same Node major as local dev (node:sqlite
+# needs it), plus ffmpeg for WhatsApp voice notes.
+FROM node:24-bookworm-slim
+
+# ffmpeg for voice-note conversion (16 kHz mono WAV for the audio model).
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Backend has zero runtime dependencies; install only what each side needs.
+COPY package.json ./
+COPY web/package.json web/package.json
+RUN cd web && npm ci
+
+# Build the web app against a relative API base: same origin, no CORS.
+# (VITE_API_BASE="" makes api.js call the server it was served from.)
+COPY web/ web/
+RUN cd web && VITE_API_BASE="" npm run build
+
+# Backend sources only: no tests, scripts, audio, or local state.
+COPY server.mjs auth.mjs backup.mjs customers.mjs debts.mjs demo-seed.mjs \
+  ledger.mjs leak.mjs messages.mjs model.mjs money.mjs photos.mjs \
+  promises.mjs products.mjs proposals.mjs secondopinion.mjs summary.mjs \
+  profit.mjs voice.mjs whatsapp.mjs ./
+
+ENV NODE_ENV=production
+ENV DATA_DIR=/app/data
+
+EXPOSE 3000
+
+CMD ["node", "server.mjs"]

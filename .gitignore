@@ -12,3 +12,6 @@ web/public/landing/photos/_originals/
 test-audio/
 
 test-audio/
+data/
+tmp-data/
+.deploy-test-tmp-*/

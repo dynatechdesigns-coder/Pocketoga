@@ -2,10 +2,14 @@
 // Identity: real shops need a session token (POST /session swaps a
 // WhatsApp code for one) matching the x-shop-id header; cross-shop access
 // is 403. The demo shop ("demo") stays public. The webhook is Meta's,
-// verified by signature. Run directly: `node server.mjs` (PORT/LEDGER_DB env).
+// verified by signature. Run directly: `node server.mjs`
+// (PORT/DATA_DIR/LEDGER_DB env). Also serves the built web app (web/dist)
+// on the same origin with an SPA fallback, so one URL serves everything.
 import { createServer } from "node:http";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
+import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Ledger } from "./ledger.mjs";
 import { ProposalStore } from "./proposals.mjs";
@@ -30,6 +34,8 @@ import {
   previewSummaryText,
   runSummaryTick,
 } from "./whatsapp.mjs";
+import { seedDemoShop } from "./demo-seed.mjs";
+import { backupNow, restoreIfMissing } from "./backup.mjs";
 
 const MAX_BODY_BYTES = 12 * 1024 * 1024;
 
@@ -80,6 +86,110 @@ function readRawBody(req) {
     req.on("end", () => resolveBody(Buffer.concat(chunks)));
     req.on("error", rejectBody);
   });
+}
+
+// State lives under DATA_DIR (default ./data, created when missing): the
+// SQLite file is DATA_DIR/pocketoga.db unless LEDGER_DB names another path.
+// Nothing is hard-coded to the project folder, so a container can point
+// DATA_DIR anywhere writable.
+export function resolveDataDir(env = process.env) {
+  const dir = env.DATA_DIR && String(env.DATA_DIR).trim() ? String(env.DATA_DIR).trim() : "./data";
+  return resolve(dir);
+}
+
+export function resolveDbPath(env = process.env) {
+  if (env.LEDGER_DB && String(env.LEDGER_DB).trim()) return env.LEDGER_DB;
+  return join(resolveDataDir(env), "pocketoga.db");
+}
+
+// First path segment of every API route (the webhook branch runs before
+// this). Anything else on GET/HEAD is the web app: a real file when one
+// matches, index.html otherwise (SPA fallback). /api/... is stripped first
+// so a bundle built against the dev proxy keeps working on one origin.
+const API_FIRST = new Set([
+  "webhook", "session", "propose", "propose-form", "photo-checks", "confirm",
+  "fix", "reject", "proposals", "ledger", "correct-last", "debts", "promises",
+  "report", "sales", "products", "customers", "profit", "expenses", "summary",
+  "health",
+]);
+
+const STATIC_TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon",
+  ".webmanifest": "application/manifest+json",
+  ".txt": "text/plain; charset=utf-8",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".map": "application/json",
+};
+
+// Serves a built web app (web/dist) from memory: files load once on first
+// request, text types carry a precompressed gzip copy. Returns null when
+// the folder is missing (backend-only mode). Returns a handler that answers
+// true when it served (file or SPA fallback) and false for a missing asset,
+// so the router can 404 those.
+export function createStaticHandler(rootDir) {
+  if (!rootDir) return null;
+  try {
+    if (!statSync(rootDir).isDirectory()) return null;
+  } catch {
+    return null;
+  }
+  const root = resolve(rootDir);
+  const cache = new Map();
+  const load = (rel) => {
+    if (cache.has(rel)) return cache.get(rel);
+    let file;
+    try {
+      const abs = resolve(root, rel);
+      if (abs !== root && !abs.startsWith(root + sep)) return null;
+      if (!statSync(abs).isFile()) return null;
+      file = readFileSync(abs);
+    } catch {
+      return null;
+    }
+    const type = STATIC_TYPES[extname(rel).toLowerCase()] ?? "application/octet-stream";
+    const gzipable = /^(text\/|application\/(json|javascript|manifest\+json))/.test(type) && file.length < 2 * 1024 * 1024;
+    const entry = { file, type, gz: gzipable ? gzipSync(file) : null };
+    cache.set(rel, entry);
+    return entry;
+  };
+  return function serveStatic(req, res) {
+    const url = new URL(req.url ?? "/", "http://x");
+    let rel = normalize(decodeURIComponent(url.pathname)).replace(/^[/\\]+/, "").replace(/\\/g, "/");
+    if (!rel || rel.endsWith("/")) rel += "index.html";
+    let entry = existsSync(join(root, rel)) ? load(rel) : null;
+    let isFallback = false;
+    if (!entry && !extname(rel)) {
+      entry = load("index.html");
+      isFallback = true;
+    }
+    if (!entry) return false;
+    const body = entry.file;
+    const headers = {
+      "Content-Type": entry.type,
+      "Content-Length": body.length,
+      "Cache-Control": isFallback || rel === "index.html" ? "no-store" : rel.startsWith("assets/") ? "public, max-age=31536000, immutable" : "public, max-age=86400",
+    };
+    let out = body;
+    const acceptsGzip = (req.headers["accept-encoding"] ?? "").includes("gzip");
+    if (acceptsGzip && entry.gz && req.method !== "HEAD") {
+      out = entry.gz;
+      headers["Content-Encoding"] = "gzip";
+      headers["Content-Length"] = out.length;
+      headers.Vary = "Accept-Encoding";
+    }
+    res.writeHead(200, headers);
+    if (req.method !== "HEAD") res.end(out);
+    else res.end();
+    return true;
+  };
 }
 
 // WhatsApp webhook. No x-shop-id header: Meta calls it, and the sender's
@@ -147,10 +257,15 @@ function withCorrectionInfo(ledger, shopId) {
 // Exported for in-process tests; createVoiceServer wires it to real sockets.
 export async function handleVoiceRequest(req, res, deps) {
   const url = new URL(req.url ?? "/", "http://x");
-  const parts = url.pathname.split("/").filter(Boolean);
+  let parts = url.pathname.split("/").filter(Boolean);
+  // Same-origin bundles built against the dev proxy call /api/...: strip it
+  // so they hit the same routes as a relative-base build.
+  if (parts.length >= 1 && parts[0] === "api") parts = parts.slice(1);
   // Tunnel guard: with WEBHOOK_PUBLIC_ONLY=1, requests that arrived via the
   // public tunnel (Cloudflare / proxy headers present) may only use /webhook.
-  // Local traffic without those headers behaves as before.
+  // Local traffic without those headers behaves as before. Leave the flag
+  // unset on Render: one public URL serves the app and the webhook together,
+  // and every request there carries a proxy header.
   if ((deps.env ?? process.env).WEBHOOK_PUBLIC_ONLY === "1") {
     const viaTunnel = req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"];
     if (viaTunnel && !(parts.length >= 1 && parts[0] === "webhook")) {
@@ -159,6 +274,12 @@ export async function handleVoiceRequest(req, res, deps) {
   }
   if (parts.length >= 1 && parts[0] === "webhook") {
     return handleWebhookRoute(req, res, url, deps);
+  }
+
+  // Liveness probe for the host (Render healthCheckPath). No auth, no
+  // secrets, no shop header — just proof the process answers.
+  if (req.method === "GET" && parts.length === 1 && parts[0] === "health") {
+    return send(res, 200, { ok: true });
   }
 
   // Passwordless login: exchange a WhatsApp code for a session token, or
@@ -187,6 +308,13 @@ export async function handleVoiceRequest(req, res, deps) {
       deps.auths.revokeToken(bearerToken(req.headers.authorization), {});
       return send(res, 200, { revoked: true });
     }
+    return send(res, 404, { error: "not found" });
+  }
+
+  // Built web app on the same origin: real files straight, client routes
+  // fall back to index.html. API paths always win; missing assets 404.
+  if ((req.method === "GET" || req.method === "HEAD") && deps.static && !API_FIRST.has(parts[0] ?? "")) {
+    if (deps.static(req, res)) return;
     return send(res, 404, { error: "not found" });
   }
 
@@ -537,7 +665,9 @@ export function createWebhookServer({ ledger, proposals, promises, products, cus
 // then listens; tests call it with a fake env so a missing import or
 // undefined dependency fails the suite.
 export function buildDeps(env = process.env) {
-  const db = new DatabaseSync(env.LEDGER_DB ?? "pocketoga.db");
+  const dbPath = resolveDbPath(env);
+  if (dbPath !== ":memory:") mkdirSync(dirname(resolve(dbPath)), { recursive: true });
+  const db = new DatabaseSync(dbPath);
   return {
     db,
     ledger: new Ledger(db),
@@ -553,21 +683,77 @@ export function buildDeps(env = process.env) {
   };
 }
 
+const STATIC_ROOT = join(dirname(fileURLToPath(import.meta.url)), "web", "dist");
+
 const invokedAsMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (invokedAsMain) {
-  const deps = buildDeps(process.env);
-  const port = Number(process.env.PORT ?? 3000);
-  const webhookPort = Number(process.env.WEBHOOK_PORT ?? 3001);
-  createVoiceServer(deps).listen(port, () =>
-    console.log(`main server on :${port} (local only, never tunnel)`)
-  );
-  createWebhookServer(deps).listen(webhookPort, () =>
-    console.log(`webhook server on :${webhookPort} (tunnel this one)`)
-  );
+  const env = process.env;
+  const dataDir = resolveDataDir(env);
+  const dbPath = resolveDbPath(env);
+  mkdirSync(dataDir, { recursive: true });
+  // Ephemeral disk (Render free plan) starts empty: bring back the newest
+  // backup when the main file is gone, before anything opens the database.
+  if (dbPath !== ":memory:" && restoreIfMissing(dbPath, dataDir)) {
+    console.log("database restored from backup");
+  }
+  const deps = buildDeps(env);
+  deps.static = createStaticHandler(existsSync(STATIC_ROOT) ? STATIC_ROOT : null);
+  // The free plan resets storage on restart, so the public demo reseeds on
+  // every boot that finds it empty — before the server accepts requests.
+  // Milliseconds, no model calls, no keys needed.
+  const seed = seedDemoShop(deps);
+  if (seed.seeded) console.log(`demo shop seeded: ${seed.entries} entries`);
+  // SQLite backup every 10 minutes (VACUUM INTO, never a raw copy) and once
+  // more at shutdown. Log lines carry no data.
+  const backupTimer = setInterval(() => {
+    try {
+      backupNow(deps.db, dataDir);
+    } catch {
+      console.log("scheduled backup failed");
+    }
+  }, 10 * 60 * 1000);
+  const server = createVoiceServer(deps);
+  const port = Number(env.PORT ?? 3000);
+  server.listen(port, "0.0.0.0", () => console.log(`pocketoga on :${port} (one origin: app + webhook)`));
+  // Local tunnel setup only: a second listener serving just /webhook, kept
+  // when WEBHOOK_PORT is explicitly set to something other than PORT.
+  // Render sets only PORT, so one public URL serves everything there.
+  const webhookPort = Number(env.WEBHOOK_PORT ?? port);
+  let webhookServer = null;
+  if (env.WEBHOOK_PORT && webhookPort !== port) {
+    webhookServer = createWebhookServer(deps);
+    webhookServer.listen(webhookPort, () => console.log(`webhook-only on :${webhookPort} (tunnel this one)`));
+  }
   // Daily summary scheduler: once a minute, main process only. Per-shop
   // errors are logged (masked) inside the tick; this catch is one static
   // line so a failure can never leak secrets or numbers.
-  setInterval(() => {
+  const summaryTimer = setInterval(() => {
     runSummaryTick(deps, {}).catch(() => console.log("summary tick failed"));
   }, 60_000);
+  // Graceful shutdown: stop timers, finish in-flight requests, back up once
+  // more, then close the database. Idle keep-alive sockets are dropped first
+  // so close() never hangs on them; a backstop exits after 10 seconds.
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    const force = setTimeout(() => process.exit(1), 10_000);
+    force.unref();
+    clearInterval(backupTimer);
+    clearInterval(summaryTimer);
+    server.closeIdleConnections();
+    server.close(() => {
+      if (webhookServer) webhookServer.close();
+      try {
+        if (dbPath !== ":memory:") backupNow(deps.db, dataDir);
+      } catch {
+        console.log("shutdown backup failed");
+      }
+      deps.db.close();
+      clearTimeout(force);
+      process.exit(0);
+    });
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 }

@@ -1,0 +1,32 @@
+# PocketOga Blueprint: one Docker web service (free plan) serving the API and
+# the built web app on the same origin. Render sets PORT itself; every key
+# below is entered in the Render dashboard (sync: false) and never committed.
+services:
+  - type: web
+    name: pocketoga
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: DATA_DIR
+        value: /app/data
+      - key: META_API_KEY
+        sync: false
+      - key: BASETEN_API_KEY
+        sync: false
+      - key: BASETEN_MODEL
+        sync: false
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_APP_SECRET
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_ALLOWED_NUMBERS
+        sync: false
+      - key: WHATSAPP_SUMMARY_TEMPLATE
+        sync: false

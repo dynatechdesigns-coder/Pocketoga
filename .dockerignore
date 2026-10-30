@@ -1,0 +1,11 @@
+.env*
+*.db
+*.db-*
+test-audio/
+node_modules
+.git
+accuracy-results.md
+web/node_modules
+web/dist
+tmp-data/
+data/
