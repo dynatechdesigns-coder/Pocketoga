@@ -85,21 +85,21 @@ export const MODEL_TEXT_MAX_TOKENS = 2000;
 export const MODEL_AUDIO_MAX_TOKENS = 1200;
 export const MODEL_PHOTO_MAX_TOKENS = 500;
 
-// One fetch with a timeout and a single retry. Retries transport failures,
-// timeouts, 429s and 5xx responses; anything else (other 4xx, bad payloads)
-// fails fast so a broken request never doubles its cost. The returned
-// response carries a non-enumerable attempts count (1 when no retry fired)
-// so dev logs can tell a slow call from a retried one.
-export async function fetchWithRetry(fetchFn, url, opts, { timeoutMs, retries = 1 } = {}) {
+// One fetch with a timeout and a single retry on network-level failures
+// only: fetch failures, connection resets (both surface as TypeError) and
+// timeouts before any response (TimeoutError). Any HTTP response — including
+// 429 and 5xx — is returned as-is with no retry: only a thrown network error
+// means nothing reached the other side, so only that is safe to repeat
+// (proposing writes nothing). A 300 ms pause separates the attempts so a
+// blip can clear. The timing logs count network retries from the returned
+// attempts. The returned response carries a non-enumerable
+// attempts count (1 when no retry fired) so dev logs can tell a slow call
+// from a retried one.
+export async function fetchWithRetry(fetchFn, url, opts, { timeoutMs, retries = 1, retryDelayMs = 300 } = {}) {
   let attempt = 0;
   for (;;) {
     try {
       const res = await fetchFn(url, { ...opts, signal: AbortSignal.timeout(timeoutMs) });
-      const retryableStatus = res && (res.status === 429 || (Number.isInteger(res.status) && res.status >= 500 && res.status <= 599));
-      if (retryableStatus && attempt < retries) {
-        attempt++;
-        continue;
-      }
       if (res && (typeof res === "object" || typeof res === "function")) {
         try {
           Object.defineProperty(res, "attempts", { value: attempt + 1, configurable: true });
@@ -109,8 +109,10 @@ export async function fetchWithRetry(fetchFn, url, opts, { timeoutMs, retries = 
       }
       return res;
     } catch (err) {
-      if (attempt < retries && (err?.name === "TimeoutError" || err instanceof TypeError)) {
+      const network = err?.name === "TimeoutError" || err instanceof TypeError;
+      if (network && attempt < retries) {
         attempt++;
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         continue;
       }
       throw err;

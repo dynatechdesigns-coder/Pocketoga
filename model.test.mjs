@@ -2,7 +2,7 @@
 // always mocked — no network in tests. Fake data only.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createModelClient, MODEL_TEXT_MAX_TOKENS, SYSTEM_PROMPT, TEXT_MODEL, AUDIO_MODEL, MODEL_TEMPERATURE, MODEL_SEED } from "./model.mjs";
+import { createModelClient, fetchWithRetry, MODEL_TEXT_MAX_TOKENS, SYSTEM_PROMPT, TEXT_MODEL, AUDIO_MODEL, MODEL_TEMPERATURE, MODEL_SEED } from "./model.mjs";
 
 const GOOD = { heard: "fake note", entries: [], totals: null, promise: null, question: null };
 
@@ -27,6 +27,49 @@ function clientWith(responses) {
   const client = createModelClient({ apiKey: "fake-key", fetchFn });
   return { client, seen };
 }
+
+describe("network-only fetch retry (fake data)", () => {
+  const ok = () => ({ ok: true, status: 200, json: async () => ({}), text: async () => "" });
+  const netFail = () => { throw new TypeError("fetch failed"); };
+
+  it("fails once on a network error, then succeeds", async () => {
+    let calls = 0;
+    const res = await fetchWithRetry(async () => { calls++; if (calls === 1) netFail(); return ok(); }, "https://x.test/", {}, { timeoutMs: 1000, retryDelayMs: 10 });
+    assert.equal(calls, 2);
+    assert.equal(res.ok, true);
+    assert.equal(res.attempts, 2);
+  });
+
+  it("fails twice on network errors, then throws", async () => {
+    let calls = 0;
+    await assert.rejects(
+      fetchWithRetry(async () => { calls++; netFail(); }, "https://x.test/", {}, { timeoutMs: 1000, retryDelayMs: 10 }),
+      /fetch failed/
+    );
+    assert.equal(calls, 2, "exactly one retry, never more");
+  });
+
+  it("an HTTP error never retries", async () => {
+    for (const status of [429, 500, 503]) {
+      let calls = 0;
+      const res = await fetchWithRetry(async () => { calls++; return { ok: false, status, json: async () => ({}), text: async () => "nope" }; }, "https://x.test/", {}, { timeoutMs: 1000, retryDelayMs: 10 });
+      assert.equal(calls, 1, `no retry on ${status}`);
+      assert.equal(res.ok, false);
+    }
+  });
+
+  it("a timeout error retries once with a pause", async () => {
+    let calls = 0;
+    const t0 = Date.now();
+    const res = await fetchWithRetry(
+      async () => { calls++; if (calls === 1) { const e = new Error("timed out"); e.name = "TimeoutError"; throw e; } return ok(); },
+      "https://x.test/", {}, { timeoutMs: 1000 }
+    );
+    assert.equal(calls, 2);
+    assert.equal(res.ok, true);
+    assert.ok(Date.now() - t0 >= 200, "default 300 ms pause before the retry");
+  });
+});
 
 describe("length-cutoff retry (fake data)", () => {
   it("a truncated first attempt retries once with double budget and succeeds", async () => {
@@ -107,5 +150,35 @@ describe("length-cutoff retry (fake data)", () => {
       return true;
     });
     assert.equal(seen.length, 1);
+  });
+});
+
+describe("network retries in the timing output", () => {
+  it("a retried call logs attempts=2 under POCKETOGA_TIMING=1", async () => {
+    const lines = [];
+    const origLog = console.log;
+    console.log = (...args) => {
+      lines.push(args.map((a) => String(a)).join(" "));
+    };
+    const prev = process.env.POCKETOGA_TIMING;
+    process.env.POCKETOGA_TIMING = "1";
+    let calls = 0;
+    try {
+      const failOnce = async () => {
+        calls++;
+        if (calls === 1) throw new TypeError("fetch failed");
+        return chatResponse(JSON.stringify(GOOD), "stop");
+      };
+      const client = createModelClient({ apiKey: "fake-key", fetchFn: failOnce });
+      const out = await client.complete({ text: "fake note" });
+      assert.deepEqual(out, GOOD);
+    } finally {
+      console.log = origLog;
+      if (prev === undefined) delete process.env.POCKETOGA_TIMING;
+      else process.env.POCKETOGA_TIMING = prev;
+    }
+    assert.equal(calls, 2);
+    const modelLines = lines.filter((l) => l.startsWith("model "));
+    assert.ok(modelLines.some((l) => l.includes("attempts=2")), modelLines.join("\n"));
   });
 });

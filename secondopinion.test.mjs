@@ -21,6 +21,7 @@ import {
   NORMALISED_AMOUNT,
   SecondOpinionStore,
   runSecondOpinion,
+  fetchSecondReading,
 } from "./secondopinion.mjs";
 
 const SHOP = "shop-a";
@@ -426,6 +427,35 @@ describe("second-opinion failures never block", () => {
     }
   });
 
+  it("the timing log separates timeout from error responses", async () => {
+    const lines = [];
+    const origLog = console.log;
+    console.log = (...args) => {
+      lines.push(args.map((a) => String(a)).join(" "));
+    };
+    const prev = process.env.POCKETOGA_TIMING;
+    process.env.POCKETOGA_TIMING = "1";
+    try {
+      const timeoutFetch = (url, opts) =>
+        new Promise((_, reject) => {
+          opts.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "TimeoutError" })));
+        });
+      const timedOut = await fetchSecondReading("fake note", { apiKey: "k", model: "m", fetchFn: timeoutFetch, timeoutMs: 20 });
+      assert.equal(timedOut.reading, null);
+      assert.equal(timedOut.failure, "timeout");
+      const errorFetch = async () => ({ ok: false, status: 500, json: async () => ({}), text: async () => "boom" });
+      const errored = await fetchSecondReading("fake note", { apiKey: "k", model: "m", fetchFn: errorFetch, timeoutMs: 1000 });
+      assert.equal(errored.reading, null);
+      assert.equal(errored.failure, "error");
+    } finally {
+      console.log = origLog;
+      if (prev === undefined) delete process.env.POCKETOGA_TIMING;
+      else process.env.POCKETOGA_TIMING = prev;
+    }
+    const fails = lines.filter((l) => l.startsWith("secondopinion ")).map((l) => /fail=(\S+)/.exec(l)?.[1]);
+    assert.deepEqual(fails, ["timeout", "error"]);
+  });
+
   it("a non-JSON or error response still proposes cleanly", async () => {
     const ctx = setup();
     try {
@@ -442,6 +472,7 @@ describe("second-opinion failures never block", () => {
       assert.deepEqual(serverError.proposal.flags, []);
       assert.ok(serverError.proposal.assumptions.includes(SECOND_CHECK_UNAVAILABLE));
       assert.equal(statsRow(ctx, serverError.proposal.id).agreed, "no_second_opinion");
+      assert.equal(statsRow(ctx, serverError.proposal.id).outcome, "error");
     } finally {
       teardown(ctx);
     }
@@ -678,20 +709,22 @@ describe("second-opinion expense comparison", () => {
 });
 
 describe("second-opinion cap and parallel", () => {
-  it("the 4 s cap fires once with no retry, and the card stays soft", async () => {
+  it("the 4 s cap fires with one network retry, and the card stays soft", async () => {
     const ctx = setup();
     try {
       let calls = 0;
       const hanging = (url, opts) => {
         calls++;
         return new Promise((_, reject) => {
-          opts.signal.addEventListener("abort", () => reject(new Error("aborted")));
+          // A real timeout aborts with TimeoutError (the AbortSignal.timeout
+          // reason), which is retryable; a generic Error would never retry.
+          opts.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "TimeoutError" })));
         });
       };
       const t0 = Date.now();
       const { proposal } = await proposeWithSecond(ctx, PRIMARY, PRIMARY, { fetchFn: hanging, timeoutMs: 30 });
       const elapsed = Date.now() - t0;
-      assert.equal(calls, 1, "no retry on timeout");
+      assert.equal(calls, 2, "one retry on timeout");
       assert.ok(elapsed < 1000, `cap fired fast, took ${elapsed}ms`);
       assert.deepEqual(proposal.flags, []);
       assert.equal(proposal.question, null);
@@ -699,6 +732,7 @@ describe("second-opinion cap and parallel", () => {
       const row = statsRow(ctx, proposal.id);
       assert.equal(row.agreed, "no_second_opinion");
       assert.ok(row.latency_ms >= 30 && row.latency_ms < 1000, `latency ${row.latency_ms}ms`);
+      assert.equal(row.outcome, "timeout");
       const card = renderProposalCard(proposal, { existing: [], shopId: SHOP });
       assert.ok(card.buttons.some((b) => b.reply.title === "Save"), "Save enabled on cap");
     } finally {
@@ -732,6 +766,41 @@ describe("second-opinion cap and parallel", () => {
       assert.deepEqual(proposal.entries, EXPECTED_ENTRIES);
       assert.ok(proposal.assumptions.includes(SECOND_CHECK_UNAVAILABLE));
       assert.equal(statsRow(ctx, proposal.id).agreed, "no_second_opinion");
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("a valid-but-slow second reading past 1 s is recorded late and never shown", async () => {
+    const ctx = setup();
+    try {
+      // Disagreeing reading after 1500 ms: Baseten's own 4 s cap would
+      // allow it, but the voice path only waits 1 s past the primary.
+      const slow = async () => {
+        await new Promise((r) => setTimeout(r, 1500));
+        return basetenOk({
+          heard: PRIMARY.heard,
+          entries: [
+            { type: "sale", customer: "Ada", item: "rice", unit: "bag", quantity: 2, amountNaira: 25000, amountPhrase: "25k", priceBasis: "total" },
+            PRIMARY.entries[1],
+          ],
+          totals: null, promise: null, question: null,
+        });
+      };
+      const t0 = Date.now();
+      const { proposal } = await proposeWithSecond(ctx, PRIMARY, PRIMARY, { fetchFn: slow });
+      const elapsed = Date.now() - t0;
+      assert.ok(elapsed >= 1000 && elapsed < 2500, `cut off near 1 s, took ${elapsed}ms`);
+      assert.deepEqual(proposal.flags, []);
+      assert.equal(proposal.question, null);
+      assert.ok(!proposal.assumptions.some((a) => a.includes("Two readings differ")), proposal.assumptions.join("; "));
+      assert.ok(!proposal.assumptions.includes(SECOND_CHECK_UNAVAILABLE), "late shows nothing");
+      assert.deepEqual(proposal.entries, EXPECTED_ENTRIES);
+      const card = renderProposalCard(proposal, { existing: [], shopId: SHOP });
+      assert.ok(card.buttons.some((b) => b.reply.title === "Save"), "Save enabled when late");
+      const row = statsRow(ctx, proposal.id);
+      assert.equal(row.agreed, "no_second_opinion");
+      assert.equal(row.outcome, "late");
     } finally {
       teardown(ctx);
     }

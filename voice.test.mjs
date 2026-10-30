@@ -893,6 +893,23 @@ describe("empty audio result retries once (fake data)", () => {
   const wavPath = `test-audio-retry-${process.pid}.wav`;
   const emptyReading = { heard: "lowam", entries: [], totals: null, promise: null, question: null };
 
+  it("audio: a normal note costs exactly one audio call", async () => {
+    writeFileSync(wavPath, Buffer.from("RIFFfake-wav-bytes"));
+    let calls = 0;
+    const ctx = setup(async () => {
+      calls++;
+      return PART_PAYMENT;
+    });
+    try {
+      const p = await propose(SHOP_A, { audioPath: wavPath }, ctx.deps);
+      assert.equal(calls, 1);
+      assert.equal(p.entries.length, 2);
+    } finally {
+      unlinkSync(wavPath);
+      teardown(ctx);
+    }
+  });
+
   it("audio: empty then good proposes from the retry, model called twice", async () => {
     writeFileSync(wavPath, Buffer.from("RIFFfake-wav-bytes"));
     let calls = 0;

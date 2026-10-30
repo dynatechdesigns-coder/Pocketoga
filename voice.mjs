@@ -6,7 +6,7 @@ import { extname } from "node:path";
 import { parseNaira, formatKobo, extractNairaAmounts } from "./money.mjs";
 import { escapeMd, customerOwedKobo, MISMATCH_PREFIX, BAD_AUDIO_JSON, TEXT_FAILED, MODEL_RETRY_FAILED, AUDIO_EMPTY_RETRY } from "./messages.mjs";
 import { resolvePromiseDate } from "./promises.mjs";
-import { fetchSecondReading, compareReadings, SECOND_OPINION_TIMEOUT_MS, SECOND_CHECK_UNAVAILABLE, SECOND_CHECK_CREDIT, NORMALISED_AMOUNT } from "./secondopinion.mjs";
+import { fetchSecondReading, compareReadings, SECOND_OPINION_TIMEOUT_MS, SECOND_OPINION_LATE_MS, SECOND_CHECK_UNAVAILABLE, SECOND_CHECK_CREDIT, NORMALISED_AMOUNT } from "./secondopinion.mjs";
 import { stockLevels, productKey } from "./products.mjs";
 import { costBasisByProduct, costBasisKey } from "./profit.mjs";
 
@@ -1209,7 +1209,7 @@ export async function propose(
   // Text: start the second fetch NOW, in parallel with the main model call
   // below (same input text). Voice must wait for the transcript and starts
   // after the primary (see below), in parallel with checks. Hard 4 s cap,
-  // no retry; late or failed is soft ("second check not available").
+  // per attempt plus one network retry; failed is soft, late is silent.
   let secondFetchPromise = null;
   if (!secondOff && norm.kind === "text" && norm.text.trim()) {
     secondFetchPromise = fetchSecondReading(norm.text, {
@@ -1332,12 +1332,34 @@ export async function propose(
   // are never touched. Late or failed adds the soft "second check not
   // available" with Save enabled. Never throws.
   let finalQuestion = question;
-  let second = { agreed: "no_second_opinion", differingFields: [], latencyMs: 0 };
+  let second = { agreed: "no_second_opinion", differingFields: [], latencyMs: 0, outcome: null };
   if (secondOpinions && secondFetchPromise) {
-    const { reading, latencyMs } = await secondFetchPromise;
+    // At most SECOND_OPINION_LATE_MS past the primary reading: a late
+    // second opinion is recorded and dropped, never shown to the trader.
+    // A finished check behaves exactly as before.
+    const tWait = Date.now();
+    const settled = await Promise.race([
+      secondFetchPromise.then((r) => ({ late: false, ...r })),
+      new Promise((resolve) => {
+        const timer = setTimeout(() => resolve({ late: true }), SECOND_OPINION_LATE_MS);
+        if (typeof timer.unref === "function") timer.unref();
+      }),
+    ]);
+    if (settled.late) {
+      const waitedMs = Date.now() - tWait;
+      if (timings) timings.secondMs = waitedMs;
+      secondFetchPromise = null;
+      second = { agreed: "no_second_opinion", differingFields: [], latencyMs: waitedMs, outcome: "late" };
+    } else {
+      secondFetchPromise = Promise.resolve({ reading: settled.reading, latencyMs: settled.latencyMs, failure: settled.failure ?? null });
+    }
+  }
+  if (secondOpinions && secondFetchPromise) {
+    const { reading, latencyMs, failure } = await secondFetchPromise;
     if (timings) timings.secondMs = latencyMs;
     second.latencyMs = latencyMs;
     if (!reading) {
+      second.outcome = failure ?? "error";
       if (!envelope.assumptions.includes(SECOND_CHECK_UNAVAILABLE)) envelope.assumptions.push(SECOND_CHECK_UNAVAILABLE);
     } else {
       let compared = null;
@@ -1392,6 +1414,7 @@ export async function propose(
       proposalId: row.id,
       agreed: second.agreed,
       differingFields: second.differingFields,
+      outcome: second.outcome ?? null,
       latencyMs: second.latencyMs,
     });
   }

@@ -8,7 +8,7 @@
 //
 // Runs off the critical path: propose() starts the fetch in parallel with
 // the main classification for text notes (same input text), with a hard
-// 4 s cap and no retry, so the worst add is 4 s and typically zero.
+// 4 s cap per attempt plus one network-only retry; the voice path still waits at most 1 s past the primary reading and drops the rest.
 // Voice notes must wait for the transcript, then run with the same cap.
 //
 // Import cycle with voice.mjs, by design: propose() calls runSecondOpinion,
@@ -24,12 +24,17 @@ import { checkModelOutput } from "./voice.mjs";
 
 export const BASETEN_BASE_URL = "https://inference.baseten.co/v1";
 export const SECOND_OPINION_TIMEOUT_MS = 4000;
+export const SECOND_OPINION_LATE_MS = 1000; // voice waits this long past the primary reading, then drops the check
 // Output cap: reasoning + visible JSON combined. 400 starved the short JSON
 // answer whenever the model reasoned first (2 usable answers in 11 notes);
 // 1000 leaves room for a short thought plus the JSON without slowing the
 // fast path — the 4 s cap still bounds every attempt.
 export const SECOND_OPINION_MAX_TOKENS = 1000;
 export const SECOND_OPINION_AGREED = ["yes", "no", "no_second_opinion"];
+// Why a check never completed, when it didn't: late (voice waited 1 s),
+// timeout (no response in time), error (an HTTP error or unparseable
+// output). Null means the comparison ran. Stored per row, never shown.
+export const SECOND_OPINION_OUTCOMES = ["late", "timeout", "error"];
 export const SECOND_CHECK_UNAVAILABLE = "Second check not available (Muse Spark Open via Baseten).";
 export const SECOND_CHECK_CREDIT = "Checked by Muse Spark Open via Baseten.";
 
@@ -44,6 +49,7 @@ CREATE TABLE IF NOT EXISTS second_opinions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   proposal_id INTEGER NOT NULL REFERENCES proposals(id),
   agreed TEXT NOT NULL CHECK (agreed IN ('yes','no','no_second_opinion')),
+  outcome TEXT CHECK (outcome IN ('late','timeout','error')),
   differing_fields TEXT NOT NULL,
   latency_ms INTEGER NOT NULL CHECK (typeof(latency_ms) = 'integer' AND latency_ms >= 0),
   created_at TEXT NOT NULL
@@ -62,9 +68,15 @@ export class SecondOpinionStore {
       this.ownsDb = false;
     }
     this.db.exec(SECOND_OPINION_SCHEMA);
+    // Databases created before the outcome column keep working: old rows
+    // read back with outcome null.
+    const cols = this.db.prepare("PRAGMA table_info(second_opinions)").all().map((c) => c.name);
+    if (!cols.includes("outcome")) {
+      this.db.exec("ALTER TABLE second_opinions ADD COLUMN outcome TEXT CHECK (outcome IN ('late','timeout','error'))");
+    }
   }
 
-  record({ proposalId, agreed, differingFields = [], latencyMs = 0, createdAt = null }) {
+  record({ proposalId, agreed, differingFields = [], latencyMs = 0, outcome = null, createdAt = null }) {
     if (!Number.isInteger(proposalId)) throw new Error("proposalId must be an integer");
     if (!SECOND_OPINION_AGREED.includes(agreed)) {
       throw new Error(`agreed must be one of ${SECOND_OPINION_AGREED.join(", ")}`);
@@ -72,12 +84,15 @@ export class SecondOpinionStore {
     if (!Number.isInteger(latencyMs) || latencyMs < 0) {
       throw new Error("latencyMs must be an integer >= 0");
     }
+    if (outcome !== null && outcome !== undefined && !SECOND_OPINION_OUTCOMES.includes(outcome)) {
+      throw new Error(`outcome must be one of ${SECOND_OPINION_OUTCOMES.join(", ")}`);
+    }
     const fields = Array.isArray(differingFields) ? differingFields : [];
     const result = this.db
       .prepare(
-        "INSERT INTO second_opinions (proposal_id, agreed, differing_fields, latency_ms, created_at) VALUES (?, ?, ?, ?, ?)"
+        "INSERT INTO second_opinions (proposal_id, agreed, outcome, differing_fields, latency_ms, created_at) VALUES (?, ?, ?, ?, ?, ?)"
       )
-      .run(proposalId, agreed, JSON.stringify(fields), latencyMs, createdAt ?? new Date().toISOString());
+      .run(proposalId, agreed, outcome ?? null, JSON.stringify(fields), latencyMs, createdAt ?? new Date().toISOString());
     return this.db.prepare("SELECT * FROM second_opinions WHERE id = ?").get(Number(result.lastInsertRowid));
   }
 
@@ -116,30 +131,38 @@ function stripReasoning(content) {
 // whether the content was empty, reasoning and output token counts.
 // Numbers only — never the note text or model output. Silent unless
 // POCKETOGA_TIMING=1.
-function logSecondAttempt({ status, finish, empty, reasoning, output, ms }) {
+function logSecondAttempt({ status, finish, empty, reasoning, output, fail, attempts, ms }) {
   if (process.env.POCKETOGA_TIMING !== "1") return;
   console.log(
-    `secondopinion status=${status} finish=${finish} empty=${empty} reasoning_tokens=${reasoning} output_tokens=${output} ms=${ms}`
+    `secondopinion status=${status} finish=${finish} empty=${empty} reasoning_tokens=${reasoning} output_tokens=${output} fail=${fail} attempts=${attempts} ms=${ms}`
   );
 }
 
 // One Baseten reading of the note text. Returns { reading, latencyMs };
 // reading is null on any failure (transport, status, unparseable shape).
 // Sends only the single note text — never audio, images, phone numbers or
-// ledger data. Minimal prompt, minimal reasoning, small max output, no
-// retry: a timeout fails fast to "not available" instead of doubling to 8 s.
+// Minimal prompt, minimal reasoning, small max output, one network-only
+// retry: a failed attempt degrades to "not available" instead of blocking.
 // Deterministic sampling (temperature 0 + fixed seed) like the main calls; the endpoint is OpenAI-compatible so the names match, though the Meta docs do not cover this host. A rejection degrades to "not available".
 // Exported so propose() can start the fetch in parallel with classification.
 export async function fetchSecondReading(heardText, { apiKey, model, fetchFn, timeoutMs = SECOND_OPINION_TIMEOUT_MS }) {
   const start = Date.now();
-  const info = { status: "error", finish: "none", empty: true, reasoning: "n/a", output: "n/a" };
+  const info = { status: "error", finish: "none", empty: true, reasoning: "n/a", output: "n/a", fail: "none", attempts: "n/a" };
   const failed = () => {
+    info.attempts = fetchCalls;
     logSecondAttempt({ ...info, ms: Date.now() - start });
-    return { reading: null, latencyMs: Date.now() - start };
+    return { reading: null, latencyMs: Date.now() - start, failure: info.fail };
+  };
+  // Count fetch invocations so attempts is exact even when fetchWithRetry
+  // throws (timeout path): attempts = calls, retries = calls - 1.
+  let fetchCalls = 0;
+  const countingFetch = async (url, opts) => {
+    fetchCalls++;
+    return fetchFn(url, opts);
   };
   try {
     const res = await fetchWithRetry(
-      fetchFn,
+      countingFetch,
       `${BASETEN_BASE_URL}/chat/completions`,
       {
         method: "POST",
@@ -157,10 +180,10 @@ export async function fetchSecondReading(heardText, { apiKey, model, fetchFn, ti
           ],
         }),
       },
-      { timeoutMs, retries: 0 }
+      { timeoutMs, retries: 1 }
     );
     info.status = Number.isInteger(res?.status) ? res.status : (res?.ok ? 200 : "error");
-    if (!res.ok) return failed();
+    if (!res.ok) { info.fail = "error"; return failed(); }
     const data = await res.json().catch(() => null);
     const choice = data?.choices?.[0] ?? {};
     info.finish = choice.finish_reason ?? "none";
@@ -174,13 +197,14 @@ export async function fetchSecondReading(heardText, { apiKey, model, fetchFn, ti
     try {
       reading = parseModelJson(stripReasoning(content));
     } catch {
-      return failed();
+      { info.fail = "error"; return failed(); }
     }
     if (!reading || typeof reading !== "object" || Array.isArray(reading)) return failed();
+    info.attempts = fetchCalls;
     logSecondAttempt({ ...info, ms: Date.now() - start });
-    return { reading, latencyMs: Date.now() - start };
-  } catch {
-    return failed();
+    return { reading, latencyMs: Date.now() - start, failure: null };
+  } catch (err) {
+    info.fail = err?.name === "TimeoutError" ? "timeout" : "error"; return failed();
   }
 }
 

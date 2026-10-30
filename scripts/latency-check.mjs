@@ -25,6 +25,21 @@ import { renderProposalCard, TEXT_FAILED, MODEL_RETRY_FAILED } from "../messages
 const SHOP = "lat-shop";
 const MOCK = !process.env.META_API_KEY;
 
+// Network-retry tally from the POCKETOGA_TIMING=1 one-liners: every model
+// and secondopinion line carries attempts=N (1 = no retry). The patch only
+// counts; every line still prints. Without TIMING=1 the counts stay 0.
+let modelRetries = 0;
+let secondRetries = 0;
+const realLog = console.log.bind(console);
+console.log = (...args) => {
+  const line = args.map((a) => String(a)).join(" ");
+  let m = /^model kind=\S+ retry=\d+ attempts=(\d+)/.exec(line);
+  if (m) modelRetries += Math.max(0, Number(m[1]) - 1);
+  m = /^secondopinion .* attempts=(\d+)/.exec(line);
+  if (m) secondRetries += Math.max(0, Number(m[1]) - 1);
+  realLog(...args);
+};
+
 // --- Fake notes (fixed text; readings below mirror what the model returns)
 const NOTES = [
   "Mama Chinedu buy 2 bag of rice for me. Each 15k each she paid 25k and she go pay on Wednesday next week",
@@ -215,6 +230,9 @@ async function main() {
   let secondFinished = 0;
   let secondAgreed = 0;
   let secondAttempted = 0;
+  let secondLate = 0;
+  let secondTimeout = 0;
+  let secondError = 0;
   const secondOf = (proposalId) => {
     const rows = ctx.secondOpinions.listByProposal(proposalId);
     return rows.length > 0 ? rows[rows.length - 1] : null;
@@ -252,6 +270,9 @@ async function main() {
       if (agreed === "yes") secondAgreed++;
     } else if ((timings.secondMs ?? 0) > 0 || (srow?.latency_ms ?? 0) > 0) {
       secondAttempted++;
+      if (srow?.outcome === "late") secondLate++;
+      else if (srow?.outcome === "timeout") secondTimeout++;
+      else if (srow?.outcome === "error") secondError++;
     }
     const sflag = agreed === "yes" ? "yes" : agreed === "no" ? "no" : "--";
     console.log(
@@ -304,7 +325,9 @@ async function main() {
     `voice median ${median(voiceTotals)}ms (tone audio, transcription timing only); ` +
     `questioned ${questioned}/${NOTES.length} (${Math.round((questioned / NOTES.length) * 100)}%); ` +
     `failures ${failures}/${NOTES.length}; ` +
-    `second check finished in time ${secondFinished}/${secondAttempted} (${secondRate}%), agreed ${secondAgreed}/${secondFinished} (${agreeRate}%)`);
+    `second check finished in time ${secondFinished}/${secondAttempted} (${secondRate}%), agreed ${secondAgreed}/${secondFinished} (${agreeRate}%); ` +
+    `second outcomes: late ${secondLate}, timeout ${secondTimeout}, error ${secondError}; ` +
+    `network retries: model ${modelRetries}, second-opinion ${secondRetries}`);
 }
 
 await main();
