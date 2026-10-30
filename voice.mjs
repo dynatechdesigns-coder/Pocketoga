@@ -3,7 +3,7 @@
 // ledger. Uses fake data in tests; never touches real trader data.
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
-import { parseNaira, formatKobo } from "./money.mjs";
+import { parseNaira, formatKobo, extractNairaAmounts } from "./money.mjs";
 import { escapeMd, customerOwedKobo, MISMATCH_PREFIX, BAD_AUDIO_JSON, TEXT_FAILED, MODEL_RETRY_FAILED } from "./messages.mjs";
 import { resolvePromiseDate } from "./promises.mjs";
 import { fetchSecondReading, compareReadings, SECOND_OPINION_TIMEOUT_MS, SECOND_CHECK_UNAVAILABLE, SECOND_CHECK_CREDIT, NORMALISED_AMOUNT } from "./secondopinion.mjs";
@@ -644,6 +644,32 @@ export function hintMismatchNote(hint, entries) {
 
 // Distinct customer names already in the shop's own ledger. Empty when no
 // ledger was supplied, so those callers skip the similar-name check.
+// Known-names hint for the model call: the shop's existing customers and
+// catalog products, capped so the prompt stays short. Helps audio
+// transcription pick "Ada" over "dado" and text extraction reuse exact
+// spellings. Null when the shop has neither.
+function modelContext(ledgerRows, catalog) {
+  const customers = [];
+  for (const r of ledgerRows ?? []) {
+    if (typeof r?.customer === "string" && r.customer.trim() && !customers.includes(r.customer)) {
+      customers.push(r.customer);
+      if (customers.length >= 20) break;
+    }
+  }
+  const items = [];
+  for (const p of catalog ?? []) {
+    if (typeof p?.name === "string" && p.name.trim() && !items.includes(p.name)) {
+      items.push(p.name);
+      if (items.length >= 20) break;
+    }
+  }
+  if (customers.length === 0 && items.length === 0) return null;
+  const parts = [];
+  if (customers.length > 0) parts.push(`customers: ${customers.join(", ")}`);
+  if (items.length > 0) parts.push(`products: ${items.join(", ")}`);
+  return `Known names (exact spellings; prefer these when the note sounds like them) — ${parts.join("; ")}.`;
+}
+
 function shopCustomers(ledger, shopId) {
   if (!ledger || typeof ledger.list !== "function") return [];
   const seen = new Set();
@@ -710,6 +736,94 @@ function checkOverpayment(entries, ledgerRows, flags) {
     if (owed > 0 && paid > owed) {
       flags.push(`${name} owes ${formatKobo(owed)} but ${formatKobo(paid)} was paid. Which is right?`);
     }
+  }
+}
+
+// Number sanity checks (plain code, never the model). All three run after
+// every other check, just before the question is picked.
+
+// (a) Payments against the actual balance. Overpayment of a known debt
+// already blocks above; this adds the soft side, Save enabled: a payment for
+// a customer with no recorded debt, and a "remain"/"balance" payment that
+// does not match the recorded balance.
+const REMAINDER_PHRASE_RE = /\b(remains?|remaining|remainder|balances?|left)\b/i;
+function checkPaymentBalance(entries, ledgerRows, flags, assumptions) {
+  if (!ledgerRows) return;
+  const paidBy = new Map();
+  const soldTo = new Set();
+  for (const e of entries) {
+    if (!e.customer) continue;
+    const norm = normalizeName(e.customer);
+    if (e.type === "sale") soldTo.add(norm);
+    if (e.type === "payment" && Number.isInteger(e.amountKobo)) {
+      const cur = paidBy.get(norm) ?? { total: 0, name: e.customer, remain: null };
+      cur.total += e.amountKobo;
+      if (REMAINDER_PHRASE_RE.test(e.amountPhrase ?? "")) cur.remain = e.amountKobo;
+      paidBy.set(norm, cur);
+    }
+  }
+  for (const [norm, paid] of paidBy) {
+    if (soldTo.has(norm)) continue;
+    const owed = customerOwedKobo({ existing: ledgerRows, proposalEntries: [], customer: paid.name });
+    if (owed > 0 && paid.total > owed) continue; // blocked above as overpayment
+    if (owed <= 0) {
+      const line = `No debt recorded for ${paid.name}, yet ${formatKobo(paid.total)} was paid.`;
+      if (!assumptions.includes(line)) assumptions.push(line);
+      continue;
+    }
+    if (paid.remain !== null && paid.remain !== owed) {
+      const line = `Note says the remaining ${formatKobo(paid.remain)} but ${paid.name} owes ${formatKobo(owed)}.`;
+      if (!assumptions.includes(line)) assumptions.push(line);
+    }
+  }
+}
+
+// (b) Usual-price tripwire (soft, Save enabled): a sale/restock whose
+// per-unit price differs from the shop's usual price for that item by 5x or
+// more gets one "Is this right?" line. Catches decimal-scale model errors
+// like a 240,000 total on 6 tins at a usual 1,500.
+function checkUsualPrice(entries, catalog, assumptions) {
+  if (!catalog || catalog.length === 0) return;
+  for (const e of entries) {
+    if (e.type !== "sale" && e.type !== "restock") continue;
+    if (!e.item || !Number.isInteger(e.amountKobo) || e.amountKobo <= 0) continue;
+    const usual = knownUnitPriceKobo(e.item, e.unit, e.type, catalog);
+    if (!Number.isInteger(usual) || usual <= 0) continue;
+    const perUnit = Number.isInteger(e.eachKobo)
+      ? e.eachKobo
+      : Number.isInteger(e.quantity) && e.quantity > 0 ? e.amountKobo / e.quantity : e.amountKobo;
+    const ratio = perUnit / usual;
+    if (ratio >= 5 || ratio <= 0.2) {
+      const line = `${e.item} at ${formatKobo(Math.round(perUnit))} each (usual ${formatKobo(usual)}). Is this right?`;
+      if (!assumptions.includes(line)) assumptions.push(line);
+    }
+  }
+}
+
+// (c) Heard-vs-amount magnitude tripwire (blocking): when no number spoken in
+// the note is within 2x of the entry amount (or its per-unit share), the
+// amount is the wrong order of magnitude — e.g. 2500 heard as 25000. One
+// short question, Save locked. Skips notes with no spoken digits.
+function heardNumbersKobo(heard) {
+  // Digits ("2500", "15k") and number words ("seventeen thousand", "five
+  // k"): word-spoken amounts must count, or quantity-only digits ("8
+  // crates ... seventeen thousand") would false-flag.
+  return extractNairaAmounts(heard).map((n) => Math.round(n * 100)).filter((k) => k > 0);
+}
+function checkHeardMagnitude(heard, entries, flags) {
+  const nums = heardNumbersKobo(heard);
+  if (nums.length === 0) return;
+  for (const e of entries) {
+    if (!Number.isInteger(e.amountKobo) || e.amountKobo <= 0) continue;
+    const values = [e.amountKobo];
+    if (Number.isInteger(e.quantity) && e.quantity > 1) values.push(e.amountKobo / e.quantity);
+    const ok = nums.some((n) => values.some((v) => n >= v / 2 && n <= v * 2));
+    if (ok) continue;
+    const closest = nums.slice().sort((a, b) => Math.abs(Math.log(a / e.amountKobo)) - Math.abs(Math.log(b / e.amountKobo)))[0];
+    const heardNaira = closest / 100;
+    const heardShown = Number.isInteger(heardNaira) ? heardNaira.toLocaleString("en-US") : String(heardNaira);
+    const what = e.item ? `${e.item} reads ` : "the entry reads ";
+    flags.push(`Heard ${heardShown} but ${what}${formatKobo(e.amountKobo)}. Which is right?`);
   }
 }
 
@@ -820,7 +934,7 @@ function combinedCustomerQuestion(missing) {
 // genuinely missing (combined across entries), a customer is missing (the
 // ledger needs one), the note's own numbers contradict each other (total,
 // paid and stated remainder do not add up), the note says each but the
-// amount was read as a total, a payment exceeds what is owed, two customers
+// amount was read as a total, a payment exceeds what is owed, a heard amount reads at the wrong magnitude, two customers
 // are equally close, or there is nothing to record. The model's own question
 // echoes back as a flag only when code found nothing to ask — code decides.
 // ledgerRows and catalog are optional.
@@ -867,6 +981,9 @@ export function checkModelOutput(
     if (out.line && !assumptions.includes(out.line)) assumptions.push(out.line);
   }
   checkOverpayment(entries, ledgerRows, flags);
+  checkPaymentBalance(entries, ledgerRows, flags, assumptions);
+  checkUsualPrice(entries, catalog, assumptions);
+  checkHeardMagnitude(heard, entries, flags);
   // One question at most, by priority. Missing amounts combine across
   // entries; anything not asked this round recomputes after the next Fix.
   let question = null;
@@ -1050,14 +1167,18 @@ export async function propose(
   const tModel = Date.now();
   const modelPromise = Promise.resolve().then(() =>
     norm.kind === "text"
-      ? model.complete({ text: norm.text, ...(cleanHint ? { hint: cleanHint } : null) })
-      : model.complete({ audio: norm.audio, ...(cleanHint ? { hint: cleanHint } : null) })
+      ? model.complete({ text: norm.text, ...(cleanHint ? { hint: cleanHint } : null), ...contextArg })
+      : model.complete({ audio: norm.audio, ...(cleanHint ? { hint: cleanHint } : null), ...contextArg })
   );
   modelPromise.catch(() => {});
   const ledgerRows = ledger && typeof ledger.list === "function" ? ledger.list(shopId) : null;
   const catalog = products && typeof products.listByShop === "function" ? products.listByShop(shopId) : null;
   let raw;
   try {
+  // Known names for the model call above (its callback runs after this sync
+  // block, so contextArg is set in time): helps audio hear "Ada" not "dado".
+  var knownContext = modelContext(ledgerRows, catalog); // var: hoisted, so the model callback above closes over these;
+  var contextArg = knownContext ? { context: knownContext } : null; // assignment runs before the callback fires
     raw = await modelPromise;
   } catch (err) {
     if (isTruncated(err)) modelTruncated = true;

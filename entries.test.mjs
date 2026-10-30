@@ -229,6 +229,38 @@ describe("example notes (mock model)", () => {
     }
   });
 
+  it("debt statement: 'Mummy Patrick dey owe me 5k' records a sale of unknown item as owed, no question", async () => {
+    const ctx = setup();
+    try {
+      const heard = "Mummy Patrick dey owe me 5k";
+      const p = await proposeNote(ctx, heard, reading(heard, [
+        { type: "sale", customer: "Mummy Patrick", item: null, unit: null, quantity: null, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" },
+      ]));
+      assert.equal(p.question, null);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.entries.length, 1);
+      assert.equal(p.entries[0].type, "sale");
+      assert.equal(p.entries[0].customer, "Mummy Patrick");
+      assert.equal(p.entries[0].amountKobo, 500000);
+      assert.equal(p.entries[0].item, null);
+      assert.equal(p.effects[0].destination, "Sales");
+      assert.equal(p.effects[0].stockBefore, null);
+      assert.equal(p.effects[0].stockAfter, null);
+      assert.ok(p.assumptions.includes("No item stated; stock unchanged."), JSON.stringify(p.assumptions));
+      const card = renderProposalCard(p, { existing: ctx.ledger.list(SHOP), shopId: SHOP });
+      assert.match(card.text, /Mummy Patrick owes \*₦5,000\* after saving/);
+      confirm(ctx, p.id);
+      const rows = ctx.ledger.list(SHOP);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].type, "sale");
+      assert.equal(rows[0].customer, "Mummy Patrick");
+      assert.equal(rows[0].amount_kobo, 500000);
+      assert.equal(ctx.ledger.verify(SHOP).ok, true);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
   it("mixed note without amounts asks instead of guessing, then confirms all three", async () => {
     const ctx = setup();
     try {
@@ -248,7 +280,7 @@ describe("example notes (mock model)", () => {
       assert.throws(() => confirm(ctx, p.id), /cannot confirm/);
       assert.equal(ctx.ledger.list(SHOP).length, 0);
 
-      ctx.model = createMockModelClient(async () => reading("I sold 3 cartons of Indomie, bought 2 bags of rice and spent 2k on fuel", [
+      ctx.model = createMockModelClient(async () => reading("I sold 3 cartons of Indomie (indomie 15k), bought 2 bags of rice (rice 90k) and spent 2k on fuel", [
         { type: "sale", customer: "Chidi", item: "Indomie", unit: "carton", quantity: 3, amountNaira: 15000, amountPhrase: "15k", priceBasis: "total" },
         { type: "purchase", customer: null, item: "rice", unit: "bag", quantity: 2, amountNaira: 90000, amountPhrase: "90k", priceBasis: "total" },
         { type: "expense", customer: null, item: "fuel", amountNaira: 2000, amountPhrase: "2k", priceBasis: "total" },
@@ -261,6 +293,218 @@ describe("example notes (mock model)", () => {
       assert.equal(out.recordedIds.length, 3);
       assert.equal(ctx.ledger.list(SHOP).length, 3);
       assert.equal(ctx.ledger.verify(SHOP).ok, true);
+    } finally {
+      teardown(ctx);
+    }
+  });
+});
+
+describe("payment-vs-sale, hearing rule, debt statement (mock model)", () => {
+  const paymentReading = (heard) => reading(heard, [
+    { type: "payment", customer: "Ada", item: null, unit: null, quantity: null, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" },
+  ]);
+
+  for (const note of ["Ada don pay 5k for the rice wey she buy", "Ada don pay 5k", "Ada pay 5k"]) {
+    it(`payment received, never a sale: '${note}'`, async () => {
+      const ctx = setup();
+      try {
+        const p = await proposeNote(ctx, note, paymentReading(note));
+        assert.equal(p.entries.length, 1);
+        assert.equal(p.entries[0].type, "payment");
+        assert.equal(p.entries[0].customer, "Ada");
+        assert.equal(p.entries[0].amountKobo, 500000);
+        assert.equal(p.effects[0].destination, "Debts");
+        assert.equal(p.question, null);
+        confirm(ctx, p.id);
+        const rows = ctx.ledger.list(SHOP);
+        assert.equal(rows.length, 1);
+        assert.equal(rows[0].type, "payment");
+        assert.equal(ctx.ledger.verify(SHOP).ok, true);
+      } finally {
+        teardown(ctx);
+      }
+    });
+  }
+
+  it("heard text is stored verbatim; an unclear amount asks instead of guessing", async () => {
+    const ctx = setup();
+    try {
+      const heard = "Ada [unclear] garri";
+      const p = await proposeNote(ctx, heard, reading(heard, [
+        { type: "sale", customer: "Ada", item: "garri", unit: null, quantity: null, amountNaira: null, amountPhrase: null, priceBasis: "total" },
+      ], { question: "how much was the garri?" }));
+      assert.equal(p.heard, heard);
+      assert.ok(p.heard.includes("[unclear]"));
+      assert.ok(p.question !== null && p.question.length > 0);
+      assert.equal(ctx.ledger.list(SHOP).length, 0);
+      assert.throws(() => confirm(ctx, p.id), /cannot confirm/);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("debt statement: 'Ada dey owe me 5k' records a sale of unknown item as owed, no question", async () => {
+    const ctx = setup();
+    try {
+      const heard = "Ada dey owe me 5k";
+      const p = await proposeNote(ctx, heard, reading(heard, [
+        { type: "sale", customer: "Ada", item: null, unit: null, quantity: null, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" },
+      ]));
+      assert.equal(p.question, null);
+      assert.equal(p.entries.length, 1);
+      assert.equal(p.entries[0].type, "sale");
+      assert.equal(p.entries[0].item, null);
+      assert.equal(p.entries[0].amountKobo, 500000);
+      assert.equal(p.effects[0].destination, "Sales");
+      assert.equal(p.effects[0].stockAfter, null);
+      confirm(ctx, p.id);
+      assert.equal(ctx.ledger.list(SHOP).length, 1);
+      assert.equal(ctx.ledger.verify(SHOP).ok, true);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("propose passes known customers and products as model context", async () => {
+    const ctx = setup();
+    try {
+      ctx.ledger.append({ shopId: SHOP, type: "sale", amountKobo: 500000, customer: "Ada", item: "rice", quantity: 1, unit: "bag" });
+      ctx.products.ensure({ shopId: SHOP, name: "rice", unit: "bag" });
+      let seen = null;
+      ctx.model = createMockModelClient(async (req) => {
+        seen = req;
+        return reading("Ada buy rice", [saleEntry()]);
+      });
+      await propose(SHOP, "Ada buy rice", { proposals: ctx.proposals, model: ctx.model, ledger: ctx.ledger, products: ctx.products });
+      assert.ok(seen && typeof seen.context === "string" && seen.context.includes("Ada"), JSON.stringify(seen && seen.context));
+      assert.ok(seen.context.includes("rice"), seen.context);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("propose sends no context on a fresh shop", async () => {
+    const ctx = setup();
+    try {
+      let seen = null;
+      ctx.model = createMockModelClient(async (req) => {
+        seen = req;
+        return reading("Ada buy rice", [saleEntry()]);
+      });
+      await propose(SHOP, "Ada buy rice", { proposals: ctx.proposals, model: ctx.model, ledger: ctx.ledger, products: ctx.products });
+      assert.equal(seen.context, undefined);
+    } finally {
+      teardown(ctx);
+    }
+  });
+});
+
+describe("number sanity checks (mock model)", () => {
+  it("payment with no recorded debt is soft-flagged, Save stays enabled", async () => {
+    const ctx = setup();
+    try {
+      const heard = "Ada pay 5k";
+      const p = await proposeNote(ctx, heard, reading(heard, [
+        { type: "payment", customer: "Ada", item: null, unit: null, quantity: null, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" },
+      ]));
+      assert.equal(p.question, null);
+      assert.ok(p.assumptions.some((a) => /No debt recorded for Ada/.test(a)), p.assumptions.join("; "));
+      confirm(ctx, p.id);
+      assert.equal(ctx.ledger.list(SHOP).length, 1);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("'remain' payment that does not match the recorded balance is soft-flagged", async () => {
+    const ctx = setup();
+    try {
+      ctx.ledger.append({ shopId: SHOP, type: "sale", amountKobo: 500000, customer: "Bola", item: null, quantity: null, unit: null });
+      const heard = "Bola don pay the remain 2500";
+      const p = await proposeNote(ctx, heard, reading(heard, [
+        { type: "payment", customer: "Bola", item: null, unit: null, quantity: null, amountNaira: 2500, amountPhrase: "the remain 2500", priceBasis: "total" },
+      ]));
+      assert.equal(p.question, null);
+      assert.ok(p.assumptions.some((a) => /remaining ₦2,500.*owes ₦5,000/.test(a)), p.assumptions.join("; "));
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("'remain' payment that matches the recorded balance stays silent", async () => {
+    const ctx = setup();
+    try {
+      ctx.ledger.append({ shopId: SHOP, type: "sale", amountKobo: 250000, customer: "Bola", item: null, quantity: null, unit: null });
+      const heard = "Bola don pay the remain 2500";
+      const p = await proposeNote(ctx, heard, reading(heard, [
+        { type: "payment", customer: "Bola", item: null, unit: null, quantity: null, amountNaira: 2500, amountPhrase: "the remain 2500", priceBasis: "total" },
+      ]));
+      assert.equal(p.question, null);
+      assert.ok(!p.assumptions.some((a) => /remaining|No debt/.test(a)), p.assumptions.join("; "));
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("240,000 total on 6 tins at a usual 1,500 gets an 'Is this right?' line; entries unchanged", async () => {
+    const ctx = setup();
+    try {
+      const row = ctx.products.ensure({ shopId: SHOP, name: "tomato", unit: "tin" });
+      ctx.products.setPrices(row.id, { sellPriceKobo: 150000 });
+      const heard = "Chinedu buy 6 tins of tomato for 240000, e pay 5k";
+      const p = await proposeNote(ctx, heard, reading(heard, [
+        { type: "sale", customer: "Chinedu", item: "tomato", unit: "tin", quantity: 6, amountNaira: 240000, amountPhrase: "240000", priceBasis: "total" },
+        { type: "payment", customer: "Chinedu", item: null, unit: null, quantity: null, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" },
+      ]));
+      assert.ok(p.assumptions.some((a) => /Is this right\?/.test(a)), p.assumptions.join("; "));
+      assert.equal(p.entries[0].amountKobo, 24000000);
+      assert.equal(p.entries[0].type, "sale");
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("a correct 9,000 total at the usual 1,500 gets no 'Is this right?' line", async () => {
+    const ctx = setup();
+    try {
+      const row = ctx.products.ensure({ shopId: SHOP, name: "tomato", unit: "tin" });
+      ctx.products.setPrices(row.id, { sellPriceKobo: 150000 });
+      const heard = "Chinedu buy 6 tins of tomato, 9000 total, e pay 5k";
+      const p = await proposeNote(ctx, heard, reading(heard, [
+        { type: "sale", customer: "Chinedu", item: "tomato", unit: "tin", quantity: 6, amountNaira: 9000, amountPhrase: "9000", priceBasis: "total" },
+        { type: "payment", customer: "Chinedu", item: null, unit: null, quantity: null, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" },
+      ]));
+      assert.ok(!p.assumptions.some((a) => /Is this right\?/.test(a)), p.assumptions.join("; "));
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("2500 heard as 25000 blocks with a magnitude question", async () => {
+    const ctx = setup();
+    try {
+      const heard = "Bola don pay the remain 2500";
+      const p = await proposeNote(ctx, heard, reading(heard, [
+        { type: "payment", customer: "Bola", item: null, unit: null, quantity: null, amountNaira: 25000, amountPhrase: "2500", priceBasis: "total" },
+      ]));
+      assert.ok(p.question !== null && /Which is right\?/.test(p.question), String(p.question));
+      assert.throws(() => confirm(ctx, p.id), /cannot confirm/);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("correct each-basis amounts pass the magnitude check silently", async () => {
+    const ctx = setup();
+    try {
+      const heard = "Chinedu buy 6 tins of tomato, 1500 each, e pay 5k";
+      const p = await proposeNote(ctx, heard, reading(heard, [
+        { type: "sale", customer: "Chinedu", item: "tomato", unit: "tin", quantity: 6, amountNaira: 1500, amountPhrase: "1500 each", priceBasis: "each" },
+        { type: "payment", customer: "Chinedu", item: null, unit: null, quantity: null, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" },
+      ]));
+      assert.equal(p.question, null);
+      assert.ok(!p.flags.some((f) => /Heard .* Which is right\?/.test(f)), p.flags.join("; "));
+      assert.equal(p.entries[0].amountKobo, 900000);
     } finally {
       teardown(ctx);
     }

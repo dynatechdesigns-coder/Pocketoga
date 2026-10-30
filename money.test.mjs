@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseNaira, nairaToKobo, formatKobo } from "./money.mjs";
+import { parseNaira, nairaToKobo, formatKobo, extractNairaAmounts } from "./money.mjs";
 
 describe("parseNaira (deterministic money parser)", () => {
   it("parses the required cases", () => {
@@ -15,12 +15,14 @@ describe("parseNaira (deterministic money parser)", () => {
   it("parses variants", () => {
     assert.equal(parseNaira("₦1,000").kobo, 100000);
     assert.equal(parseNaira("twenty-five thousand").kobo, 2500000);
+    assert.equal(parseNaira("forty-five hundred").kobo, 450000);
     assert.equal(parseNaira("one thousand five hundred").kobo, 150000);
     assert.equal(parseNaira("one hundred and five").kobo, 10500);
     assert.equal(parseNaira("100").kobo, 10000);
     assert.equal(parseNaira("2,500 naira").kobo, 250000);
     assert.equal(parseNaira("N 3,000").kobo, 300000);
     assert.equal(parseNaira("five k").kobo, 500000);
+    assert.equal(parseNaira("two k").kobo, 200000);
     assert.equal(parseNaira("2.55k").kobo, 255000);
     assert.equal(parseNaira("0.5").kobo, 50);
     assert.deepEqual(parseNaira("3k remain"), { kobo: 300000, remainder: true });
@@ -42,6 +44,15 @@ describe("parseNaira (deterministic money parser)", () => {
     assert.throws(() => nairaToKobo(15.5), /whole naira/);
     assert.throws(() => nairaToKobo(-1), /negative/);
     assert.throws(() => nairaToKobo("15"), /whole naira/);
+  });
+
+  it("extractNairaAmounts finds digits and number words", () => {
+    assert.deepEqual(extractNairaAmounts("Bola don pay the remain 2500"), [2500]);
+    assert.deepEqual(extractNairaAmounts("8 crates of eggs for seventeen thousand"), [8, 17000]);
+    assert.deepEqual(extractNairaAmounts("Ada pay five k"), [5000]);
+    assert.deepEqual(extractNairaAmounts("forty-five hundred and 15k"), [4500, 15000]);
+    assert.deepEqual(extractNairaAmounts("2 crates egg, 8 thousand 5 hundred each"), [2, 8500]);
+    assert.deepEqual(extractNairaAmounts("no numbers here"), []);
   });
 
   it("formatKobo prints naira for questions", () => {

@@ -131,6 +131,58 @@ export function parseNaira(phrase) {
   return { kobo: toKobo(naira, phrase), remainder };
 }
 
+// Every naira amount stated in free text: digit tokens ("2500", "15k",
+// "N2,500") plus English number-word runs ("forty-five hundred", "five k").
+// Powers the heard-vs-amount magnitude check. Never throws; deduped.
+const NUMBER_WORDS = new Set([...Object.keys(ONES), ...Object.keys(TENS), ...Object.keys(SCALES)]);
+function wordsToNaira(run) {
+  const toks = run.slice();
+  let mult = 1;
+  if (toks.length > 1 && toks[toks.length - 1] === "k") {
+    toks.pop();
+    mult = 1000;
+  }
+  return parseWords(toks.join(" "), toks.join(" ")) * mult;
+}
+export function extractNairaAmounts(text) {
+  const out = [];
+  const push = (n) => {
+    if (Number.isFinite(n) && n > 0) out.push(n);
+  };
+  let s = String(text ?? "").toLowerCase().replace(/₦/g, " ");
+  s = s.replace(/\bn(?=\d)/g, " "); // "N2,500"
+  // One pass in text order: "k"-suffixed digits stand alone ("15k"), bare
+  // digits join the number-word run ("8 thousand" = 8000, not 8 + 1100).
+  const tokens = s.match(/\d[\d,]*(?:\.\d+)?(?:\s*k\b)?|[a-z]+/g) ?? [];
+  let run = [];
+  const flush = () => {
+    if (run.length > 0) {
+      try {
+        push(wordsToNaira(run));
+      } catch {
+        // Not a number run: ignore it.
+      }
+      run = [];
+    }
+  };
+  for (const tok of tokens) {
+    const km = tok.match(/^(\d[\d,]*(?:\.\d+)?)\s*k$/);
+    if (km) {
+      flush();
+      push(Number(km[1].replace(/,/g, "")) * 1000);
+      continue;
+    }
+    if (/^\d/.test(tok)) {
+      run.push(tok.replace(/,/g, ""));
+      continue;
+    }
+    if (tok === "and" || NUMBER_WORDS.has(tok) || (tok === "k" && run.length > 0)) run.push(tok);
+    else flush();
+  }
+  flush();
+  return [...new Set(out)];
+}
+
 // Whole naira from the model to integer kobo. Rejects anything else.
 export function nairaToKobo(n) {
   if (typeof n !== "number" || !Number.isInteger(n)) {

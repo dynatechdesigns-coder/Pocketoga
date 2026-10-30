@@ -10,3 +10,5 @@ dist/
 *.log
 web/public/landing/photos/_originals/
 test-audio/
+
+test-audio/

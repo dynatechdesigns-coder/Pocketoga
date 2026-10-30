@@ -2,7 +2,7 @@
 // always mocked — no network in tests. Fake data only.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createModelClient, MODEL_TEXT_MAX_TOKENS, SYSTEM_PROMPT } from "./model.mjs";
+import { createModelClient, MODEL_TEXT_MAX_TOKENS, SYSTEM_PROMPT, TEXT_MODEL, AUDIO_MODEL, MODEL_TEMPERATURE, MODEL_SEED } from "./model.mjs";
 
 const GOOD = { heard: "fake note", entries: [], totals: null, promise: null, question: null };
 
@@ -66,6 +66,38 @@ describe("length-cutoff retry (fake data)", () => {
     const out = await client.complete({ text: "fake note" });
     assert.deepEqual(out, GOOD);
     assert.equal(seen.length, 1);
+  });
+
+  it("text and audio requests send temperature 0 with a fixed seed and no top_p", async () => {
+    const { client, seen } = clientWith([chatResponse(JSON.stringify(GOOD), "stop")]);
+    await client.complete({ text: "fake note" });
+    await client.complete({ audio: { data: "ZmFrZQ==", format: "wav" } });
+    assert.equal(seen.length, 2);
+    assert.equal(JSON.parse(seen[0].opts.body).model, TEXT_MODEL);
+    assert.equal(JSON.parse(seen[1].opts.body).model, AUDIO_MODEL);
+    for (const call of seen) {
+      const body = JSON.parse(call.opts.body);
+      assert.equal(body.temperature, 0);
+      assert.equal(body.temperature, MODEL_TEMPERATURE);
+      assert.equal(body.seed, MODEL_SEED);
+      assert.ok(!("top_p" in body), "top_p stays unset (docs: temperature or top_p, not both)");
+    }
+  });
+
+  it("system prompt carries the Pidgin glossary, payment rule and hearing rule", () => {
+    for (const phrase of ["don pay", "never a sale", "wey", "owe me", "remain am", "pay the balance", "I buy", "known customers", "forty-five hundred", "two k", "mudu", "[unclear]", "computed by code"]) {
+      assert.ok(SYSTEM_PROMPT.includes(phrase), `prompt is missing: ${phrase}`);
+    }
+  });
+
+  it("text and audio requests carry the known-names context when given", async () => {
+    const { client, seen } = clientWith([chatResponse(JSON.stringify(GOOD), "stop")]);
+    await client.complete({ text: "fake note", context: "Known names (exact spellings): customers: Fake Ada." });
+    await client.complete({ audio: { data: "ZmFrZQ==", format: "wav" }, context: "Known names (exact spellings): customers: Fake Ada." });
+    assert.equal(seen.length, 2);
+    assert.ok(JSON.parse(seen[0].opts.body).messages[1].content.includes("customers: Fake Ada"));
+    const audioParts = JSON.parse(seen[1].opts.body).messages[1].content;
+    assert.ok(audioParts[0].text.includes("customers: Fake Ada"), audioParts[0].text);
   });
 
   it("a non-length failure still fails fast with no retry", async () => {

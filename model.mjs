@@ -8,6 +8,14 @@
 //   "none" returns HTTP 400 (dev.meta.ai/docs/reasoning). Even at minimal
 //   the model still spends hundreds of reasoning tokens on some notes, so
 //   the output caps below leave room for reasoning plus the JSON.
+// - Sampling, verified against dev.meta.ai/docs (chat-completions schemas +
+//   protocols pages, 30 Oct 2026): temperature 0-2 (default 1), top_p (0,1]
+//   (top_p: 0 returns HTTP 400; set temperature OR top_p, never both), seed
+//   integer (deprecated but accepted: best-effort deterministic sampling,
+//   determinism not guaranteed). Most deterministic combo: temperature 0, a
+//   fixed seed, top_p untouched. Docs caveat: Muse Spark is tuned for the
+//   defaults and "performs best there" — if extraction quality drops, revert
+//   temperature to 1 and keep the seed.
 // Audio uses the OpenAI-compatible input_audio part:
 //   { type: "input_audio", input_audio: { data: base64, format: "wav" } }
 // Images use the OpenAI-compatible image_url part on the 1.3 checkpoint
@@ -17,6 +25,11 @@
 export const META_BASE_URL = "https://api.meta.ai/v1";
 export const TEXT_MODEL = "muse-spark-1.3";
 export const AUDIO_MODEL = "muse-spark-1.2";
+// Docs-verified deterministic sampling (see header): greedy decoding plus a
+// fixed best-effort seed. Shared by the Meta calls and the Baseten
+// second-opinion call (OpenAI-compatible endpoint, same parameter names).
+export const MODEL_TEMPERATURE = 0;
+export const MODEL_SEED = 7;
 
 export const SYSTEM_PROMPT = `You are PocketOga, a bookkeeping assistant for Nigerian market traders. You understand English and Nigerian Pidgin. You only propose entries; you never save, confirm, or compute totals — plain code checks your work.
 Reply with compact JSON only, exactly this shape, no explanation, no extra fields:
@@ -31,14 +44,18 @@ Reply with compact JSON only, exactly this shape, no explanation, no extra field
 }
 Rules:
 - Entry types are only: sale (goods sold), payment (money received), purchase (stock bought), expense (money spent). A sale with part payment is TWO entries: a sale for the full total and a payment for what was paid.
-- "k" means thousand naira ("15k" = 15000). "remain 3k" means a 3000 naira remainder is still owed.
+- A debt statement with no sale details ("Ada dey owe me 5k") is ONE sale entry: the customer, the stated amount, item/unit/quantity null, priceBasis "total", no question. Plain code records it as owed with stock unchanged.
+- Trader glossary: "pay", "paid", "don pay", "e pay", "dem pay", "she don pay" always mean a payment received — never a sale, even when "buy" appears later ("wey she buy" refers to goods bought earlier). "buy", "collect", "take" with goods mean a sale. "dey owe me" / "owe me" mean unpaid debt. "don pay the remain X" and "pay the balance (of) X" are a payment of X, never a sale. "I buy" / "I bought" (first person) is a purchase for the shop (customer null), never a sale to a customer. "remain", "remain am", "balance" state the remainder still owed.
+- Pidgin words: "e" = he/she, "wey" = which/that, "don" = already (has/have), "dey" = is/are, "abeg" = please.
+- Numbers: "k" means thousand ("15k"/"five K" = 5000, "two k" = 2000), "forty-five hundred" = 4500, "one and half" = 1.5. Units in singular form: mudu, paint, derica, congo, bag, carton, crate, tuber, bunch.
+- Hearing rule: "heard" is exactly what was said — never add, infer or complete words or numbers. Mark unclear parts "[unclear]". An unclear amount means a question, never a guess. Totals, remainders and owed figures are computed by code, never stated: keep them out of "heard".
 - amountNaira and every totals leg are whole naira integers, never negative. amountPhrase is the trader's exact words for that amount. Fill totals only when the note states total, paid and remainder figures.
 - priceBasis says whether amountNaira is per item ("each"), for the whole lot ("total"), or "unclear" when the note does not say. "15k each" is each; a payment or an expense is always a total.
 - An expense carries its category in item (one of: transport, rent, power, fuel, data, wages, stock-related, other), the payee in customer (or null when the shop itself paid), the whole-naira amount in amountNaira, priceBasis "total", and quantity and unit null.
 - promise captures when the trader says a customer will pay ("she go pay Friday"): the customer name, the trader's exact day-words in datePhrase, and amountNaira (whole naira, or null when no amount is said). Never resolve the day into a date yourself; plain code does that. Null when the note states no promise.
 - quantity is a positive integer count of items, or null when the note has none.
 - unit is the container or count word in singular form, separate from item: "2 bags of rice" is item "rice", unit "bag", quantity 2. Null when the note names none.
-- Never invent names, items, or amounts. If anything essential is missing or unclear, put it in question and leave the field null.
+- Match every customer name against the shop's known customers first (exact spellings ride along); only a truly new name is a new customer. Never invent names, items, or amounts. If anything essential is missing or unclear, put it in question and leave the field null.
 - No bookkeeping content means "entries": [] with a question.`;
 
 const FIX_SUFFIX =
@@ -160,6 +177,8 @@ async function callOnce({ baseUrl, model, fetchFn, timeoutMs, userContent, kind,
         body: JSON.stringify({
           model,
           reasoning_effort: "minimal",
+          temperature: MODEL_TEMPERATURE,
+          seed: MODEL_SEED,
           max_tokens: maxTokens,
           response_format: { type: "json_object" },
           messages: [
@@ -219,7 +238,7 @@ export function createModelClient({
   photoTimeoutMs = MODEL_PHOTO_TIMEOUT_MS,
 } = {}) {
   return {
-    async complete({ text = null, audio = null, image = null, prior = null, system = null, hint = null }) {
+    async complete({ text = null, audio = null, image = null, prior = null, system = null, hint = null, context = null }) {
       if (!apiKey) throw apiError("META_API_KEY is not set");
       if (audio && image) throw new Error("complete takes audio or image, not both");
       const isAudio = !!audio;
@@ -234,7 +253,7 @@ export function createModelClient({
         ];
       } else if (isAudio) {
         userContent = [
-          { type: "text", text: `Listen to this trader voice note and extract the bookkeeping JSON. Reply with compact JSON only.${hint ? ` ${hintSentence(hint)}` : ""}` },
+          { type: "text", text: `Listen to this trader voice note and extract the bookkeeping JSON. Reply with compact JSON only.${hint ? ` ${hintSentence(hint)}` : ""}${context ? `\n\n${context}` : ""}` },
           { type: "input_audio", input_audio: { data: audio.data, format: audio.format } },
         ];
       } else if (prior) {
@@ -242,6 +261,7 @@ export function createModelClient({
           `Previous proposal:\n${JSON.stringify(prior)}\n\nTrader correction: ${text}\n\nReturn the revised JSON.${hint ? `\n\n${hintSentence(hint)}` : ""}`;
       } else {
         userContent = hint ? `${text}\n\n${hintSentence(hint)}` : text;
+        if (context) userContent += `\n\n${context}`;
       }
       const maxTokens = isAudio ? MODEL_AUDIO_MAX_TOKENS : isImage ? MODEL_PHOTO_MAX_TOKENS : MODEL_TEXT_MAX_TOKENS;
       const shared = {

@@ -512,6 +512,8 @@ describe("second-opinion request privacy", () => {
       assert.deepEqual(JSON.parse(seen[0].opts.body), {
         model: "fake-model-slug",
         reasoning_effort: "minimal",
+        temperature: 0,
+        seed: 7,
         max_tokens: SECOND_OPINION_MAX_TOKENS,
         response_format: { type: "json_object" },
         messages: [

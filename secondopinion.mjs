@@ -17,7 +17,7 @@
 // Both sides only touch the import inside function bodies, after both
 // modules initialize, so the cycle is safe.
 import { DatabaseSync } from "node:sqlite";
-import { parseModelJson, fetchWithRetry } from "./model.mjs";
+import { parseModelJson, fetchWithRetry, MODEL_TEMPERATURE, MODEL_SEED } from "./model.mjs";
 import { formatKobo } from "./money.mjs";
 import { resolvePromiseDate } from "./promises.mjs";
 import { checkModelOutput } from "./voice.mjs";
@@ -36,7 +36,7 @@ export const SECOND_CHECK_CREDIT = "Checked by Muse Spark Open via Baseten.";
 // Minimal extraction prompt for the second reading: only the fields the
 // code comparison needs, no totals, no question, no explanation. Compact
 // JSON keeps output small and fast.
-export const SECOND_OPINION_SYSTEM_PROMPT = `You are a bookkeeping checker. Reply JSON only, no explanation: {"entries":[{"type":"sale|payment|purchase|expense","customer":"name or null","item":"rice or null","unit":"bag or null","quantity":2 or null,"amountNaira":15000 or null,"priceBasis":"each|total|unclear"}],"promise":{"customer":"name","datePhrase":"Friday","amountNaira":20000} or null}. k means thousand. Never invent names or amounts.`;
+export const SECOND_OPINION_SYSTEM_PROMPT = `You are a bookkeeping checker. Reply JSON only, no explanation: {"entries":[{"type":"sale|payment|purchase|expense","customer":"name or null","item":"rice or null","unit":"bag or null","quantity":2 or null,"amountNaira":15000 or null,"priceBasis":"each|total|unclear"}],"promise":{"customer":"name","datePhrase":"Friday","amountNaira":20000} or null}. k means thousand. A debt line ("Ada dey owe me 5k") is one sale with item null. Never invent names or amounts.`;
 
 // Accuracy stats, one row per proposal. The note text is never stored here.
 export const SECOND_OPINION_SCHEMA = `
@@ -128,6 +128,7 @@ function logSecondAttempt({ status, finish, empty, reasoning, output, ms }) {
 // Sends only the single note text — never audio, images, phone numbers or
 // ledger data. Minimal prompt, minimal reasoning, small max output, no
 // retry: a timeout fails fast to "not available" instead of doubling to 8 s.
+// Deterministic sampling (temperature 0 + fixed seed) like the main calls; the endpoint is OpenAI-compatible so the names match, though the Meta docs do not cover this host. A rejection degrades to "not available".
 // Exported so propose() can start the fetch in parallel with classification.
 export async function fetchSecondReading(heardText, { apiKey, model, fetchFn, timeoutMs = SECOND_OPINION_TIMEOUT_MS }) {
   const start = Date.now();
@@ -146,6 +147,8 @@ export async function fetchSecondReading(heardText, { apiKey, model, fetchFn, ti
         body: JSON.stringify({
           model,
           reasoning_effort: "minimal",
+          temperature: MODEL_TEMPERATURE,
+          seed: MODEL_SEED,
           max_tokens: SECOND_OPINION_MAX_TOKENS,
           response_format: { type: "json_object" },
           messages: [
