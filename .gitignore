@@ -3,16 +3,10 @@
 
 node_modules/
 dist/
-
 *.db
 *.db-wal
 *.db-shm
 *.db-journal
-
 *.log
-
 web/public/landing/photos/_originals/
-
-test-audio/
-
 test-audio/
