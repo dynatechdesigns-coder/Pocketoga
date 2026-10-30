@@ -20,7 +20,7 @@ import { ProductStore } from "../products.mjs";
 import { SecondOpinionStore } from "../secondopinion.mjs";
 import { createMockModelClient, createModelClient } from "../model.mjs";
 import { propose } from "../voice.mjs";
-import { renderProposalCard } from "../messages.mjs";
+import { renderProposalCard, TEXT_FAILED, MODEL_RETRY_FAILED } from "../messages.mjs";
 
 const SHOP = "lat-shop";
 const MOCK = !process.env.META_API_KEY;
@@ -208,9 +208,10 @@ async function main() {
       })
     : createModelClient({ apiKey: process.env.META_API_KEY });
 
-  console.log("note kind  classify transcribe checks second 2nd  render total Q question");
+  console.log("note kind  classify transcribe checks second 2nd  render total F Q question");
   const textTotals = [];
   let questioned = 0;
+  let failures = 0;
   let secondFinished = 0;
   let secondAgreed = 0;
   let secondAttempted = 0;
@@ -235,8 +236,13 @@ async function main() {
     const renderMs = Date.now() - tRender;
     const total = Date.now() - t0;
     textTotals.push(total);
-    // One question at most per note: the card asks proposal.question or nothing.
-    const q = proposal.question ? 1 : 0;
+    // Model-side failures ("I no understand", "something went wrong") count
+    // as failures, not questions. One question at most per note otherwise.
+    const failed = [proposal.question, ...(proposal.flags ?? [])].some(
+      (t) => t === TEXT_FAILED || t === MODEL_RETRY_FAILED
+    );
+    if (failed) failures++;
+    const q = proposal.question && !failed ? 1 : 0;
     if (q > 0) questioned++;
     const srow = secondOf(proposal.id);
     const agreed = srow?.agreed ?? "no_second_opinion";
@@ -250,7 +256,7 @@ async function main() {
     const sflag = agreed === "yes" ? "yes" : agreed === "no" ? "no" : "--";
     console.log(
       `${pad(i + 1, 4)} text  ${pad(timings.classifyMs ?? 0, 8)} ${pad(timings.transcribeMs ?? 0, 10)} ` +
-        `${pad(timings.checksMs ?? 0, 6)} ${pad(timings.secondMs ?? 0, 6)} ${pad(sflag, 4)} ${pad(renderMs, 6)} ${pad(total, 6)} ${pad(q, 2)} ${(proposal.question ?? "").slice(0, 80)}`
+        `${pad(timings.checksMs ?? 0, 6)} ${pad(timings.secondMs ?? 0, 6)} ${pad(sflag, 4)} ${pad(renderMs, 6)} ${pad(total, 6)} ${pad(failed ? 1 : 0, 2)} ${pad(q, 2)} ${(proposal.question ?? "").slice(0, 80)}`
     );
   }
 
@@ -284,7 +290,7 @@ async function main() {
       const sflag = agreed === "yes" ? "yes" : agreed === "no" ? "no" : "--";
       console.log(
         `${pad(`${secs}s`, 4)} voice ${pad(timings.classifyMs ?? 0, 8)} ${pad(timings.transcribeMs ?? 0, 10)} ` +
-          `${pad(timings.checksMs ?? 0, 6)} ${pad(timings.secondMs ?? 0, 6)} ${pad(sflag, 4)} ${pad(renderMs, 6)} ${pad(total, 6)} -- timing only`
+          `${pad(timings.checksMs ?? 0, 6)} ${pad(timings.secondMs ?? 0, 6)} ${pad(sflag, 4)} ${pad(renderMs, 6)} ${pad(total, 6)} -- -- timing only`
       );
     }
   } finally {
@@ -297,6 +303,7 @@ async function main() {
   console.log(`text median ${median(textTotals)}ms, slowest ${Math.max(...textTotals)}ms; ` +
     `voice median ${median(voiceTotals)}ms (tone audio, transcription timing only); ` +
     `questioned ${questioned}/${NOTES.length} (${Math.round((questioned / NOTES.length) * 100)}%); ` +
+    `failures ${failures}/${NOTES.length}; ` +
     `second check finished in time ${secondFinished}/${secondAttempted} (${secondRate}%), agreed ${secondAgreed}/${secondFinished} (${agreeRate}%)`);
 }
 

@@ -207,6 +207,23 @@ function pluralize(n, one, many) {
 // comparison finds (category, unit, quantity, type, price basis, promise
 // wording or amount) is recorded in the stats and never shown, never asked.
 const SHOWN_FIELDS = new Set(["entries", "customer", "amount", "promise.date"]);
+// Stats marker when crossed-basis normalisation turned a would-be amount
+// difference into agreement. Never shown, never asked, never blocks.
+export const NORMALISED_AMOUNT = "amount-normalised";
+
+// True when one reading's each-side unit price equals the other's total-side
+// figure: the same stated money read with a crossed price basis ("45k each,
+// 10 bags" vs "45k total"), not a real total difference. Kobo integers, so
+// equality is exact — anything unequal is a real difference, not rounding.
+function sameFigureCrossedBasis(x, y) {
+  if (!Number.isInteger(x.amountKobo) || !Number.isInteger(y.amountKobo)) return false;
+  const [eachSide, totalSide] =
+    x.priceBasis === "each" && y.priceBasis !== "each" ? [x, y]
+    : y.priceBasis === "each" && x.priceBasis !== "each" ? [y, x]
+    : [null, null];
+  if (!eachSide || !totalSide) return false;
+  return Number.isInteger(eachSide.eachKobo) && eachSide.eachKobo === totalSide.amountKobo;
+}
 
 // Compares the primary checked entries against the second raw reading,
 // normalized through the same checks (each-price maths, money parsing,
@@ -253,7 +270,10 @@ export function compareReadings(primaryEntries, primaryPromise, secondRaw, { sho
         `Two readings differ: customer is ${showText(x.customer)} in one and ${showText(y.customer)} in the other. Which one na correct?`
       );
     }
-    if (x.amountKobo !== y.amountKobo) {
+    if (x.amountKobo !== y.amountKobo && sameFigureCrossedBasis(x, y)) {
+      // Same figure, crossed basis: agreement, recorded in the stats.
+      if (!fields.includes(NORMALISED_AMOUNT)) fields.push(NORMALISED_AMOUNT);
+    } else if (x.amountKobo !== y.amountKobo) {
       note(
         "amount",
         `Two readings differ: amount is ${showMoney(x.amountKobo)} in one and ${showMoney(y.amountKobo)} in the other. Which one na correct?`
@@ -268,7 +288,7 @@ export function compareReadings(primaryEntries, primaryPromise, secondRaw, { sho
     if (normText(x.unit) !== normText(y.unit)) {
       note("unit", `Two readings differ: unit is ${showText(x.unit)} in one and ${showText(y.unit)} in the other. Which one na correct?`);
     }
-    if (x.priceBasis !== y.priceBasis) {
+    if (x.priceBasis !== y.priceBasis && !sameFigureCrossedBasis(x, y)) {
       note(
         "priceBasis",
         `Two readings differ: price basis is ${showText(x.priceBasis)} in one and ${showText(y.priceBasis)} in the other. Which one na correct?`
@@ -346,6 +366,7 @@ export async function runSecondOpinion({
   } catch {
     return { ...quiet, latencyMs };
   }
-  if (compared.differingFields.length === 0) return { agreed: "yes", differingFields: [], latencyMs, line: null, shownField: null };
+  const real = compared.differingFields.filter((f) => f !== NORMALISED_AMOUNT);
+  if (real.length === 0) return { agreed: "yes", differingFields: compared.differingFields, latencyMs, line: null, shownField: null };
   return { agreed: "no", differingFields: compared.differingFields, latencyMs, line: compared.line, shownField: compared.shownField };
 }

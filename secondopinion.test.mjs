@@ -18,6 +18,7 @@ import {
   SECOND_OPINION_SYSTEM_PROMPT,
   SECOND_CHECK_UNAVAILABLE,
   SECOND_CHECK_CREDIT,
+  NORMALISED_AMOUNT,
   SecondOpinionStore,
   runSecondOpinion,
 } from "./secondopinion.mjs";
@@ -304,6 +305,82 @@ describe("second-opinion disagreement", () => {
       assert.equal(card.text.split(merged).length - 1, 1);
       assert.ok(card.buttons.every((b) => !b.reply.id.startsWith("confirm:")), "amount disagreement asks");
       assert.deepEqual(JSON.parse(statsRow(ctx, proposal.id).differing_fields), ["amount"]);
+    } finally {
+      teardown(ctx);
+    }
+  });
+});
+
+describe("second-opinion crossed-basis normalisation", () => {
+  it("total versus unit agree: same figure, crossed basis, Save enabled", async () => {
+    const ctx = setup();
+    try {
+      const primary = {
+        heard: "Ada buy rice 2 bags, 15k each. She pay 10k, remain 20k.",
+        entries: [
+          { type: "sale", customer: "Ada", item: "rice", unit: "bag", quantity: 2, amountNaira: 15000, amountPhrase: "15k", priceBasis: "each" },
+          { type: "payment", customer: "Ada", item: null, quantity: null, unit: null, amountNaira: 10000, amountPhrase: "10k", priceBasis: "total" },
+        ],
+        totals: null,
+        promise: null,
+        question: null,
+      };
+      const second = {
+        entries: [
+          { type: "sale", customer: "Ada", item: "rice", unit: "bag", quantity: 2, amountNaira: 15000, amountPhrase: "15k", priceBasis: "total" },
+          { type: "payment", customer: "Ada", item: null, quantity: null, unit: null, amountNaira: 10000, amountPhrase: "10k", priceBasis: "total" },
+        ],
+        totals: null,
+        promise: null,
+        question: null,
+      };
+      const { proposal } = await proposeWithSecond(ctx, primary, second);
+      assert.deepEqual(proposal.flags, []);
+      assert.equal(proposal.question, null);
+      assert.ok(!proposal.assumptions.some((a) => /Two readings differ/.test(a)), proposal.assumptions.join("; "));
+      const card = renderProposalCard(proposal, { existing: [], shopId: SHOP });
+      assert.ok(!card.text.includes("Two readings differ"), card.text);
+      assert.ok(card.buttons.some((b) => b.reply.title === "Save"), "Save stays enabled");
+      const row = statsRow(ctx, proposal.id);
+      assert.equal(row.agreed, "yes");
+      assert.deepEqual(JSON.parse(row.differing_fields), [NORMALISED_AMOUNT]);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("a real crossed-basis total difference flags once and merges", async () => {
+    const ctx = setup();
+    try {
+      const primary = {
+        heard: "Ada buy rice 2 bags, 15k each. She pay 10k, remain 20k.",
+        entries: [
+          { type: "sale", customer: "Ada", item: "rice", unit: "bag", quantity: 2, amountNaira: 15000, amountPhrase: "15k", priceBasis: "each" },
+          { type: "payment", customer: "Ada", item: null, quantity: null, unit: null, amountNaira: 10000, amountPhrase: "10k", priceBasis: "total" },
+        ],
+        totals: null,
+        promise: null,
+        question: "How much remain?",
+      };
+      const second = {
+        entries: [
+          { type: "sale", customer: "Ada", item: "rice", unit: "bag", quantity: 2, amountNaira: 25000, amountPhrase: "25k", priceBasis: "total" },
+          { type: "payment", customer: "Ada", item: null, quantity: null, unit: null, amountNaira: 10000, amountPhrase: "10k", priceBasis: "total" },
+        ],
+        totals: null,
+        promise: null,
+        question: null,
+      };
+      const { proposal } = await proposeWithSecond(ctx, primary, second);
+      const merged = "How much remain? Two readings differ: amount is ₦30,000 in one and ₦25,000 in the other. Which one na correct?";
+      assert.deepEqual(proposal.flags, [merged]);
+      assert.equal(proposal.question, merged);
+      const card = renderProposalCard(proposal, { existing: [], shopId: SHOP });
+      assert.equal(card.text.split(merged).length - 1, 1);
+      assert.ok(card.buttons.every((b) => !b.reply.id.startsWith("confirm:")), "amount disagreement asks");
+      const row = statsRow(ctx, proposal.id);
+      assert.equal(row.agreed, "no");
+      assert.deepEqual(JSON.parse(row.differing_fields), ["amount", "priceBasis"]);
     } finally {
       teardown(ctx);
     }

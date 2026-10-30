@@ -6,7 +6,7 @@ import { Ledger } from "./ledger.mjs";
 import { ProposalStore } from "./proposals.mjs";
 import { createMockModelClient } from "./model.mjs";
 import { propose, confirmProposal, fixProposal, rejectProposal, getProposal } from "./voice.mjs";
-import { renderProposalCard, BAD_AUDIO_JSON, TEXT_FAILED } from "./messages.mjs";
+import { renderProposalCard, BAD_AUDIO_JSON, TEXT_FAILED, MODEL_RETRY_FAILED } from "./messages.mjs";
 import { createVoiceServer, handleVoiceRequest } from "./server.mjs";
 import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
 
@@ -636,6 +636,21 @@ describe("confused model output (fake data)", () => {
     }
   });
 
+  it("a twice-truncated model shows the my-side failure line, never I-no-understand", async () => {
+    const ctx = setup(async () => PART_PAYMENT);
+    try {
+      const failing = { complete: async () => { throw Object.assign(new Error("cut"), { code: "MODEL_TRUNCATED" }); } };
+      const p = await propose(SHOP_A, "fake note", { ...ctx.deps, model: failing });
+      assert.deepEqual(p.flags, [MODEL_RETRY_FAILED]);
+      assert.equal(p.question, MODEL_RETRY_FAILED);
+      const card = renderProposalCard(p);
+      assert.equal(card.text.split(MODEL_RETRY_FAILED).length - 1, 1);
+      assert.ok(!card.text.includes(TEXT_FAILED), card.text);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
   it("a voice note keeps the didn't-hear line", async () => {
     const ctx = setup(async () => "not json {{{");
     try {
@@ -644,6 +659,36 @@ describe("confused model output (fake data)", () => {
       assert.equal(p.question, BAD_AUDIO_JSON);
       const card = renderProposalCard(p);
       assert.equal(card.text.split(BAD_AUDIO_JSON).length - 1, 1);
+    } finally {
+      teardown(ctx);
+    }
+  });
+});
+
+describe("total-or-each model question (fake data)", () => {
+  it("note 12: 30k na total or per crate becomes a soft assumption with Save", async () => {
+    const ctx = setup(async () => ({
+      heard: "Mummy Adaeze bought 5 crates of eggs, 30k, she go pay Friday.",
+      entries: [
+        { type: "sale", customer: "Test Customer Adaeze", item: "fake-eggs", unit: "crate", quantity: 5, amountNaira: 30000, amountPhrase: "30k", priceBasis: "unclear" },
+      ],
+      totals: null,
+      promise: null,
+      question: "30k na total or per crate?",
+    }));
+    try {
+      const p = await propose(SHOP_A, "fake note", ctx.deps);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+      assert.equal(p.entries[0].priceBasis, "total");
+      assert.ok(p.assumptions.some((a) => /^Taken as /.test(a)), p.assumptions.join("; "));
+      const card = renderProposalCard(p);
+      assert.ok(!card.text.includes("total or per crate"), card.text);
+      assert.deepEqual(
+        card.buttons.map((b) => b.reply.title),
+        ["Save", "Fix", "Reject"]
+      );
+      assert.equal(confirmProposal(p.id, SHOP_A, ctx.deps).recordedIds.length, 1);
     } finally {
       teardown(ctx);
     }

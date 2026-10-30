@@ -4,9 +4,9 @@
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
 import { parseNaira, formatKobo } from "./money.mjs";
-import { escapeMd, customerOwedKobo, MISMATCH_PREFIX, BAD_AUDIO_JSON, TEXT_FAILED } from "./messages.mjs";
+import { escapeMd, customerOwedKobo, MISMATCH_PREFIX, BAD_AUDIO_JSON, TEXT_FAILED, MODEL_RETRY_FAILED } from "./messages.mjs";
 import { resolvePromiseDate } from "./promises.mjs";
-import { fetchSecondReading, compareReadings, SECOND_OPINION_TIMEOUT_MS, SECOND_CHECK_UNAVAILABLE, SECOND_CHECK_CREDIT } from "./secondopinion.mjs";
+import { fetchSecondReading, compareReadings, SECOND_OPINION_TIMEOUT_MS, SECOND_CHECK_UNAVAILABLE, SECOND_CHECK_CREDIT, NORMALISED_AMOUNT } from "./secondopinion.mjs";
 import { stockLevels, productKey } from "./products.mjs";
 import { costBasisByProduct, costBasisKey } from "./profit.mjs";
 
@@ -825,6 +825,15 @@ function combinedCustomerQuestion(missing) {
 // echoes back as a flag only when code found nothing to ask — code decides.
 // ledgerRows and catalog are optional.
 const EACH_FLAG_RE = /^note says ".+" but the amount was read as a total$/;
+// A model question that only asks total versus each ("30k na total or per
+// crate?"): code already resolved the basis softly, so this never echoes.
+// Questions naming an amount, customer, remainder or payment still echo.
+const BASIS_ASK_RE = /\bor\b/i;
+const BASIS_WORD_RE = /\b(total|each|per)\b/i;
+const BASIS_EXCLUDE_RE = /\b(much|who|whom|remain|remainder|correct|paid|pay|owe|owes|owed|owing|price)\b/i;
+function isBasisOnlyQuestion(q) {
+  return BASIS_ASK_RE.test(q) && BASIS_WORD_RE.test(q) && !BASIS_EXCLUDE_RE.test(q);
+}
 // The model's own question, echoed as a flag when code asked nothing. The
 // card strips the prefix; the second-opinion merge below matches both forms.
 const MODEL_QUESTION_PREFIX = "needs clarification: ";
@@ -905,9 +914,19 @@ export function checkModelOutput(
     if (!question) {
       const modelQ = cleanText(raw?.question);
       if (modelQ) {
-        const echo = `${MODEL_QUESTION_PREFIX}${modelQ}`;
-        if (!flags.includes(echo)) flags.push(echo);
-        question = modelQ;
+        if (isBasisOnlyQuestion(modelQ)) {
+          // Total-vs-each is code's call, never a question: entries already
+          // resolved softly above (total by default, each when the note says
+          // so, catalog price when known). Say so once if no Taken-as line
+          // exists yet.
+          if (!assumptions.some((a) => /^Taken as /.test(a))) {
+            assumptions.push("Taken as total. Tap Fix if it was each.");
+          }
+        } else {
+          const echo = `${MODEL_QUESTION_PREFIX}${modelQ}`;
+          if (!flags.includes(echo)) flags.push(echo);
+          question = modelQ;
+        }
       }
     }
   }
@@ -950,10 +969,14 @@ function isBadJson(err) {
   return !!err && err.code === "MODEL_BAD_JSON";
 }
 
-function confusedEnvelope(heard, kind) {
+function isTruncated(err) {
+  return !!err && err.code === "MODEL_TRUNCATED";
+}
+
+function confusedEnvelope(heard, kind, modelFailed = false) {
   // A text note was never heard, so it never gets the didn't-hear line —
   // only voice notes do.
-  const msg = kind === "text" ? TEXT_FAILED : BAD_AUDIO_JSON;
+  const msg = modelFailed ? MODEL_RETRY_FAILED : kind === "text" ? TEXT_FAILED : BAD_AUDIO_JSON;
   return { envelope: { version: 1, entries: [], totals: null, flags: [msg], notes: [], assumptions: [] }, heard, question: msg };
 }
 
@@ -1023,6 +1046,7 @@ export async function propose(
   // as before. The noop catch only marks the promise handled; the await
   // below still throws into the same handler.
   const modelKey = norm.kind === "audio" ? "transcribeMs" : "classifyMs";
+  let modelTruncated = false; // set when both length attempts fail
   const tModel = Date.now();
   const modelPromise = Promise.resolve().then(() =>
     norm.kind === "text"
@@ -1036,12 +1060,13 @@ export async function propose(
   try {
     raw = await modelPromise;
   } catch (err) {
-    if (!isBadJson(err)) throw err; // transport/API errors propagate; nothing stored
+    if (isTruncated(err)) modelTruncated = true;
+    else if (!isBadJson(err)) throw err; // transport/API errors propagate; nothing stored
     raw = null;
   }
   if (timings) timings[modelKey] = Date.now() - tModel;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    const c = confusedEnvelope(fallbackHeard, source);
+    const c = confusedEnvelope(fallbackHeard, source, modelTruncated);
     const confused = proposals.create({ shopId, envelope: c.envelope, heard: c.heard, question: c.question, source });
     if (secondOpinions) {
       secondOpinions.record({ proposalId: confused.id, agreed: "no_second_opinion", differingFields: [], latencyMs: 0 });
@@ -1101,8 +1126,8 @@ export async function propose(
       }
       if (!compared) {
         if (!envelope.assumptions.includes(SECOND_CHECK_UNAVAILABLE)) envelope.assumptions.push(SECOND_CHECK_UNAVAILABLE);
-      } else if (compared.differingFields.length === 0) {
-        second = { agreed: "yes", differingFields: [], latencyMs };
+      } else if (!compared.differingFields.some((f) => f !== NORMALISED_AMOUNT)) {
+        second = { agreed: "yes", differingFields: compared.differingFields, latencyMs };
       } else {
         second = { agreed: "no", differingFields: compared.differingFields, latencyMs };
         if (compared.line) {
@@ -1586,7 +1611,7 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
   try {
     raw = await model.complete({ text: correctionText.trim(), prior: priorSummary });
   } catch (err) {
-    if (!isBadJson(err)) throw err;
+    if (!isBadJson(err) && !isTruncated(err)) throw err;
     raw = null;
   }
   if (timings) timings.classifyMs = Date.now() - tClassify;

@@ -4,6 +4,10 @@
 // - muse-spark-1.3: text reasoning/extraction. Audio input is NOT supported
 //   on the 1.3 checkpoints.
 // - muse-spark-1.2: still the checkpoint to use for audio input.
+// - reasoning_effort "minimal" is the lowest the API allows on Muse Spark:
+//   "none" returns HTTP 400 (dev.meta.ai/docs/reasoning). Even at minimal
+//   the model still spends hundreds of reasoning tokens on some notes, so
+//   the output caps below leave room for reasoning plus the JSON.
 // Audio uses the OpenAI-compatible input_audio part:
 //   { type: "input_audio", input_audio: { data: base64, format: "wav" } }
 // Images use the OpenAI-compatible image_url part on the 1.3 checkpoint
@@ -15,7 +19,7 @@ export const TEXT_MODEL = "muse-spark-1.3";
 export const AUDIO_MODEL = "muse-spark-1.2";
 
 export const SYSTEM_PROMPT = `You are PocketOga, a bookkeeping assistant for Nigerian market traders. You understand English and Nigerian Pidgin. You only propose entries; you never save, confirm, or compute totals — plain code checks your work.
-Reply with JSON only, exactly this shape:
+Reply with compact JSON only, exactly this shape, no explanation, no extra fields:
 {
   "heard": "what the trader said, in their own words",
   "entries": [
@@ -29,29 +33,38 @@ Rules:
 - Entry types are only: sale (goods sold), payment (money received), purchase (stock bought), expense (money spent). A sale with part payment is TWO entries: a sale for the full total and a payment for what was paid.
 - "k" means thousand naira ("15k" = 15000). "remain 3k" means a 3000 naira remainder is still owed.
 - amountNaira and every totals leg are whole naira integers, never negative. amountPhrase is the trader's exact words for that amount. Fill totals only when the note states total, paid and remainder figures.
-- priceBasis says whether amountNaira is per item ("each"), for the whole lot ("total"), or "unclear" when the note does not say. "15k each" is each; a payment or an expense is always a total. Never guess: use "unclear".
+- priceBasis says whether amountNaira is per item ("each"), for the whole lot ("total"), or "unclear" when the note does not say. "15k each" is each; a payment or an expense is always a total.
 - An expense carries its category in item (one of: transport, rent, power, fuel, data, wages, stock-related, other), the payee in customer (or null when the shop itself paid), the whole-naira amount in amountNaira, priceBasis "total", and quantity and unit null.
-- promise captures when the trader says a customer will pay ("she go pay Friday", "he promise 20k by month end"): the customer name, the trader's exact day-words in datePhrase, and amountNaira (whole naira, or null when no amount is said). Never resolve the day into a date yourself; plain code does that. Null when the note states no promise.
+- promise captures when the trader says a customer will pay ("she go pay Friday"): the customer name, the trader's exact day-words in datePhrase, and amountNaira (whole naira, or null when no amount is said). Never resolve the day into a date yourself; plain code does that. Null when the note states no promise.
 - quantity is a positive integer count of items, or null when the note has none.
-- unit is the container or count word in singular form, separate from item: "2 bags of rice" is item "rice", unit "bag", quantity 2; "3 tins of milk" is item "milk", unit "tin", quantity 3. Null when the note names none.
+- unit is the container or count word in singular form, separate from item: "2 bags of rice" is item "rice", unit "bag", quantity 2. Null when the note names none.
 - Never invent names, items, or amounts. If anything essential is missing or unclear, put it in question and leave the field null.
-- If the note has no bookkeeping content, return "entries": [] with a question.`;
+- No bookkeeping content means "entries": [] with a question.`;
 
 const FIX_SUFFIX =
   "The trader is correcting your previous proposal (included below with their correction). Return the full revised JSON in the same shape.";
+
+// Retry suffix for a length-truncated attempt: same task, double budget,
+// explicit compact instruction.
+const COMPACT_SUFFIX = "\n\nKeep reasoning minimal and answer with compact JSON only.";
 
 function badJson(message) {
   return Object.assign(new Error(message), { code: "MODEL_BAD_JSON" });
 }
 
+function truncatedError() {
+  return Object.assign(new Error("model response truncated twice"), { code: "MODEL_TRUNCATED" });
+}
+
 export const MODEL_TEXT_TIMEOUT_MS = 30000;
 export const MODEL_AUDIO_TIMEOUT_MS = 90000;
 export const MODEL_PHOTO_TIMEOUT_MS = 30000;
-// Output caps: reasoning + visible JSON combined. Typical notes use ~300-500
-// tokens; the cap stops runaway generations (the 8-10 s outliers) without
-// truncating valid output. No catalogue or ledger data is ever sent — the
-// prompt carries only rules, so it is already minimal.
-export const MODEL_TEXT_MAX_TOKENS = 800;
+// Output caps: reasoning + visible JSON combined. Live notes spent up to
+// ~800 reasoning tokens at minimal effort and truncated an 800 cap, so text
+// allows 2000 (reasoning plus JSON, measured in the dev log); a length
+// retry doubles it. No catalogue or ledger data is ever sent — the prompt
+// carries only rules, so it is already minimal.
+export const MODEL_TEXT_MAX_TOKENS = 2000;
 export const MODEL_AUDIO_MAX_TOKENS = 1200;
 export const MODEL_PHOTO_MAX_TOKENS = 500;
 
@@ -99,13 +112,14 @@ function apiError(message) {
   return Object.assign(new Error(message), { status: 502 });
 }
 
-// Dev-only one-liner per model call: kind, attempts, HTTP status, finish
-// reason, token counts, content length. Numbers only — never the note,
-// image bytes, key, or model output. Silent unless POCKETOGA_TIMING=1.
-function logModelCall({ kind, attempts, status, finish, input, output, reasoning, contentChars, ok, ms }) {
+// Dev-only one-liner per model call: kind, length-retry flag, attempts, HTTP
+// status, finish reason, token counts, content length. Numbers only — never
+// the note, image bytes, key, or model output. Silent unless
+// POCKETOGA_TIMING=1.
+function logModelCall({ kind, retry, attempts, status, finish, input, output, reasoning, contentChars, ok, ms }) {
   if (process.env.POCKETOGA_TIMING !== "1") return;
   console.log(
-    `model kind=${kind} attempts=${attempts} status=${status} finish=${finish} ` +
+    `model kind=${kind} retry=${retry} attempts=${attempts} status=${status} finish=${finish} ` +
       `in_tokens=${input} out_tokens=${output} reasoning_tokens=${reasoning} ` +
       `content_chars=${contentChars} ok=${ok} ms=${ms}`
   );
@@ -128,6 +142,68 @@ export function parseModelJson(content) {
     }
   }
   throw badJson("model response was not JSON");
+}
+
+// One chat-completion round trip: fetch, log, parse. Complete JSON is used
+// as-is whatever the finish reason; unparseable output throws badJson
+// carrying the finish reason so the caller can retry length cutoffs.
+async function callOnce({ baseUrl, model, fetchFn, timeoutMs, userContent, kind, apiKey, prompt, maxTokens, retry }) {
+  const t0 = Date.now();
+  let res;
+  try {
+    res = await fetchWithRetry(
+      fetchFn,
+      `${baseUrl}/chat/completions`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model,
+          reasoning_effort: "minimal",
+          max_tokens: maxTokens,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: prompt },
+            { role: "user", content: userContent },
+          ],
+        }),
+      },
+      { timeoutMs }
+    );
+  } catch (err) {
+    logModelCall({ kind, retry, attempts: "n/a", status: "error", finish: "none", input: "n/a", output: "n/a", reasoning: "n/a", contentChars: 0, ok: false, ms: Date.now() - t0 });
+    throw apiError(`model API request failed: ${err.message}`);
+  }
+  const attempts = Number.isInteger(res?.attempts) ? res.attempts : "n/a";
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    logModelCall({ kind, retry, attempts, status: res.status, finish: "none", input: "n/a", output: "n/a", reasoning: "n/a", contentChars: 0, ok: false, ms: Date.now() - t0 });
+    throw apiError(`model API error ${res.status}: ${body.slice(0, 300)}`);
+  }
+  const data = await res.json().catch(() => ({}));
+  const choice = data.choices?.[0] ?? {};
+  const content = choice.message?.content ?? "";
+  const usage = data.usage ?? {};
+  const info = {
+    kind,
+    retry,
+    attempts,
+    status: res.status,
+    finish: choice.finish_reason ?? "none",
+    input: Number.isInteger(usage.prompt_tokens) ? usage.prompt_tokens : "n/a",
+    output: Number.isInteger(usage.completion_tokens) ? usage.completion_tokens : "n/a",
+    reasoning: Number.isInteger(usage.completion_tokens_details?.reasoning_tokens) ? usage.completion_tokens_details.reasoning_tokens : "n/a",
+    contentChars: String(content).length,
+    ms: Date.now() - t0,
+  };
+  try {
+    const out = parseModelJson(content);
+    logModelCall({ ...info, ok: true });
+    return out;
+  } catch (err) {
+    logModelCall({ ...info, ok: false });
+    throw Object.assign(err, { finish: choice.finish_reason ?? null });
+  }
 }
 
 // Real client. Reads the key from process.env.META_API_KEY unless given one.
@@ -158,7 +234,7 @@ export function createModelClient({
         ];
       } else if (isAudio) {
         userContent = [
-          { type: "text", text: `Listen to this trader voice note and extract the bookkeeping JSON.${hint ? ` ${hintSentence(hint)}` : ""}` },
+          { type: "text", text: `Listen to this trader voice note and extract the bookkeeping JSON. Reply with compact JSON only.${hint ? ` ${hintSentence(hint)}` : ""}` },
           { type: "input_audio", input_audio: { data: audio.data, format: audio.format } },
         ];
       } else if (prior) {
@@ -168,60 +244,30 @@ export function createModelClient({
         userContent = hint ? `${text}\n\n${hintSentence(hint)}` : text;
       }
       const maxTokens = isAudio ? MODEL_AUDIO_MAX_TOKENS : isImage ? MODEL_PHOTO_MAX_TOKENS : MODEL_TEXT_MAX_TOKENS;
-      const kind = isAudio ? "audio" : isImage ? "photo" : prior ? "fix" : "text";
-      const t0 = Date.now();
-      let res;
-      try {
-        res = await fetchWithRetry(
-          fetchFn,
-          `${baseUrl}/chat/completions`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-            body: JSON.stringify({
-              model: isAudio ? audioModel : textModel,
-              reasoning_effort: "minimal",
-              max_tokens: maxTokens,
-              response_format: { type: "json_object" },
-              messages: [
-                { role: "system", content: prompt },
-                { role: "user", content: userContent },
-              ],
-            }),
-          },
-          { timeoutMs: isAudio ? audioTimeoutMs : isImage ? photoTimeoutMs : textTimeoutMs }
-        );
-      } catch (err) {
-        logModelCall({ kind, attempts: "n/a", status: "error", finish: "none", input: "n/a", output: "n/a", reasoning: "n/a", contentChars: 0, ok: false, ms: Date.now() - t0 });
-        throw apiError(`model API request failed: ${err.message}`);
-      }
-      const attempts = Number.isInteger(res?.attempts) ? res.attempts : "n/a";
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        logModelCall({ kind, attempts, status: res.status, finish: "none", input: "n/a", output: "n/a", reasoning: "n/a", contentChars: 0, ok: false, ms: Date.now() - t0 });
-        throw apiError(`model API error ${res.status}: ${body.slice(0, 300)}`);
-      }
-      const data = await res.json().catch(() => ({}));
-      const choice = data.choices?.[0] ?? {};
-      const content = choice.message?.content ?? "";
-      const usage = data.usage ?? {};
-      const info = {
-        kind,
-        attempts,
-        status: res.status,
-        finish: choice.finish_reason ?? "none",
-        input: Number.isInteger(usage.prompt_tokens) ? usage.prompt_tokens : "n/a",
-        output: Number.isInteger(usage.completion_tokens) ? usage.completion_tokens : "n/a",
-        reasoning: Number.isInteger(usage.completion_tokens_details?.reasoning_tokens) ? usage.completion_tokens_details.reasoning_tokens : "n/a",
-        contentChars: String(content).length,
-        ms: Date.now() - t0,
+      const shared = {
+        baseUrl,
+        model: isAudio ? audioModel : textModel,
+        fetchFn,
+        timeoutMs: isAudio ? audioTimeoutMs : isImage ? photoTimeoutMs : textTimeoutMs,
+        userContent,
+        kind: isAudio ? "audio" : isImage ? "photo" : prior ? "fix" : "text",
+        apiKey,
       };
       try {
-        const out = parseModelJson(content);
-        logModelCall({ ...info, ok: true });
-        return out;
+        return await callOnce({ ...shared, prompt, maxTokens, retry: 0 });
       } catch (err) {
-        logModelCall({ ...info, ok: false });
+        // finish=length with unparseable output: the budget died on reasoning.
+        // One automatic retry with double budget and an explicit compact-JSON
+        // instruction. Both attempts failed means MODEL_TRUNCATED, never a
+        // confused "I no understand" card for a cutoff.
+        if (err?.code === "MODEL_BAD_JSON" && err?.finish === "length") {
+          try {
+            return await callOnce({ ...shared, prompt: prompt + COMPACT_SUFFIX, maxTokens: maxTokens * 2, retry: 1 });
+          } catch (retryErr) {
+            if (retryErr?.code === "MODEL_BAD_JSON") throw truncatedError();
+            throw retryErr;
+          }
+        }
         throw err;
       }
     },
