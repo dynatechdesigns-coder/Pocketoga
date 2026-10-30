@@ -208,9 +208,16 @@ async function main() {
       })
     : createModelClient({ apiKey: process.env.META_API_KEY });
 
-  console.log("note kind  classify transcribe checks second render total  Q question");
+  console.log("note kind  classify transcribe checks second 2nd  render total Q question");
   const textTotals = [];
   let questioned = 0;
+  let secondFinished = 0;
+  let secondAgreed = 0;
+  let secondAttempted = 0;
+  const secondOf = (proposalId) => {
+    const rows = ctx.secondOpinions.listByProposal(proposalId);
+    return rows.length > 0 ? rows[rows.length - 1] : null;
+  };
   for (let i = 0; i < NOTES.length; i++) {
     const timings = {};
     const t0 = Date.now();
@@ -228,11 +235,22 @@ async function main() {
     const renderMs = Date.now() - tRender;
     const total = Date.now() - t0;
     textTotals.push(total);
-    const q = proposal.flags.length;
+    // One question at most per note: the card asks proposal.question or nothing.
+    const q = proposal.question ? 1 : 0;
     if (q > 0) questioned++;
+    const srow = secondOf(proposal.id);
+    const agreed = srow?.agreed ?? "no_second_opinion";
+    if (agreed === "yes" || agreed === "no") {
+      secondFinished++;
+      secondAttempted++;
+      if (agreed === "yes") secondAgreed++;
+    } else if ((timings.secondMs ?? 0) > 0 || (srow?.latency_ms ?? 0) > 0) {
+      secondAttempted++;
+    }
+    const sflag = agreed === "yes" ? "yes" : agreed === "no" ? "no" : "--";
     console.log(
       `${pad(i + 1, 4)} text  ${pad(timings.classifyMs ?? 0, 8)} ${pad(timings.transcribeMs ?? 0, 10)} ` +
-        `${pad(timings.checksMs ?? 0, 6)} ${pad(timings.secondMs ?? 0, 6)} ${pad(renderMs, 6)} ${pad(total, 6)} ${pad(q, 2)} ${(proposal.question ?? "").slice(0, 90)}`
+        `${pad(timings.checksMs ?? 0, 6)} ${pad(timings.secondMs ?? 0, 6)} ${pad(sflag, 4)} ${pad(renderMs, 6)} ${pad(total, 6)} ${pad(q, 2)} ${(proposal.question ?? "").slice(0, 80)}`
     );
   }
 
@@ -261,9 +279,12 @@ async function main() {
       const renderMs = Date.now() - tRender;
       const total = Date.now() - t0;
       voiceTotals.push(total);
+      const srow = secondOf(proposal.id);
+      const agreed = srow?.agreed ?? "no_second_opinion";
+      const sflag = agreed === "yes" ? "yes" : agreed === "no" ? "no" : "--";
       console.log(
         `${pad(`${secs}s`, 4)} voice ${pad(timings.classifyMs ?? 0, 8)} ${pad(timings.transcribeMs ?? 0, 10)} ` +
-          `${pad(timings.checksMs ?? 0, 6)} ${pad(timings.secondMs ?? 0, 6)} ${pad(renderMs, 6)} ${pad(total, 6)} -- timing only`
+          `${pad(timings.checksMs ?? 0, 6)} ${pad(timings.secondMs ?? 0, 6)} ${pad(sflag, 4)} ${pad(renderMs, 6)} ${pad(total, 6)} -- timing only`
       );
     }
   } finally {
@@ -271,9 +292,12 @@ async function main() {
   }
   db.close();
 
+  const secondRate = secondAttempted > 0 ? Math.round((secondFinished / secondAttempted) * 100) : 0;
+  const agreeRate = secondFinished > 0 ? Math.round((secondAgreed / secondFinished) * 100) : 0;
   console.log(`text median ${median(textTotals)}ms, slowest ${Math.max(...textTotals)}ms; ` +
     `voice median ${median(voiceTotals)}ms (tone audio, transcription timing only); ` +
-    `questioned ${questioned}/${NOTES.length} (${Math.round((questioned / NOTES.length) * 100)}%)`);
+    `questioned ${questioned}/${NOTES.length} (${Math.round((questioned / NOTES.length) * 100)}%); ` +
+    `second check finished in time ${secondFinished}/${secondAttempted} (${secondRate}%), agreed ${secondAgreed}/${secondFinished} (${agreeRate}%)`);
 }
 
 await main();

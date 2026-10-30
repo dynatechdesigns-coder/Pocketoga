@@ -47,10 +47,19 @@ function badJson(message) {
 export const MODEL_TEXT_TIMEOUT_MS = 30000;
 export const MODEL_AUDIO_TIMEOUT_MS = 90000;
 export const MODEL_PHOTO_TIMEOUT_MS = 30000;
+// Output caps: reasoning + visible JSON combined. Typical notes use ~300-500
+// tokens; the cap stops runaway generations (the 8-10 s outliers) without
+// truncating valid output. No catalogue or ledger data is ever sent — the
+// prompt carries only rules, so it is already minimal.
+export const MODEL_TEXT_MAX_TOKENS = 800;
+export const MODEL_AUDIO_MAX_TOKENS = 1200;
+export const MODEL_PHOTO_MAX_TOKENS = 500;
 
 // One fetch with a timeout and a single retry. Retries transport failures,
 // timeouts, 429s and 5xx responses; anything else (other 4xx, bad payloads)
-// fails fast so a broken request never doubles its cost.
+// fails fast so a broken request never doubles its cost. The returned
+// response carries a non-enumerable attempts count (1 when no retry fired)
+// so dev logs can tell a slow call from a retried one.
 export async function fetchWithRetry(fetchFn, url, opts, { timeoutMs, retries = 1 } = {}) {
   let attempt = 0;
   for (;;) {
@@ -60,6 +69,13 @@ export async function fetchWithRetry(fetchFn, url, opts, { timeoutMs, retries = 
       if (retryableStatus && attempt < retries) {
         attempt++;
         continue;
+      }
+      if (res && (typeof res === "object" || typeof res === "function")) {
+        try {
+          Object.defineProperty(res, "attempts", { value: attempt + 1, configurable: true });
+        } catch {
+          // Frozen response: attempts stay unknown, the call is unaffected.
+        }
       }
       return res;
     } catch (err) {
@@ -81,6 +97,18 @@ function hintSentence(hint) {
 
 function apiError(message) {
   return Object.assign(new Error(message), { status: 502 });
+}
+
+// Dev-only one-liner per model call: kind, attempts, HTTP status, finish
+// reason, token counts, content length. Numbers only — never the note,
+// image bytes, key, or model output. Silent unless POCKETOGA_TIMING=1.
+function logModelCall({ kind, attempts, status, finish, input, output, reasoning, contentChars, ok, ms }) {
+  if (process.env.POCKETOGA_TIMING !== "1") return;
+  console.log(
+    `model kind=${kind} attempts=${attempts} status=${status} finish=${finish} ` +
+      `in_tokens=${input} out_tokens=${output} reasoning_tokens=${reasoning} ` +
+      `content_chars=${contentChars} ok=${ok} ms=${ms}`
+  );
 }
 
 export function parseModelJson(content) {
@@ -139,6 +167,9 @@ export function createModelClient({
       } else {
         userContent = hint ? `${text}\n\n${hintSentence(hint)}` : text;
       }
+      const maxTokens = isAudio ? MODEL_AUDIO_MAX_TOKENS : isImage ? MODEL_PHOTO_MAX_TOKENS : MODEL_TEXT_MAX_TOKENS;
+      const kind = isAudio ? "audio" : isImage ? "photo" : prior ? "fix" : "text";
+      const t0 = Date.now();
       let res;
       try {
         res = await fetchWithRetry(
@@ -150,6 +181,7 @@ export function createModelClient({
             body: JSON.stringify({
               model: isAudio ? audioModel : textModel,
               reasoning_effort: "minimal",
+              max_tokens: maxTokens,
               response_format: { type: "json_object" },
               messages: [
                 { role: "system", content: prompt },
@@ -160,14 +192,38 @@ export function createModelClient({
           { timeoutMs: isAudio ? audioTimeoutMs : isImage ? photoTimeoutMs : textTimeoutMs }
         );
       } catch (err) {
+        logModelCall({ kind, attempts: "n/a", status: "error", finish: "none", input: "n/a", output: "n/a", reasoning: "n/a", contentChars: 0, ok: false, ms: Date.now() - t0 });
         throw apiError(`model API request failed: ${err.message}`);
       }
+      const attempts = Number.isInteger(res?.attempts) ? res.attempts : "n/a";
       if (!res.ok) {
         const body = await res.text().catch(() => "");
+        logModelCall({ kind, attempts, status: res.status, finish: "none", input: "n/a", output: "n/a", reasoning: "n/a", contentChars: 0, ok: false, ms: Date.now() - t0 });
         throw apiError(`model API error ${res.status}: ${body.slice(0, 300)}`);
       }
       const data = await res.json().catch(() => ({}));
-      return parseModelJson(data.choices?.[0]?.message?.content ?? "");
+      const choice = data.choices?.[0] ?? {};
+      const content = choice.message?.content ?? "";
+      const usage = data.usage ?? {};
+      const info = {
+        kind,
+        attempts,
+        status: res.status,
+        finish: choice.finish_reason ?? "none",
+        input: Number.isInteger(usage.prompt_tokens) ? usage.prompt_tokens : "n/a",
+        output: Number.isInteger(usage.completion_tokens) ? usage.completion_tokens : "n/a",
+        reasoning: Number.isInteger(usage.completion_tokens_details?.reasoning_tokens) ? usage.completion_tokens_details.reasoning_tokens : "n/a",
+        contentChars: String(content).length,
+        ms: Date.now() - t0,
+      };
+      try {
+        const out = parseModelJson(content);
+        logModelCall({ ...info, ok: true });
+        return out;
+      } catch (err) {
+        logModelCall({ ...info, ok: false });
+        throw err;
+      }
     },
   };
 }

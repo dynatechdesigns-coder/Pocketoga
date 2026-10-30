@@ -132,6 +132,7 @@ describe("message goldens (fake data)", () => {
     p.correctionOf = 7;
     const card = renderProposalCard(p, { existing: [], shopId: SHOP });
     assert.ok(card.text.startsWith("Fixes entry #7\n\n"), card.text);
+    assert.ok(!card.text.includes("New customer"), card.text);
     assert.deepEqual(
       card.buttons.map((b) => b.reply.id),
       ["confirm:30", "fix:30", "reject:30"]
@@ -141,6 +142,7 @@ describe("message goldens (fake data)", () => {
     blocked.correctionOf = 7;
     const blockedText = renderProposalCard(blocked).text;
     assert.ok(blockedText.includes("⚠️ *Check this one*\n\nFixes entry #7\n\n"), blockedText);
+    assert.ok(!blockedText.includes("New customer"), blockedText);
 
     const plain = renderProposalCard(proposal(32, base), { existing: [], shopId: SHOP });
     assert.ok(!plain.text.includes("Fixes entry"), plain.text);

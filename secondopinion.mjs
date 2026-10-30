@@ -1,9 +1,15 @@
-// Second-opinion check: a Baseten-hosted text model re-reads the note's
-// heard text with the same extraction prompt as the primary reading, and
-// plain code compares the two readings. The second model never changes an
-// entry — disagreement only adds one code-built flag — and any failure
-// (missing keys, timeout, bad output) degrades silently to "no second
-// opinion" and never blocks or fails a proposal.
+// Muse Spark Open check served through Baseten: a Baseten-hosted text
+// model re-reads the note's heard text with a minimal extraction prompt,
+// and plain code compares the two readings. The second model never changes
+// an entry — disagreement only adds one code-built flag — and any failure
+// (missing keys, timeout, bad output) degrades to "no second opinion" and
+// never blocks or fails a proposal. A late or failed attempt with keys set
+// adds the soft assumption "second check not available" with Save enabled.
+//
+// Runs off the critical path: propose() starts the fetch in parallel with
+// the main classification for text notes (same input text), with a hard
+// 4 s cap and no retry, so the worst add is 4 s and typically zero.
+// Voice notes must wait for the transcript, then run with the same cap.
 //
 // Import cycle with voice.mjs, by design: propose() calls runSecondOpinion,
 // and the comparison reuses voice's checkModelOutput so both readings are
@@ -11,14 +17,26 @@
 // Both sides only touch the import inside function bodies, after both
 // modules initialize, so the cycle is safe.
 import { DatabaseSync } from "node:sqlite";
-import { SYSTEM_PROMPT, parseModelJson, fetchWithRetry } from "./model.mjs";
+import { parseModelJson, fetchWithRetry } from "./model.mjs";
 import { formatKobo } from "./money.mjs";
 import { resolvePromiseDate } from "./promises.mjs";
 import { checkModelOutput } from "./voice.mjs";
 
 export const BASETEN_BASE_URL = "https://inference.baseten.co/v1";
-export const SECOND_OPINION_TIMEOUT_MS = 6000;
+export const SECOND_OPINION_TIMEOUT_MS = 4000;
+// Output cap: reasoning + visible JSON combined. 400 starved the short JSON
+// answer whenever the model reasoned first (2 usable answers in 11 notes);
+// 1000 leaves room for a short thought plus the JSON without slowing the
+// fast path — the 4 s cap still bounds every attempt.
+export const SECOND_OPINION_MAX_TOKENS = 1000;
 export const SECOND_OPINION_AGREED = ["yes", "no", "no_second_opinion"];
+export const SECOND_CHECK_UNAVAILABLE = "Second check not available (Muse Spark Open via Baseten).";
+export const SECOND_CHECK_CREDIT = "Checked by Muse Spark Open via Baseten.";
+
+// Minimal extraction prompt for the second reading: only the fields the
+// code comparison needs, no totals, no question, no explanation. Compact
+// JSON keeps output small and fast.
+export const SECOND_OPINION_SYSTEM_PROMPT = `You are a bookkeeping checker. Reply JSON only, no explanation: {"entries":[{"type":"sale|payment|purchase|expense","customer":"name or null","item":"rice or null","unit":"bag or null","quantity":2 or null,"amountNaira":15000 or null,"priceBasis":"each|total|unclear"}],"promise":{"customer":"name","datePhrase":"Friday","amountNaira":20000} or null}. k means thousand. Never invent names or amounts.`;
 
 // Accuracy stats, one row per proposal. The note text is never stored here.
 export const SECOND_OPINION_SCHEMA = `
@@ -74,13 +92,50 @@ export class SecondOpinionStore {
   }
 }
 
+// Reasoning-channel markers the hosted model sometimes wraps its thinking
+// in (see baseten-test.mjs): the JSON answer follows the last marker, so
+// everything up to it is cut before parsing. Plain JSON has no marker and
+// parses exactly as before.
+const REASONING_MARKERS = ["</think>", "assistantfinal", "<|channel|>final<|message|>", "Final answer:"];
+
+function stripReasoning(content) {
+  const text = String(content ?? "");
+  let idx = -1;
+  let len = 0;
+  for (const m of REASONING_MARKERS) {
+    const i = text.lastIndexOf(m);
+    if (i !== -1 && i > idx) {
+      idx = i;
+      len = m.length;
+    }
+  }
+  return idx === -1 ? text : text.slice(idx + len);
+}
+
+// Dev-only one-liner per second-opinion attempt: HTTP status, finish reason,
+// whether the content was empty, reasoning and output token counts.
+// Numbers only — never the note text or model output. Silent unless
+// POCKETOGA_TIMING=1.
+function logSecondAttempt({ status, finish, empty, reasoning, output, ms }) {
+  if (process.env.POCKETOGA_TIMING !== "1") return;
+  console.log(
+    `secondopinion status=${status} finish=${finish} empty=${empty} reasoning_tokens=${reasoning} output_tokens=${output} ms=${ms}`
+  );
+}
+
 // One Baseten reading of the note text. Returns { reading, latencyMs };
 // reading is null on any failure (transport, status, unparseable shape).
 // Sends only the single note text — never audio, images, phone numbers or
-// ledger data.
-async function fetchSecondReading(heardText, { apiKey, model, fetchFn, timeoutMs }) {
+// ledger data. Minimal prompt, minimal reasoning, small max output, no
+// retry: a timeout fails fast to "not available" instead of doubling to 8 s.
+// Exported so propose() can start the fetch in parallel with classification.
+export async function fetchSecondReading(heardText, { apiKey, model, fetchFn, timeoutMs = SECOND_OPINION_TIMEOUT_MS }) {
   const start = Date.now();
-  const failed = () => ({ reading: null, latencyMs: Date.now() - start });
+  const info = { status: "error", finish: "none", empty: true, reasoning: "n/a", output: "n/a" };
+  const failed = () => {
+    logSecondAttempt({ ...info, ms: Date.now() - start });
+    return { reading: null, latencyMs: Date.now() - start };
+  };
   try {
     const res = await fetchWithRetry(
       fetchFn,
@@ -90,19 +145,36 @@ async function fetchSecondReading(heardText, { apiKey, model, fetchFn, timeoutMs
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({
           model,
+          reasoning_effort: "minimal",
+          max_tokens: SECOND_OPINION_MAX_TOKENS,
           response_format: { type: "json_object" },
           messages: [
-            { role: "system", content: SYSTEM_PROMPT },
+            { role: "system", content: SECOND_OPINION_SYSTEM_PROMPT },
             { role: "user", content: heardText },
           ],
         }),
       },
-      { timeoutMs }
+      { timeoutMs, retries: 0 }
     );
+    info.status = Number.isInteger(res?.status) ? res.status : (res?.ok ? 200 : "error");
     if (!res.ok) return failed();
     const data = await res.json().catch(() => null);
-    const reading = parseModelJson(data?.choices?.[0]?.message?.content ?? "");
+    const choice = data?.choices?.[0] ?? {};
+    info.finish = choice.finish_reason ?? "none";
+    const usage = data?.usage ?? {};
+    info.output = Number.isInteger(usage.completion_tokens) ? usage.completion_tokens : "n/a";
+    const details = usage.completion_tokens_details ?? {};
+    info.reasoning = Number.isInteger(details.reasoning_tokens) ? details.reasoning_tokens : "n/a";
+    const content = choice.message?.content ?? "";
+    info.empty = !String(content).trim();
+    let reading;
+    try {
+      reading = parseModelJson(stripReasoning(content));
+    } catch {
+      return failed();
+    }
     if (!reading || typeof reading !== "object" || Array.isArray(reading)) return failed();
+    logSecondAttempt({ ...info, ms: Date.now() - start });
     return { reading, latencyMs: Date.now() - start };
   } catch {
     return failed();
@@ -130,13 +202,21 @@ function pluralize(n, one, many) {
   return n === 1 ? one : many;
 }
 
+// Only these disagreements may ever reach the trader: the amount, the
+// customer, the number of entries, the promise date. Anything else the
+// comparison finds (category, unit, quantity, type, price basis, promise
+// wording or amount) is recorded in the stats and never shown, never asked.
+const SHOWN_FIELDS = new Set(["entries", "customer", "amount", "promise.date"]);
+
 // Compares the primary checked entries against the second raw reading,
 // normalized through the same checks (each-price maths, money parsing,
-// promise dates). Returns { differingFields, line }: field names in
-// comparison order, and the single code-built line for the first money or
-// customer difference (null when the readings agree). Item, heard-text and
-// question wording never count; neither does casing. The one exception is
-// the expense category, which lives in item and is compared as "category".
+// promise dates). Returns { differingFields, line, shownField }: every field
+// name in comparison order (for the stats), the single code-built line for
+// the first SHOWABLE difference (null when the readings agree, or when only
+// hidden fields differ), and the field that line is about. Item, heard-text
+// and question wording never count; neither does casing. The one exception
+// is the expense category, which lives in item and is compared as
+// "category" — stats only, never shown.
 export function compareReadings(primaryEntries, primaryPromise, secondRaw, { shopId, now = Date.now(), existingCustomers = [] } = {}) {
   // The second reading runs the same customer matching as the primary, so
   // the comparison is on recorded values ("Chinedu" both sides) rather than
@@ -144,9 +224,13 @@ export function compareReadings(primaryEntries, primaryPromise, secondRaw, { sho
   const second = checkModelOutput(secondRaw, shopId, { existingCustomers, now });
   const fields = [];
   let line = null;
+  let shownField = null;
   const note = (field, text) => {
     if (!fields.includes(field)) fields.push(field);
-    if (!line) line = text;
+    if (!line && SHOWN_FIELDS.has(field)) {
+      line = text;
+      shownField = field;
+    }
   };
   const a = primaryEntries ?? [];
   const b = second.entries ?? [];
@@ -229,14 +313,15 @@ export function compareReadings(primaryEntries, primaryPromise, secondRaw, { sho
       }
     }
   }
-  return { differingFields: fields, line };
+  return { differingFields: fields, line, shownField };
 }
 
 // Full check for one proposal: fetches the second reading and compares it
 // against the primary checked entries. Always resolves — { agreed,
-// differingFields, latencyMs, line } — and never throws: missing keys, an
-// empty transcript, transport errors and unparseable output all degrade to
-// no_second_opinion. Keys come from env (process.env in production).
+// differingFields, latencyMs, line, shownField } — and never throws: missing
+// keys, an empty transcript, transport errors and unparseable output all
+// degrade to no_second_opinion. Keys come from env (process.env in
+// production).
 export async function runSecondOpinion({
   heardText,
   entries,
@@ -248,7 +333,7 @@ export async function runSecondOpinion({
   timeoutMs = SECOND_OPINION_TIMEOUT_MS,
   existingCustomers = [],
 }) {
-  const quiet = { agreed: "no_second_opinion", differingFields: [], latencyMs: 0, line: null };
+  const quiet = { agreed: "no_second_opinion", differingFields: [], latencyMs: 0, line: null, shownField: null };
   const apiKey = env?.BASETEN_API_KEY;
   const model = env?.BASETEN_MODEL;
   if (!apiKey || !model) return quiet;
@@ -261,6 +346,6 @@ export async function runSecondOpinion({
   } catch {
     return { ...quiet, latencyMs };
   }
-  if (compared.differingFields.length === 0) return { agreed: "yes", differingFields: [], latencyMs, line: null };
-  return { agreed: "no", differingFields: compared.differingFields, latencyMs, line: compared.line };
+  if (compared.differingFields.length === 0) return { agreed: "yes", differingFields: [], latencyMs, line: null, shownField: null };
+  return { agreed: "no", differingFields: compared.differingFields, latencyMs, line: compared.line, shownField: compared.shownField };
 }

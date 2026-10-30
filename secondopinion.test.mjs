@@ -9,11 +9,15 @@ import { ProposalStore } from "./proposals.mjs";
 import { Ledger } from "./ledger.mjs";
 import { CustomerStore } from "./customers.mjs";
 import { propose } from "./voice.mjs";
-import { createMockModelClient, SYSTEM_PROMPT } from "./model.mjs";
+import { createMockModelClient } from "./model.mjs";
 import { renderProposalCard } from "./messages.mjs";
 import {
   BASETEN_BASE_URL,
   SECOND_OPINION_TIMEOUT_MS,
+  SECOND_OPINION_MAX_TOKENS,
+  SECOND_OPINION_SYSTEM_PROMPT,
+  SECOND_CHECK_UNAVAILABLE,
+  SECOND_CHECK_CREDIT,
   SecondOpinionStore,
   runSecondOpinion,
 } from "./secondopinion.mjs";
@@ -154,6 +158,25 @@ describe("second-opinion agreement", () => {
       teardown(ctx);
     }
   });
+
+  it("a reading wrapped in reasoning channels still parses", async () => {
+    const ctx = setup();
+    try {
+      const wrapped = `<think>checking the amounts</think>${JSON.stringify(PRIMARY)}`;
+      const { proposal } = await proposeWithSecond(ctx, PRIMARY, PRIMARY, {
+        fetchFn: async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({ choices: [{ message: { content: wrapped }, finish_reason: "stop" }] }),
+          text: async () => "",
+        }),
+      });
+      assert.deepEqual(proposal.flags, []);
+      assert.equal(statsRow(ctx, proposal.id).agreed, "yes");
+    } finally {
+      teardown(ctx);
+    }
+  });
 });
 
 describe("second-opinion disagreement", () => {
@@ -174,6 +197,7 @@ describe("second-opinion disagreement", () => {
       const line = "Two readings differ: amount is ₦30,000 in one and ₦25,000 in the other. Which one na correct?";
       assert.deepEqual(proposal.flags, [line]);
       assert.equal(proposal.question, line);
+      assert.ok(proposal.assumptions.includes(SECOND_CHECK_CREDIT), proposal.assumptions.join("; "));
       // The second model cannot change an entry.
       assert.deepEqual(proposal.entries, EXPECTED_ENTRIES);
 
@@ -192,7 +216,7 @@ describe("second-opinion disagreement", () => {
     }
   });
 
-  it("a customer disagreement flags and keeps the primary name", async () => {
+  it("a customer disagreement is a soft line and keeps the primary name", async () => {
     const ctx = setup();
     try {
       const second = {
@@ -206,10 +230,15 @@ describe("second-opinion disagreement", () => {
         question: null,
       };
       const { proposal } = await proposeWithSecond(ctx, PRIMARY, second);
-      assert.deepEqual(proposal.flags, [
-        "Two readings differ: customer is Ada in one and Adaboy in the other. Which one na correct?",
-      ]);
+      const line = "Two readings differ: customer is Ada in one and Adaboy in the other. Which one na correct?";
+      assert.deepEqual(proposal.flags, []);
+      assert.equal(proposal.question, null);
+      assert.ok(proposal.assumptions.includes(line), proposal.assumptions.join("; "));
+      assert.ok(proposal.assumptions.includes(SECOND_CHECK_CREDIT));
       assert.ok(proposal.entries.every((e) => e.customer === "Ada"));
+      const card = renderProposalCard(proposal, { existing: [], shopId: SHOP });
+      assert.equal(card.text.split(line).length - 1, 1);
+      assert.ok(card.buttons.some((b) => b.reply.title === "Save"), "Save stays enabled");
       const row = statsRow(ctx, proposal.id);
       assert.equal(row.agreed, "no");
       assert.deepEqual(JSON.parse(row.differing_fields), ["customer"]);
@@ -218,30 +247,63 @@ describe("second-opinion disagreement", () => {
     }
   });
 
-  it("an entry-count mismatch flags", async () => {
+  it("an entry-count mismatch is a soft line", async () => {
     const ctx = setup();
     try {
       const second = { heard: PRIMARY.heard, entries: [PRIMARY.entries[0]], totals: null, promise: null, question: null };
       const { proposal } = await proposeWithSecond(ctx, PRIMARY, second);
-      assert.deepEqual(proposal.flags, [
-        "Two readings differ: one heard 2 entries and the other heard 1 entry. Which one na correct?",
-      ]);
+      const line = "Two readings differ: one heard 2 entries and the other heard 1 entry. Which one na correct?";
+      assert.deepEqual(proposal.flags, []);
+      assert.equal(proposal.question, null);
+      assert.ok(proposal.assumptions.includes(line), proposal.assumptions.join("; "));
+      const card = renderProposalCard(proposal, { existing: [], shopId: SHOP });
+      assert.ok(card.buttons.some((b) => b.reply.title === "Save"), "Save stays enabled");
       assert.deepEqual(JSON.parse(statsRow(ctx, proposal.id).differing_fields), ["entries"]);
     } finally {
       teardown(ctx);
     }
   });
 
-  it("a promise-date disagreement flags", async () => {
+  it("a promise-date disagreement is a soft line", async () => {
     const ctx = setup();
     try {
       const withPromise = { ...PRIMARY, promise: { customer: "Ada", datePhrase: "Friday", amountNaira: 20000 } };
       const second = { ...withPromise, promise: { customer: "Ada", datePhrase: "Saturday", amountNaira: 20000 } };
       const { proposal } = await proposeWithSecond(ctx, withPromise, second);
-      assert.deepEqual(proposal.flags, [
-        "Two readings differ: promise day is Friday in one and Saturday in the other. Which one na correct?",
-      ]);
+      const line = "Two readings differ: promise day is Friday in one and Saturday in the other. Which one na correct?";
+      assert.deepEqual(proposal.flags, []);
+      assert.equal(proposal.question, null);
+      assert.ok(proposal.assumptions.includes(line), proposal.assumptions.join("; "));
+      const card = renderProposalCard(proposal, { existing: [], shopId: SHOP });
+      assert.ok(card.buttons.some((b) => b.reply.title === "Save"), "Save stays enabled");
       assert.deepEqual(JSON.parse(statsRow(ctx, proposal.id).differing_fields), ["promise.date"]);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("an amount disagreement merges with a code question instead of adding a second", async () => {
+    const ctx = setup();
+    try {
+      const primary = { ...PRIMARY, question: "How much remain?" };
+      const second = {
+        heard: PRIMARY.heard,
+        entries: [
+          { type: "sale", customer: "Ada", item: "rice", unit: "bag", quantity: 2, amountNaira: 25000, amountPhrase: "25k", priceBasis: "total" },
+          { type: "payment", customer: "Ada", item: null, quantity: null, unit: null, amountNaira: 10000, amountPhrase: "10k", priceBasis: "total" },
+        ],
+        totals: null,
+        promise: null,
+        question: null,
+      };
+      const { proposal } = await proposeWithSecond(ctx, primary, second);
+      const merged = "How much remain? Two readings differ: amount is ₦30,000 in one and ₦25,000 in the other. Which one na correct?";
+      assert.deepEqual(proposal.flags, [merged]);
+      assert.equal(proposal.question, merged);
+      const card = renderProposalCard(proposal, { existing: [], shopId: SHOP });
+      assert.equal(card.text.split(merged).length - 1, 1);
+      assert.ok(card.buttons.every((b) => !b.reply.id.startsWith("confirm:")), "amount disagreement asks");
+      assert.deepEqual(JSON.parse(statsRow(ctx, proposal.id).differing_fields), ["amount"]);
     } finally {
       teardown(ctx);
     }
@@ -260,9 +322,12 @@ describe("second-opinion failures never block", () => {
       assert.deepEqual(proposal.flags, []);
       assert.equal(proposal.question, null);
       assert.deepEqual(proposal.entries, EXPECTED_ENTRIES);
+      assert.ok(proposal.assumptions.includes(SECOND_CHECK_UNAVAILABLE), proposal.assumptions.join("; "));
       const row = statsRow(ctx, proposal.id);
       assert.equal(row.agreed, "no_second_opinion");
       assert.deepEqual(JSON.parse(row.differing_fields), []);
+      const card = renderProposalCard(proposal, { existing: [], shopId: SHOP });
+      assert.ok(card.buttons.some((b) => b.reply.title === "Save"), "Save stays enabled when second check fails");
     } finally {
       teardown(ctx);
     }
@@ -277,6 +342,7 @@ describe("second-opinion failures never block", () => {
         });
       const { proposal } = await proposeWithSecond(ctx, PRIMARY, PRIMARY, { fetchFn: hanging, timeoutMs: 20 });
       assert.deepEqual(proposal.flags, []);
+      assert.ok(proposal.assumptions.includes(SECOND_CHECK_UNAVAILABLE));
       assert.equal(statsRow(ctx, proposal.id).agreed, "no_second_opinion");
     } finally {
       teardown(ctx);
@@ -290,12 +356,14 @@ describe("second-opinion failures never block", () => {
         fetchFn: async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: "not json{{{ " } }] }), text: async () => "" }),
       });
       assert.deepEqual(badJson.proposal.flags, []);
+      assert.ok(badJson.proposal.assumptions.includes(SECOND_CHECK_UNAVAILABLE));
       assert.equal(statsRow(ctx, badJson.proposal.id).agreed, "no_second_opinion");
 
       const serverError = await proposeWithSecond(ctx, PRIMARY, PRIMARY, {
         fetchFn: async () => ({ ok: false, status: 500, json: async () => ({}), text: async () => "boom" }),
       });
       assert.deepEqual(serverError.proposal.flags, []);
+      assert.ok(serverError.proposal.assumptions.includes(SECOND_CHECK_UNAVAILABLE));
       assert.equal(statsRow(ctx, serverError.proposal.id).agreed, "no_second_opinion");
     } finally {
       teardown(ctx);
@@ -316,6 +384,7 @@ describe("second-opinion failures never block", () => {
         });
         assert.equal(calls, 0, JSON.stringify(env));
         assert.deepEqual(proposal.flags, []);
+        assert.ok(!proposal.assumptions.includes(SECOND_CHECK_UNAVAILABLE), "silent without keys");
         const row = statsRow(ctx, proposal.id);
         assert.equal(row.agreed, "no_second_opinion");
         assert.equal(row.latency_ms, 0);
@@ -349,7 +418,7 @@ describe("second-opinion failures never block", () => {
 });
 
 describe("second-opinion request privacy", () => {
-  it("sends only the note text with the primary schema, never audio, phones or ledger data", async () => {
+  it("sends only the note text with the minimal prompt, never audio, phones or ledger data", async () => {
     const ctx = setup();
     try {
       // Ledger and directory hold data the note never mentions.
@@ -365,9 +434,11 @@ describe("second-opinion request privacy", () => {
       assert.equal(seen[0].opts.headers.Authorization, "Bearer fake-baseten-key");
       assert.deepEqual(JSON.parse(seen[0].opts.body), {
         model: "fake-model-slug",
+        reasoning_effort: "minimal",
+        max_tokens: SECOND_OPINION_MAX_TOKENS,
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: SYSTEM_PROMPT },
+          { role: "system", content: SECOND_OPINION_SYSTEM_PROMPT },
           { role: "user", content: PRIMARY.heard },
         ],
       });
@@ -393,9 +464,12 @@ describe("second-opinion request privacy", () => {
 });
 
 describe("second-opinion plumbing", () => {
-  it("the default timeout is 6 seconds", () => {
-    assert.equal(SECOND_OPINION_TIMEOUT_MS, 6000);
+  it("the default timeout is 4 seconds with room for a short thought plus JSON", () => {
+    assert.equal(SECOND_OPINION_TIMEOUT_MS, 4000);
+    assert.equal(SECOND_OPINION_MAX_TOKENS, 1000);
     assert.equal(BASETEN_BASE_URL, "https://inference.baseten.co/v1");
+    assert.ok(SECOND_OPINION_SYSTEM_PROMPT.length < 800, `prompt too long: ${SECOND_OPINION_SYSTEM_PROMPT.length}`);
+    assert.ok(!SECOND_OPINION_SYSTEM_PROMPT.includes("totals"), "minimal prompt has no totals");
   });
 
   it("runSecondOpinion compares without stores or network", async () => {
@@ -409,7 +483,7 @@ describe("second-opinion plumbing", () => {
       fetchFn,
       env: FAKE_ENV,
     });
-    assert.deepEqual(out, { agreed: "yes", differingFields: [], latencyMs: out.latencyMs, line: null });
+    assert.deepEqual(out, { agreed: "yes", differingFields: [], latencyMs: out.latencyMs, line: null, shownField: null });
     assert.ok(Number.isInteger(out.latencyMs) && out.latencyMs >= 0);
     assert.equal(seen.length, 1);
   });
@@ -465,7 +539,7 @@ describe("second-opinion expense comparison", () => {
     }
   });
 
-  it("a category disagreement flags with the category line", async () => {
+  it("a category disagreement records in the stats and never shows", async () => {
     const ctx = setup();
     try {
       const second = {
@@ -478,13 +552,141 @@ describe("second-opinion expense comparison", () => {
         question: null,
       };
       const { proposal } = await proposeWithSecond(ctx, EXPENSE_PRIMARY, second);
-      const line = "Two readings differ: expense category is power in one and rent in the other. Which one na correct?";
-      assert.deepEqual(proposal.flags, [line]);
+      assert.deepEqual(proposal.flags, []);
+      assert.equal(proposal.question, null);
       // The primary entry keeps its category.
       assert.equal(proposal.entries[0].item, "power");
+      assert.ok(!proposal.assumptions.some((a) => /Two readings differ/.test(a)), proposal.assumptions.join("; "));
+      assert.ok(!proposal.assumptions.includes(SECOND_CHECK_CREDIT));
+      const card = renderProposalCard(proposal, { existing: [], shopId: SHOP });
+      assert.ok(!card.text.includes("Two readings differ"), card.text);
+      assert.ok(card.buttons.some((b) => b.reply.title === "Save"), "Save stays enabled");
       const row = statsRow(ctx, proposal.id);
       assert.equal(row.agreed, "no");
       assert.deepEqual(JSON.parse(row.differing_fields), ["category"]);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("a unit-spelling disagreement records in the stats and never shows", async () => {
+    const ctx = setup();
+    try {
+      const second = {
+        heard: PRIMARY.heard,
+        entries: [
+          { type: "sale", customer: "Ada", item: "rice", unit: "sack", quantity: 2, amountNaira: 30000, amountPhrase: "30k", priceBasis: "total" },
+          { type: "payment", customer: "Ada", item: null, quantity: null, unit: null, amountNaira: 10000, amountPhrase: "10k", priceBasis: "total" },
+        ],
+        totals: null,
+        promise: null,
+        question: null,
+      };
+      const { proposal } = await proposeWithSecond(ctx, PRIMARY, second);
+      assert.deepEqual(proposal.flags, []);
+      assert.equal(proposal.question, null);
+      assert.equal(proposal.entries[0].unit, "bag");
+      assert.ok(!proposal.assumptions.some((a) => /Two readings differ/.test(a)), proposal.assumptions.join("; "));
+      const card = renderProposalCard(proposal, { existing: [], shopId: SHOP });
+      assert.ok(!card.text.includes("Two readings differ"), card.text);
+      const row = statsRow(ctx, proposal.id);
+      assert.equal(row.agreed, "no");
+      assert.deepEqual(JSON.parse(row.differing_fields), ["unit"]);
+    } finally {
+      teardown(ctx);
+    }
+  });
+});
+
+describe("second-opinion cap and parallel", () => {
+  it("the 4 s cap fires once with no retry, and the card stays soft", async () => {
+    const ctx = setup();
+    try {
+      let calls = 0;
+      const hanging = (url, opts) => {
+        calls++;
+        return new Promise((_, reject) => {
+          opts.signal.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+      };
+      const t0 = Date.now();
+      const { proposal } = await proposeWithSecond(ctx, PRIMARY, PRIMARY, { fetchFn: hanging, timeoutMs: 30 });
+      const elapsed = Date.now() - t0;
+      assert.equal(calls, 1, "no retry on timeout");
+      assert.ok(elapsed < 1000, `cap fired fast, took ${elapsed}ms`);
+      assert.deepEqual(proposal.flags, []);
+      assert.equal(proposal.question, null);
+      assert.ok(proposal.assumptions.includes(SECOND_CHECK_UNAVAILABLE));
+      const row = statsRow(ctx, proposal.id);
+      assert.equal(row.agreed, "no_second_opinion");
+      assert.ok(row.latency_ms >= 30 && row.latency_ms < 1000, `latency ${row.latency_ms}ms`);
+      const card = renderProposalCard(proposal, { existing: [], shopId: SHOP });
+      assert.ok(card.buttons.some((b) => b.reply.title === "Save"), "Save enabled on cap");
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("a late arrival after the cap is ignored, never blocks", async () => {
+    const ctx = setup();
+    try {
+      // Returns a disagreeing reading after 120 ms, but the cap is 20 ms:
+      // the abort wins, the late payload is dropped, the card stays clean.
+      const late = (url, opts) =>
+        new Promise((resolve, reject) => {
+          const timer = setTimeout(() => resolve(basetenOk({
+            heard: PRIMARY.heard,
+            entries: [
+              { type: "sale", customer: "Nobody", item: "rice", unit: "bag", quantity: 2, amountNaira: 99999, amountPhrase: "99999", priceBasis: "total" },
+              PRIMARY.entries[1],
+            ],
+            totals: null, promise: null, question: null,
+          })), 120);
+          opts.signal.addEventListener("abort", () => {
+            clearTimeout(timer);
+            reject(new Error("aborted"));
+          });
+        });
+      const { proposal } = await proposeWithSecond(ctx, PRIMARY, PRIMARY, { fetchFn: late, timeoutMs: 20 });
+      assert.deepEqual(proposal.flags, []);
+      assert.equal(proposal.question, null);
+      assert.deepEqual(proposal.entries, EXPECTED_ENTRIES);
+      assert.ok(proposal.assumptions.includes(SECOND_CHECK_UNAVAILABLE));
+      assert.equal(statsRow(ctx, proposal.id).agreed, "no_second_opinion");
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("text runs the second fetch in parallel with classification, never after", async () => {
+    const ctx = setup();
+    try {
+      const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+      // Primary takes ~120 ms, second takes ~120 ms: parallel finishes near
+      // 120 ms, sequential would take ~240 ms.
+      const slowModel = createMockModelClient(async () => {
+        await delay(120);
+        return PRIMARY;
+      });
+      const slowSecond = async () => {
+        await delay(120);
+        return basetenOk(PRIMARY);
+      };
+      const t0 = Date.now();
+      const proposal = await propose(SHOP, "fake note text", {
+        proposals: ctx.proposals,
+        model: slowModel,
+        ledger: null,
+        now: NOW,
+        secondOpinions: ctx.secondOpinions,
+        secondOpinionFetch: slowSecond,
+        secondOpinionEnv: FAKE_ENV,
+        secondOpinionMode: "always",
+      });
+      const elapsed = Date.now() - t0;
+      assert.ok(elapsed < 220, `parallel took ${elapsed}ms, expected under 220ms`);
+      assert.deepEqual(proposal.flags, []);
+      assert.equal(statsRow(ctx, proposal.id).agreed, "yes");
     } finally {
       teardown(ctx);
     }

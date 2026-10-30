@@ -6,7 +6,7 @@ import { Ledger } from "./ledger.mjs";
 import { ProposalStore } from "./proposals.mjs";
 import { createMockModelClient } from "./model.mjs";
 import { propose, confirmProposal, fixProposal, rejectProposal, getProposal } from "./voice.mjs";
-import { renderProposalCard } from "./messages.mjs";
+import { renderProposalCard, BAD_AUDIO_JSON, TEXT_FAILED } from "./messages.mjs";
 import { createVoiceServer, handleVoiceRequest } from "./server.mjs";
 import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
 
@@ -140,27 +140,35 @@ describe("voice loop (mock model, no API calls)", () => {
     }
   });
 
-  it("flags numbers that do not add up, then confirms after fix", async () => {
+  it("mismatched numbers block with one question, then confirm after fix", async () => {
     const ctx = setup(async (req) => (req.prior ? PART_PAYMENT : MISMATCH));
     try {
       const p = await propose(SHOP_A, "fake note", ctx.deps);
       assert.equal(p.status, "pending");
-      assert.match(p.flags.join(";"), /do not add up/);
-      assert.ok(p.question);
+      assert.deepEqual(p.flags, ["numbers do not add up: total ₦15,000 but paid ₦10,000 + remainder ₦4,000"]);
+      assert.equal(p.question, p.flags[0]);
+      assert.ok(!p.assumptions.some((a) => /don't add up|Note says remainder/.test(a)), p.assumptions.join("; "));
       assert.throws(() => confirmProposal(p.id, SHOP_A, ctx.deps), /cannot confirm/);
-      assert.deepEqual(ctx.ledger.list(SHOP_A), []);
+      const card = renderProposalCard(p);
+      const line = "₦15,000 − ₦10,000 = ₦5,000, but you said ₦4,000 remain. Which one na correct?";
+      assert.equal(card.text.split(line).length - 1, 1);
+      assert.equal(card.text.split("?").length - 1, 1);
+      assert.deepEqual(
+        card.buttons.map((b) => b.reply.title),
+        ["Fix", "Reject"]
+      );
 
-      const fixed = await fixProposal(p.id, SHOP_A, "remainder na 5k", ctx.deps);
+      const q = await propose(SHOP_A, "fake note", ctx.deps);
+      const fixed = await fixProposal(q.id, SHOP_A, "remainder na 5k", ctx.deps);
       assert.equal(fixed.status, "pending");
       assert.deepEqual(fixed.flags, []);
-      const out = confirmProposal(fixed.id, SHOP_A, ctx.deps);
-      assert.equal(out.recordedIds.length, 2);
+      assert.equal(confirmProposal(fixed.id, SHOP_A, ctx.deps).recordedIds.length, 2);
     } finally {
       teardown(ctx);
     }
   });
 
-  it("flags model amounts that disagree with the original phrase", async () => {
+  it("model amounts that disagree with the phrase stay soft with a Tap Fix line", async () => {
     const ctx = setup(async () => ({
       heard: "fake",
       entries: [
@@ -171,8 +179,11 @@ describe("voice loop (mock model, no API calls)", () => {
     }));
     try {
       const p = await propose(SHOP_A, "fake note", ctx.deps);
-      assert.match(p.flags.join(";"), /but "10k" means/);
-      assert.throws(() => confirmProposal(p.id, SHOP_A, ctx.deps), /cannot confirm/);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+      assert.ok(p.assumptions.some((a) => /Taken as ₦15,000 from "10k"/.test(a)), p.assumptions.join("; "));
+      assert.equal(confirmProposal(p.id, SHOP_A, ctx.deps).recordedIds.length, 1);
+      assert.equal(ctx.ledger.list(SHOP_A)[0].amount_kobo, 1500000);
     } finally {
       teardown(ctx);
     }
@@ -187,30 +198,59 @@ describe("voice loop (mock model, no API calls)", () => {
     }));
     try {
       const p = await propose(SHOP_A, "fake note", ctx.deps);
-      assert.match(p.flags.join(";"), /missing customer/);
-      assert.ok(p.question);
+      assert.deepEqual(p.flags, ["Who bought it?"]);
+      assert.equal(p.question, "Who bought it?");
       assert.throws(() => confirmProposal(p.id, SHOP_A, ctx.deps), /cannot confirm/);
     } finally {
       teardown(ctx);
     }
   });
 
-  it("rejects bad quantities and amounts from the model", async () => {
-    const cases = [
-      [{ type: "sale", customer: "Test Customer Ada", item: "fake-rice", quantity: 0, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" }, /quantity/],
-      [{ type: "sale", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: 15.5, amountPhrase: "15k", priceBasis: "total" }, /whole naira/],
-      [{ type: "sale", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: -5, amountPhrase: "5k", priceBasis: "total" }, /negative/],
-      [{ type: "sale", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: null, amountPhrase: null, priceBasis: "total" }, /missing amount/],
-      [{ type: "debt", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: 5, amountPhrase: "5", priceBasis: "total" }, /unknown type/],
-    ];
-    for (const [entry, want] of cases) {
-      const one = setup(async () => ({ heard: "fake", entries: [entry], totals: null, question: null }));
+  it("bad quantities stay soft, bad amounts ask once, unknown types skip", async () => {
+    // Bad quantity: money records, stock unchanged, Save enabled.
+    const badQty = setup(async () => ({
+      heard: "fake",
+      entries: [{ type: "sale", customer: "Test Customer Ada", item: "fake-rice", quantity: 0, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" }],
+      totals: null, question: null,
+    }));
+    try {
+      const p = await propose(SHOP_A, "fake note", badQty.deps);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+      assert.ok(p.assumptions.includes("No quantity stated; stock unchanged."));
+      assert.equal(confirmProposal(p.id, SHOP_A, badQty.deps).recordedIds.length, 1);
+    } finally {
+      teardown(badQty);
+    }
+    // Bad or missing amounts: one combined question, Save locked.
+    for (const amountNaira of [15.5, -5, null]) {
+      const one = setup(async () => ({
+        heard: "fake",
+        entries: [{ type: "sale", customer: "Test Customer Ada", item: null, quantity: null, amountNaira, amountPhrase: "x", priceBasis: "total" }],
+        totals: null, question: null,
+      }));
       try {
         const p = await propose(SHOP_A, "fake note", one.deps);
-        assert.match(p.flags.join(";"), want, JSON.stringify(entry));
+        assert.match(p.flags.join(";"), /How much was/, String(amountNaira));
+        assert.ok(p.question);
+        assert.throws(() => confirmProposal(p.id, SHOP_A, one.deps), /cannot confirm/);
       } finally {
         teardown(one);
       }
+    }
+    // Unknown type alone: skipped softly, then nothing to record blocks.
+    const badType = setup(async () => ({
+      heard: "fake",
+      entries: [{ type: "debt", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: 5, amountPhrase: "5", priceBasis: "total" }],
+      totals: null, question: null,
+    }));
+    try {
+      const p = await propose(SHOP_A, "fake note", badType.deps);
+      assert.deepEqual(p.entries, []);
+      assert.deepEqual(p.flags, ["no entries to record"]);
+      assert.throws(() => confirmProposal(p.id, SHOP_A, badType.deps), /cannot confirm/);
+    } finally {
+      teardown(badType);
     }
   });
 
@@ -262,27 +302,41 @@ describe("voice loop (mock model, no API calls)", () => {
     }
   });
 
-  it("flags a total-basis reading when the note says each", async () => {
-    const ctx = setup(async () => ({
+  it("a total reading when the note says each is flagged, still taken as each", async () => {
+    const totalReading = {
       heard: "2 bags rice, 15k each.",
       entries: [
         { type: "sale", customer: "Test Customer Ada", item: "fake-rice", unit: "bag", quantity: 2, amountNaira: 15000, amountPhrase: "15k", priceBasis: "total" },
       ],
       totals: null,
       question: null,
-    }));
+    };
+    const eachReading = {
+      ...totalReading,
+      entries: [{ ...totalReading.entries[0], priceBasis: "each" }],
+    };
+    const ctx = setup(async (req) => (req.prior ? eachReading : totalReading));
     try {
       const p = await propose(SHOP_A, "fake note", ctx.deps);
-      assert.match(p.flags.join(";"), /read as a total/);
-      assert.ok(p.question);
+      assert.deepEqual(p.flags, ['note says "each" but the amount was read as a total']);
+      assert.equal(p.entries[0].priceBasis, "each");
+      assert.equal(p.entries[0].amountNaira, 30000);
+      assert.ok(p.assumptions.some((a) => /Taken as ₦15,000 each/.test(a)), p.assumptions.join("; "));
       assert.throws(() => confirmProposal(p.id, SHOP_A, ctx.deps), /cannot confirm/);
-      assert.deepEqual(ctx.ledger.list(SHOP_A), []);
+      const card = renderProposalCard(p);
+      assert.equal(card.text.split('note says "each" but the amount was read as a total').length - 1, 1);
+      assert.equal(card.text.split("?").length - 1, 0);
+      assert.ok(card.buttons.every((b) => !b.reply.id.startsWith("confirm:")));
+
+      const fixed = await fixProposal(p.id, SHOP_A, "na each", ctx.deps);
+      assert.deepEqual(fixed.flags, []);
+      assert.equal(confirmProposal(fixed.id, SHOP_A, ctx.deps).recordedIds.length, 1);
     } finally {
       teardown(ctx);
     }
   });
 
-  it("asks instead of guessing when the basis is unclear for many items", async () => {
+  it("unclear basis for many items defaults to total, softly", async () => {
     const many = setup(async () => ({
       heard: "2 bags rice, 15k.",
       entries: [
@@ -293,9 +347,12 @@ describe("voice loop (mock model, no API calls)", () => {
     }));
     try {
       const p = await propose(SHOP_A, "fake note", many.deps);
-      assert.match(p.flags.join(";"), /each one or for all 2/);
-      assert.ok(p.question);
-      assert.throws(() => confirmProposal(p.id, SHOP_A, many.deps), /cannot confirm/);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+      assert.equal(p.entries[0].priceBasis, "total");
+      assert.equal(p.entries[0].amountNaira, 15000);
+      assert.ok(p.assumptions.some((a) => /Taken as ₦15,000 for all 2 bags/.test(a)), p.assumptions.join("; "));
+      assert.equal(confirmProposal(p.id, SHOP_A, many.deps).recordedIds.length, 1);
     } finally {
       teardown(many);
     }
@@ -485,26 +542,29 @@ describe("stated-remainder safety check (fake data)", () => {
     question: null,
   });
 
-  it("flags the Adaboy note when the stated remainder does not add up", async () => {
+  it("a stated remainder that does not add up blocks with one question", async () => {
     const heard = "Adaboy 2 bag of rice 15k each, she pay 10k, remain 5k";
-    const ctx = setup(adaboyModel(heard));
+    const fixedHeard = "Adaboy 2 bag of rice 15k each, she pay 10k, remain 20k";
+    const ctx = setup(async (req) => (req.prior ? adaboyModel(fixedHeard)() : adaboyModel(heard)()));
     try {
       const p = await propose(SHOP_A, heard, ctx.deps);
       assert.equal(p.status, "pending");
-      assert.equal(p.flags.length, 1);
-      assert.match(p.flags[0], /note says remainder ₦5,000/);
-      assert.match(p.flags[0], /sales ₦30,000 minus paid ₦10,000 = ₦20,000/);
-      assert.ok(p.question);
+      assert.deepEqual(p.flags, ["numbers do not add up: sales ₦30,000 minus paid ₦10,000 = ₦20,000, stated remainder ₦5,000"]);
+      assert.equal(p.question, p.flags[0]);
+      assert.ok(!p.assumptions.some((a) => /Note says remainder/.test(a)), p.assumptions.join("; "));
       assert.throws(() => confirmProposal(p.id, SHOP_A, ctx.deps), /cannot confirm/);
-      assert.deepEqual(ctx.ledger.list(SHOP_A), []);
       const card = renderProposalCard(p);
+      const line = "₦30,000 − ₦10,000 = ₦20,000, but you said ₦5,000 remain. Which one na correct?";
+      assert.equal(card.text.split(line).length - 1, 1);
+      assert.equal(card.text.split("?").length - 1, 1);
       assert.deepEqual(
         card.buttons.map((b) => b.reply.title),
         ["Fix", "Reject"]
       );
-      assert.ok(card.buttons.every((b) => !b.reply.id.startsWith("confirm:")), "no Save button");
-      const line = "₦30,000 − ₦10,000 = ₦20,000, but you said ₦5,000 remain. Which one na correct?";
-      assert.equal(card.text.split(line).length - 1, 1, "question shows once");
+
+      const fixed = await fixProposal(p.id, SHOP_A, "remain na 20k", ctx.deps);
+      assert.deepEqual(fixed.flags, []);
+      assert.equal(confirmProposal(fixed.id, SHOP_A, ctx.deps).recordedIds.length, 2);
     } finally {
       teardown(ctx);
     }
@@ -553,6 +613,37 @@ describe("stated-remainder safety check (fake data)", () => {
       const p = await propose(SHOP_A, "fake note", ctx.deps);
       assert.deepEqual(p.flags, []);
       assert.equal(p.question, null);
+    } finally {
+      teardown(ctx);
+    }
+  });
+});
+
+describe("confused model output (fake data)", () => {
+  it("a text note never gets the didn't-hear line", async () => {
+    const ctx = setup(async () => "not json {{{");
+    try {
+      const p = await propose(SHOP_A, "NEPA bill 12500, paid with transfer", ctx.deps);
+      assert.deepEqual(p.flags, [TEXT_FAILED]);
+      assert.equal(p.question, TEXT_FAILED);
+      assert.throws(() => confirmProposal(p.id, SHOP_A, ctx.deps), /cannot confirm/);
+      const card = renderProposalCard(p);
+      assert.equal(card.text.split(TEXT_FAILED).length - 1, 1);
+      assert.ok(!card.text.toLowerCase().includes("hear"), card.text);
+      assert.ok(card.buttons.every((b) => !b.reply.id.startsWith("confirm:")));
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("a voice note keeps the didn't-hear line", async () => {
+    const ctx = setup(async () => "not json {{{");
+    try {
+      const p = await propose(SHOP_A, { audioBase64: "ZmFrZS1hdWRpby1ieXRlcw==", audioFormat: "wav" }, ctx.deps);
+      assert.deepEqual(p.flags, [BAD_AUDIO_JSON]);
+      assert.equal(p.question, BAD_AUDIO_JSON);
+      const card = renderProposalCard(p);
+      assert.equal(card.text.split(BAD_AUDIO_JSON).length - 1, 1);
     } finally {
       teardown(ctx);
     }
@@ -900,11 +991,19 @@ describe("voice HTTP server", () => {
   });
 
   it("fix and reject endpoints work; confirmed proposals are final", async () => {
-    await withServer(async (req) => (req.prior ? PART_PAYMENT : MISMATCH), async (base) => {
+    const MISSING = {
+      heard: "fake",
+      entries: [
+        { type: "sale", customer: "Test Customer Ada", item: "fake-rice", unit: "bag", quantity: 2, amountNaira: null, amountPhrase: null, priceBasis: "total" },
+      ],
+      totals: null,
+      question: null,
+    };
+    await withServer(async (req) => (req.prior ? PART_PAYMENT : MISSING), async (base) => {
       const created = await post(base, "/propose", SHOP_A, { text: "fake note" });
       const id = created.json.proposal.id;
       assert.equal((await post(base, `/confirm/${id}`, SHOP_A, {})).status, 400);
-      const fixed = await post(base, `/fix/${id}`, SHOP_A, { correctionText: "remainder na 5k" });
+      const fixed = await post(base, `/fix/${id}`, SHOP_A, { correctionText: "15k" });
       assert.equal(fixed.status, 200);
       assert.deepEqual(fixed.json.proposal.flags, []);
       assert.equal((await post(base, `/confirm/${id}`, SHOP_A, {})).status, 200);

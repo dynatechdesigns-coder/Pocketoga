@@ -4,21 +4,18 @@
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
 import { parseNaira, formatKobo } from "./money.mjs";
-import { escapeMd, customerOwedKobo } from "./messages.mjs";
+import { escapeMd, customerOwedKobo, MISMATCH_PREFIX, BAD_AUDIO_JSON, TEXT_FAILED } from "./messages.mjs";
 import { resolvePromiseDate } from "./promises.mjs";
-import { runSecondOpinion, SECOND_OPINION_TIMEOUT_MS } from "./secondopinion.mjs";
+import { fetchSecondReading, compareReadings, SECOND_OPINION_TIMEOUT_MS, SECOND_CHECK_UNAVAILABLE, SECOND_CHECK_CREDIT } from "./secondopinion.mjs";
 import { stockLevels, productKey } from "./products.mjs";
 import { costBasisByProduct, costBasisKey } from "./profit.mjs";
 
 export const PROPOSAL_TTL_MS = 30 * 60 * 1000;
-// A second model call costs as much as the first, so the second opinion
-// runs only when code already smells something (any flag) or the note moves
-// serious money (total at or above this, in naira).
+// Deprecated gate: the second opinion used to run only for flagged notes
+// and big money. It now runs in parallel on every text/voice note when keys
+// are set (hard 4 s cap, soft on late), so latency never grows. Kept
+// exported for compatibility; new code ignores it.
 export const SECOND_OPINION_MIN_NAIRA = 100000;
-
-function noteTotalKobo(entries) {
-  return (entries ?? []).reduce((t, e) => t + (Number.isInteger(e?.amountKobo) ? e.amountKobo : 0), 0);
-}
 // Types stored in the ledger. The model, hints and forms say "purchase";
 // code normalizes it to "restock" before anything is checked or stored, so
 // the chain never sees a new type and the hash rules do not change.
@@ -33,9 +30,20 @@ export function normalizeEntryType(type) {
 // that is not on this list becomes "other" in pickExpenseCategory.
 export const EXPENSE_CATEGORIES = ["transport", "rent", "power", "wages", "stock-related", "fuel", "data", "other"];
 export const PRICE_BASES = ["each", "total", "unclear"];
-// Words that mean a price is per item. Checked against the note when the
-// model claims the amount is a total.
+// Words that mean a price is per item. Checked against the note: the
+// trader's words win over the model's price-basis reading, softly.
 const EACH_WORDS = /\b(each|per|every|apiece|one-one|one one|a piece)\b/i;
+
+function eachWordHeard(heard, phrase) {
+  const m = `${heard ?? ""} ${phrase ?? ""}`.match(EACH_WORDS);
+  return m ? m[0].toLowerCase() : "each";
+}
+
+function pluralFor(quantity, unit) {
+  const u = String(unit ?? "").trim();
+  if (!u) return "";
+  return quantity === 1 ? u : `${u}s`;
+}
 // Phrases where the note itself states what is still owed ("remain 5k",
 // "balance na 3k", "e remain 2k"). Plain code cross-checks the stated
 // figure against the note's own sales-minus-payments, even when the model
@@ -96,27 +104,25 @@ function pickExpenseCategory(raw) {
 // --- Plain-code checks (never the model) -----------------------------------
 
 // Validates one amount leg: whole non-negative naira + parser cross-check of
-// the original phrase. Returns { naira, kobo, phrase } with nulls when absent.
-function checkLeg(naira, phrase, label, flags, notes, required = false) {
+// the original phrase. Returns { naira, kobo, phrase } with nulls when absent
+// or invalid — callers treat null as missing (blocking, combined into the one
+// question). A model/phrase mismatch is soft: the model's figure records with
+// a "Tap Fix" assumption, never a block.
+function checkLeg(naira, phrase, label, flags, notes, required = false, assumptions = null) {
   const cleanPhrase = cleanText(phrase);
   if (naira === null || naira === undefined) {
-    if (required) flags.push(`${label}: missing amount`);
     return { naira: null, kobo: null, phrase: cleanPhrase };
   }
-  if (typeof naira !== "number" || !Number.isInteger(naira)) {
-    flags.push(`${label}: amount must be whole naira, got ${String(naira)}`);
-    return { naira: null, kobo: null, phrase: cleanPhrase };
-  }
-  if (naira < 0) {
-    flags.push(`${label}: amount must not be negative`);
+  if (typeof naira !== "number" || !Number.isInteger(naira) || naira < 0) {
     return { naira: null, kobo: null, phrase: cleanPhrase };
   }
   const kobo = naira * 100;
   if (cleanPhrase) {
     try {
       const parsed = parseNaira(cleanPhrase);
-      if (parsed.kobo !== kobo) {
-        flags.push(`${label}: model says ${formatKobo(kobo)} but "${cleanPhrase}" means ${formatKobo(parsed.kobo)}`);
+      if (parsed.kobo !== kobo && assumptions) {
+        const line = `Taken as ${formatKobo(kobo)} from "${cleanPhrase}". Tap Fix if it was ${formatKobo(parsed.kobo)}.`;
+        if (!assumptions.includes(line)) assumptions.push(line);
       }
     } catch {
       notes.push(`${label}: could not verify amount phrase "${cleanPhrase}"`);
@@ -139,15 +145,16 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard, assumptions, h
       type = hinted;
       assumptions.push(`Taken as ${withArticle(TYPE_WORDS[hinted])} from your tap.`);
     } else {
-      flags.push(`${label}: unknown type "${String(e.type)}" (want sale, payment, purchase, restock or expense)`);
+      // Soft: skip the unreadable entry, save the rest. Empty overall still
+      // blocks via "no entries to record" below.
+      assumptions.push(`Skipped an entry with unknown type "${String(e.type)}". Tap Fix to add it.`);
       return null;
     }
   }
-  const { naira, kobo, phrase } = checkLeg(e.amountNaira, e.amountPhrase, label, flags, notes, true);
+  const { naira, kobo, phrase } = checkLeg(e.amountNaira, e.amountPhrase, label, flags, notes, true, assumptions);
 
   let basis = e.priceBasis;
   if (!PRICE_BASES.includes(basis)) {
-    flags.push(`${label}: price basis must be each, total or unclear, got ${String(e.priceBasis)}`);
     basis = "unclear";
   }
 
@@ -160,6 +167,8 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard, assumptions, h
       customer = shopId; // the shop itself paid
       notes.push(`${label}: no payee given, recorded for the shop`);
     } else {
+      // Blocking: the ledger needs a customer. Collected into the one
+      // question below (missing amounts first, then missing customers).
       flags.push(`${label}: missing customer name`);
     }
   }
@@ -167,7 +176,7 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard, assumptions, h
   let item = null;
   if (e.item !== null && e.item !== undefined && e.item !== "") {
     if (typeof e.item !== "string" || !e.item.trim()) {
-      flags.push(`${label}: item must be text`);
+      item = null;
     } else {
       item = e.item.trim();
     }
@@ -176,7 +185,7 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard, assumptions, h
   let quantity = null;
   if (e.quantity !== null && e.quantity !== undefined) {
     if (typeof e.quantity !== "number" || !Number.isInteger(e.quantity) || e.quantity <= 0) {
-      flags.push(`${label}: quantity must be a positive integer, got ${String(e.quantity)}`);
+      quantity = null;
     } else {
       quantity = e.quantity;
     }
@@ -185,7 +194,7 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard, assumptions, h
   let unit = null;
   if (e.unit !== null && e.unit !== undefined && e.unit !== "") {
     if (typeof e.unit !== "string" || !e.unit.trim()) {
-      flags.push(`${label}: unit must be text`);
+      unit = null;
     } else {
       unit = e.unit.trim();
     }
@@ -222,12 +231,30 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard, assumptions, h
     if (rawCategory !== item) assumptions.push("Expense category assumed: other.");
   }
 
-  // The note says per-item but the model read a total: do not trust it.
-  // A quantity of one is exempt — each and total are the same money.
-  if (basis === "total" && type !== "payment" && quantity !== 1) {
-    const match = `${heard ?? ""} ${phrase ?? ""}`.match(EACH_WORDS);
-    if (match) {
-      flags.push(`${label}: note says "${match[0].toLowerCase()}" but the amount was read as a total`);
+  // The trader's words win over the model's reading: "each/per/one-one"
+  // in the note means each, otherwise total. Unclear with quantity stays
+  // unclear here and resolves after product matching (catalog price picks
+  // the closest reading, else total). Form entries skip the each-to-total
+  // guard: unitCostNaira is explicit, not a model guess, and the auto heard
+  // text carries no "each" word. When the note says each but the model read
+  // a total, the read amount disagrees with the trader's words, so the
+  // entries still convert (the trader's words win) AND a blocking flag goes
+  // up: 15k total versus 15k each is a different debt.
+  const saysEach = EACH_WORDS.test(`${heard ?? ""} ${phrase ?? ""}`);
+  const isFormHeard = String(heard ?? "").startsWith("Form:");
+  if ((type === "sale" || type === "restock") && quantity !== null && quantity > 1 && naira !== null) {
+    if (basis === "total" && saysEach) {
+      basis = "each";
+      const total = formatKobo(kobo * quantity);
+      const line = `Taken as ${formatKobo(kobo)} each (${total} total) from "${eachWordHeard(heard, phrase)}" in your note. Tap Fix if it was total.`;
+      if (!assumptions.includes(line)) assumptions.push(line);
+      const flag = `note says "${eachWordHeard(heard, phrase)}" but the amount was read as a total`;
+      if (!flags.includes(flag)) flags.push(flag);
+    } else if (basis === "each" && !saysEach && !isFormHeard) {
+      basis = "total";
+      const unitWord = unit ? ` ${pluralFor(quantity, unit)}` : "";
+      const line = `Taken as ${formatKobo(kobo)} for all ${quantity}${unitWord}, ${formatKobo(Math.round(kobo / quantity))} each. Tap Fix if it was each.`;
+      if (!assumptions.includes(line)) assumptions.push(line);
     }
   }
 
@@ -239,7 +266,7 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard, assumptions, h
   let eachKobo = null;
   if (basis === "each") {
     if (quantity === null) {
-      flags.push(`${label}: an each-price needs a quantity`);
+      // Total unknown without a quantity: null amount blocks as missing.
       totalNaira = null;
       totalKobo = null;
     } else if (naira !== null) {
@@ -248,9 +275,6 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard, assumptions, h
       eachNaira = naira;
       eachKobo = kobo;
     }
-  } else if (basis === "unclear" && quantity !== null && quantity > 1) {
-    const figure = phrase ? `"${phrase}"` : kobo !== null ? formatKobo(kobo) : "the amount";
-    flags.push(`${label}: is ${figure} for each one or for all ${quantity}?`);
   } else if (basis === "unclear" && quantity === 1) {
     basis = "total"; // one item: each and total are the same money
     eachNaira = naira;
@@ -258,8 +282,7 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard, assumptions, h
   }
 
   // Money known but stock descriptors missing: record the money, move no
-  // stock, and say so. (Each-basis without quantity still blocks above:
-  // there the total itself is unknown.)
+  // stock, and say so.
   if ((type === "sale" || type === "restock") && Number.isInteger(totalKobo)) {
     if (item === null) assumptions.push("No item stated; stock unchanged.");
     else if (!Number.isInteger(quantity)) assumptions.push("No quantity stated; stock unchanged.");
@@ -280,17 +303,19 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard, assumptions, h
   };
 }
 
-function checkTotals(rawTotals, flags, notes) {
+function checkTotals(rawTotals, flags, notes, assumptions = null) {
   if (rawTotals === null || rawTotals === undefined) return null;
   const t = typeof rawTotals === "object" ? rawTotals : {};
-  const total = checkLeg(t.totalNaira, t.totalPhrase, "total", flags, notes);
-  const paid = checkLeg(t.paidNaira, t.paidPhrase, "paid", flags, notes);
-  const remainder = checkLeg(t.remainderNaira, t.remainderPhrase, "remainder", flags, notes);
+  const total = checkLeg(t.totalNaira, t.totalPhrase, "total", flags, notes, false, assumptions);
+  const paid = checkLeg(t.paidNaira, t.paidPhrase, "paid", flags, notes, false, assumptions);
+  const remainder = checkLeg(t.remainderNaira, t.remainderPhrase, "remainder", flags, notes, false, assumptions);
+  // BLOCKING: the note's own total, paid and remainder do not add up, so
+  // the money cannot be recorded safely. The card restates this labelled
+  // flag as one Pidgin question; the model's own question about the same
+  // mismatch is suppressed.
   if (total.naira !== null && paid.naira !== null && remainder.naira !== null) {
     if (total.naira !== paid.naira + remainder.naira) {
-      flags.push(
-        `numbers do not add up: total ${formatKobo(total.kobo)} but paid ${formatKobo(paid.kobo)} + remainder ${formatKobo(remainder.kobo)} = ${formatKobo(paid.kobo + remainder.kobo)}`
-      );
+      flags.push(`${MISMATCH_PREFIX}: total ${formatKobo(total.kobo)} but paid ${formatKobo(paid.kobo)} + remainder ${formatKobo(remainder.kobo)}`);
     }
   }
   return {
@@ -367,19 +392,16 @@ function noteExpectedRemainder(entries) {
 }
 
 // Safety net independent of model totals: a remainder stated in the heard
-// text must equal sales minus payments in this note. Skipped when the
-// totals check already flagged the same mismatch, so the card shows one
-// arithmetic question, not two.
-function checkStatedRemainder(heard, entries, flags) {
-  if (flags.some((f) => f.startsWith("numbers do not add up"))) return;
+// text should equal sales minus payments in this note. BLOCKING, like the
+// totals check above: contradictory money locks Save until the trader fixes
+// it. The card collapses every mismatch flag to the same one line.
+function checkStatedRemainder(heard, entries, flags, assumptions = null) {
   const stated = statedRemainderKobo(heard);
   if (stated === null) return;
   const note = noteExpectedRemainder(entries);
   if (note === null) return;
   if (stated !== note.expected) {
-    flags.push(
-      `numbers do not add up: note says remainder ${formatKobo(stated)} but sales ${formatKobo(note.sales)} minus paid ${formatKobo(note.paid)} = ${formatKobo(note.expected)}`
-    );
+    flags.push(`${MISMATCH_PREFIX}: sales ${formatKobo(note.sales)} minus paid ${formatKobo(note.paid)} = ${formatKobo(note.expected)}, stated remainder ${formatKobo(stated)}`);
   }
 }
 
@@ -484,8 +506,8 @@ function matchCustomerName(heardRaw, mc, flags, questioned, assumptions) {
   if (!second || second.d - best.d >= 2) {
     return { action: "taken", name: best.s.raw, line: `${heard} taken as your customer ${best.s.raw}.` };
   }
-  if (mc.asked.has(stripped)) {
-    return { action: "silent", name: heard }; // asked already in this note: ask once
+  if (mc.asked.size > 0) {
+    return { action: "silent", name: heard }; // one customer question per note at most
   }
   mc.asked.add(stripped);
   questioned.push(stripped);
@@ -691,11 +713,121 @@ function checkOverpayment(entries, ledgerRows, flags) {
   }
 }
 
+function knownUnitPriceKobo(item, unit, type, catalog) {
+  if (!item || !catalog || catalog.length === 0) return null;
+  if (type !== "sale" && type !== "restock") return null;
+  const wantName = normalizeName(item);
+  const wantUnit = normalizeName(unit ?? "");
+  for (const p of catalog) {
+    if (normalizeName(p.name) !== wantName || normalizeName(p.unit ?? "") !== wantUnit) continue;
+    if (type === "sale" && Number.isInteger(p.sell_price_kobo)) return p.sell_price_kobo;
+    if (type === "restock") {
+      if (Number.isInteger(p.cost_price_kobo)) return p.cost_price_kobo;
+      if (Number.isInteger(p.sell_price_kobo)) return p.sell_price_kobo;
+    }
+    return null;
+  }
+  return null;
+}
+
+// Unclear price basis resolves after product matching, softly. Default TOTAL;
+// when the shop has a known unit price, the closer reading wins. Never blocks.
+function resolveUnclearBasis(entries, catalog, assumptions) {
+  for (const e of entries) {
+    if (e.priceBasis !== "unclear") continue;
+    if (e.type !== "sale" && e.type !== "restock") {
+      e.priceBasis = "total";
+      continue;
+    }
+    const qty = e.quantity;
+    if (!Number.isInteger(qty) || qty <= 1) {
+      e.priceBasis = "total";
+      if (qty === 1) {
+        e.eachNaira = e.amountNaira;
+        e.eachKobo = e.amountKobo;
+      }
+      continue;
+    }
+    if (!Number.isInteger(e.amountKobo) || !Number.isInteger(e.amountNaira)) {
+      e.priceBasis = "total";
+      continue;
+    }
+    const statedKobo = e.amountKobo;
+    const statedNaira = e.amountNaira;
+    const known = knownUnitPriceKobo(e.item, e.unit, e.type, catalog);
+    let useEach = false;
+    if (known !== null) {
+      useEach = Math.abs(statedKobo - known) < Math.abs(statedKobo / qty - known);
+    }
+    const unitWord = e.unit ? ` ${pluralFor(qty, e.unit)}` : "";
+    if (useEach) {
+      e.priceBasis = "each";
+      e.eachNaira = statedNaira;
+      e.eachKobo = statedKobo;
+      e.amountNaira = statedNaira * qty;
+      e.amountKobo = statedKobo * qty;
+      const line = `Taken as ${formatKobo(statedKobo)} each (${formatKobo(statedKobo * qty)} for all ${qty}${unitWord}). Tap Fix if it was total.`;
+      if (!assumptions.includes(line)) assumptions.push(line);
+    } else {
+      e.priceBasis = "total";
+      const eachKobo = Math.round(statedKobo / qty);
+      e.eachKobo = eachKobo;
+      e.eachNaira = statedNaira % qty === 0 ? statedNaira / qty : null;
+      const line = `Taken as ${formatKobo(statedKobo)} for all ${qty}${unitWord}, ${formatKobo(eachKobo)} each. Tap Fix if it was each.`;
+      if (!assumptions.includes(line)) assumptions.push(line);
+    }
+  }
+}
+
+function describeMissingAmount(e) {
+  const word = TYPE_WORDS[e.type] ?? e.type;
+  if (e.item) return `the ${e.item} ${word}`;
+  if ((e.type === "sale" || e.type === "payment") && e.customer) {
+    return e.type === "sale" ? `the sale to ${e.customer}` : `the payment from ${e.customer}`;
+  }
+  return `the ${word}`;
+}
+
+function combinedAmountQuestion(missing) {
+  const parts = missing.map(describeMissingAmount);
+  if (parts.length === 1) return `How much was ${parts[0]}?`;
+  if (parts.length === 2) return `How much was ${parts[0]} and ${parts[1]}?`;
+  return `How much was ${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}?`;
+}
+
+function describeMissingCustomer(e) {
+  if (e.type === "payment" && Number.isInteger(e.amountKobo)) {
+    return { verb: "paid", what: formatKobo(e.amountKobo) };
+  }
+  if (e.item) return { verb: "bought", what: `the ${e.item}` };
+  return { verb: "bought", what: "it" };
+}
+
+function combinedCustomerQuestion(missing) {
+  const clauses = missing.map((e, i) => {
+    const d = describeMissingCustomer(e);
+    const who = i === 0 ? "Who" : "who";
+    return `${who} ${d.verb} ${d.what}`;
+  });
+  if (clauses.length === 1) return `${clauses[0]}?`;
+  if (clauses.length === 2) return `${clauses[0]} and ${clauses[1]}?`;
+  return `${clauses.slice(0, -1).join(", ")} and ${clauses[clauses.length - 1]}?`;
+}
+
 // Runs every check on raw model output. BLOCKING problems (flags) lock Save
-// and ask at most two short questions; everything else becomes a soft
-// assumption line on the card with Save enabled. ledgerRows and catalog are
-// optional: without rows there are no effect lines or overpayment checks,
-// without a catalog there is no product matching.
+// and ask at most two one-line questions; everything else becomes a soft
+// assumption line on the card with Save enabled. Blocks when an amount is
+// genuinely missing (combined across entries), a customer is missing (the
+// ledger needs one), the note's own numbers contradict each other (total,
+// paid and stated remainder do not add up), the note says each but the
+// amount was read as a total, a payment exceeds what is owed, two customers
+// are equally close, or there is nothing to record. The model's own question
+// echoes back as a flag only when code found nothing to ask — code decides.
+// ledgerRows and catalog are optional.
+const EACH_FLAG_RE = /^note says ".+" but the amount was read as a total$/;
+// The model's own question, echoed as a flag when code asked nothing. The
+// card strips the prefix; the second-opinion merge below matches both forms.
+const MODEL_QUESTION_PREFIX = "needs clarification: ";
 export function checkModelOutput(
   raw,
   shopId,
@@ -705,18 +837,19 @@ export function checkModelOutput(
   const notes = [];
   const assumptions = [];
   const questionedNames = [];
-  const heard = cleanText(raw.heard) ?? "(no transcript)";
+  const heard = cleanText(raw?.heard) ?? "(no transcript)";
   let entries = [];
-  if (!Array.isArray(raw.entries)) {
+  if (!raw || typeof raw !== "object" || !Array.isArray(raw.entries)) {
     flags.push("model returned no entries list");
   } else {
     entries = raw.entries.map((e, i) => checkEntry(e, i, shopId, flags, notes, heard, assumptions, hint)).filter(Boolean);
   }
-  const totals = checkTotals(raw.totals, flags, notes);
-  checkStatedRemainder(heard, entries, flags);
+  const totals = checkTotals(raw?.totals, flags, notes, assumptions);
+  checkStatedRemainder(heard, entries, flags, assumptions);
   const matcher = checkSimilarNames(entries, shopId, existingCustomers, checkedNames, flags, questionedNames, assumptions);
   checkSimilarProducts(entries, catalog, assumptions, checkedNames);
-  const promise = checkPromise(raw.promise, notes, now);
+  resolveUnclearBasis(entries, catalog, assumptions);
+  const promise = checkPromise(raw?.promise, notes, now);
   if (promise && promise.customer) {
     // The promise customer resolves exactly like entry customers, so the
     // promise row (if any) lands on the same stored spelling.
@@ -725,13 +858,59 @@ export function checkModelOutput(
     if (out.line && !assumptions.includes(out.line)) assumptions.push(out.line);
   }
   checkOverpayment(entries, ledgerRows, flags);
-  if (entries.length === 0 && flags.length === 0) {
-    flags.push("no entries to record");
+  // One question at most, by priority. Missing amounts combine across
+  // entries; anything not asked this round recomputes after the next Fix.
+  let question = null;
+  const single = (q) => {
+    flags.length = 0;
+    flags.push(q);
+    question = q;
+  };
+  if (entries.length === 0) {
+    if (flags.length === 0) flags.push("no entries to record");
+    question = flags[0];
+  } else {
+    const missingAmounts = entries.filter((e) => !Number.isInteger(e.amountKobo));
+    if (missingAmounts.length > 0) {
+      single(combinedAmountQuestion(missingAmounts));
+    } else {
+      const missingCustomers = entries.filter(
+        (e) => (e.type === "sale" || e.type === "payment") && !e.customer
+      );
+      if (missingCustomers.length > 0) {
+        single(combinedCustomerQuestion(missingCustomers));
+      } else {
+        const mismatch = flags.find((f) => String(f).startsWith(MISMATCH_PREFIX));
+        const over = flags.find((f) => /was paid\. Which is right\?$/.test(f));
+        const nameQ = flags.find((f) => /Send the right name, or say new customer\.$/.test(f));
+        if (mismatch) {
+          single(mismatch);
+        } else if (over) {
+          single(over);
+        } else if (nameQ) {
+          single(nameQ);
+        } else {
+          // Leftover code flags that ask nothing (the each-word flag): keep
+          // the first non-each one as the question, if any. The each-word
+          // flag stands on its own and blocks without asking.
+          const first = flags.find((f) => !EACH_FLAG_RE.test(String(f)));
+          if (first) single(first);
+        }
+      }
+    }
+    // The model's own question echoes back only when code asked nothing: it
+    // rides beside a leftover each-word flag at most, never beside a
+    // code-built question, and never beside a mismatch (the card restates
+    // the mismatch as the one question either way).
+    if (!question) {
+      const modelQ = cleanText(raw?.question);
+      if (modelQ) {
+        const echo = `${MODEL_QUESTION_PREFIX}${modelQ}`;
+        if (!flags.includes(echo)) flags.push(echo);
+        question = modelQ;
+      }
+    }
   }
-  let question = cleanText(raw.question);
-  if (question) flags.push(`needs clarification: ${question}`);
-  // At most two questions in one line; the card still lists every check.
-  if (!question && flags.length > 0) question = `Abeg check am: ${flags.slice(0, 2).join("; ")}`;
   const effects = computeEffects(entries, { rows: ledgerRows, catalog });
   return { version: 1, entries, totals, flags, notes, heard, question, questionedNames, promise, effects, assumptions };
 }
@@ -771,8 +950,10 @@ function isBadJson(err) {
   return !!err && err.code === "MODEL_BAD_JSON";
 }
 
-function confusedEnvelope(heard) {
-  const msg = "I no hear am well — abeg talk am again.";
+function confusedEnvelope(heard, kind) {
+  // A text note was never heard, so it never gets the didn't-hear line —
+  // only voice notes do.
+  const msg = kind === "text" ? TEXT_FAILED : BAD_AUDIO_JSON;
   return { envelope: { version: 1, entries: [], totals: null, flags: [msg], notes: [], assumptions: [] }, heard, question: msg };
 }
 
@@ -817,6 +998,25 @@ export async function propose(
   const norm = normalizeInput(input);
   const fallbackHeard = norm.kind === "text" ? norm.text : "(voice note)";
   const source = norm.kind === "audio" ? "voice" : "text";
+  // Second-opinion keys, read once. Without the stats store or keys the
+  // feature is off entirely and legacy callers never call out.
+  const secondApiKey = secondOpinionEnv?.BASETEN_API_KEY;
+  const secondModel = secondOpinionEnv?.BASETEN_MODEL;
+  const secondOff = !secondOpinions || !secondApiKey || !secondModel;
+  // Text: start the second fetch NOW, in parallel with the main model call
+  // below (same input text). Voice must wait for the transcript and starts
+  // after the primary (see below), in parallel with checks. Hard 4 s cap,
+  // no retry; late or failed is soft ("second check not available").
+  let secondFetchPromise = null;
+  if (!secondOff && norm.kind === "text" && norm.text.trim()) {
+    secondFetchPromise = fetchSecondReading(norm.text, {
+      apiKey: secondApiKey,
+      model: secondModel,
+      fetchFn: secondOpinionFetch,
+      timeoutMs: secondOpinionTimeoutMs,
+    });
+    secondFetchPromise.catch(() => {});
+  }
   // The model call starts first so its network time overlaps the local prep
   // below (ledger + catalog reads). Deferred one microtask so a
   // synchronously-throwing model still surfaces as a rejection below, exactly
@@ -841,12 +1041,26 @@ export async function propose(
   }
   if (timings) timings[modelKey] = Date.now() - tModel;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    const c = confusedEnvelope(fallbackHeard);
+    const c = confusedEnvelope(fallbackHeard, source);
     const confused = proposals.create({ shopId, envelope: c.envelope, heard: c.heard, question: c.question, source });
     if (secondOpinions) {
       secondOpinions.record({ proposalId: confused.id, agreed: "no_second_opinion", differingFields: [], latencyMs: 0 });
     }
     return toProposal(confused);
+  }
+  // Voice: transcript now known; start the second fetch before checks so it
+  // overlaps the local checks. Text already started above.
+  if (!secondOff && norm.kind === "audio" && !secondFetchPromise) {
+    const heardText = typeof raw.heard === "string" ? raw.heard.trim() : "";
+    if (heardText && heardText !== "(no transcript)") {
+      secondFetchPromise = fetchSecondReading(raw.heard, {
+        apiKey: secondApiKey,
+        model: secondModel,
+        fetchFn: secondOpinionFetch,
+        timeoutMs: secondOpinionTimeoutMs,
+      });
+      secondFetchPromise.catch(() => {});
+    }
   }
   const tChecks = Date.now();
   const { heard, question, questionedNames, ...envelope } = checkModelOutput(raw, shopId, {
@@ -859,37 +1073,59 @@ export async function propose(
   if (timings) timings.checksMs = Date.now() - tChecks;
   envelope.hint = cleanHint;
   envelope.hintNote = hintMismatchNote(cleanHint, envelope.entries);
-  // Second opinion: a second model re-reads the heard text and plain code
-  // compares. Disagreement adds one code-built flag (the question when the
-  // proposal has none, so the card asks once); entries are never touched.
-  // Without the stats store the feature is off entirely, so legacy callers
-  // never call out. In auto mode the extra call runs only for flagged notes
-  // and big money; clean small notes skip it and record no_second_opinion.
-  // "always" forces the call (used by tests of the comparison itself).
-  // The check itself never throws.
+  // Second opinion: await the parallel fetch and compare with plain code.
+  // A shown disagreement is a soft assumption line — except an amount
+  // disagreement, which asks at most one question, merged with any
+  // code-built question already on the card. Hidden disagreements (category,
+  // unit and the rest) record in the stats and stay off the card. Entries
+  // are never touched. Late or failed adds the soft "second check not
+  // available" with Save enabled. Never throws.
   let finalQuestion = question;
   let second = { agreed: "no_second_opinion", differingFields: [], latencyMs: 0 };
-  const secondWanted =
-    secondOpinionMode === "always" ||
-    envelope.flags.length > 0 ||
-    noteTotalKobo(envelope.entries) >= SECOND_OPINION_MIN_NAIRA * 100;
-  if (secondOpinions && secondWanted) {
-    const tSecond = Date.now();
-    second = await runSecondOpinion({
-      heardText: heard,
-      entries: envelope.entries,
-      promise: envelope.promise ?? null,
-      shopId,
-      now,
-      fetchFn: secondOpinionFetch,
-      env: secondOpinionEnv,
-      timeoutMs: secondOpinionTimeoutMs,
-      existingCustomers: customersOf(ledgerRows),
-    });
-    if (timings) timings.secondMs = Date.now() - tSecond;
-    if (second.line) {
-      envelope.flags = [...envelope.flags, second.line];
-      if (!finalQuestion) finalQuestion = second.line;
+  if (secondOpinions && secondFetchPromise) {
+    const { reading, latencyMs } = await secondFetchPromise;
+    if (timings) timings.secondMs = latencyMs;
+    second.latencyMs = latencyMs;
+    if (!reading) {
+      if (!envelope.assumptions.includes(SECOND_CHECK_UNAVAILABLE)) envelope.assumptions.push(SECOND_CHECK_UNAVAILABLE);
+    } else {
+      let compared = null;
+      try {
+        compared = compareReadings(envelope.entries, envelope.promise ?? null, reading, {
+          shopId,
+          now,
+          existingCustomers: customersOf(ledgerRows),
+        });
+      } catch {
+        compared = null;
+      }
+      if (!compared) {
+        if (!envelope.assumptions.includes(SECOND_CHECK_UNAVAILABLE)) envelope.assumptions.push(SECOND_CHECK_UNAVAILABLE);
+      } else if (compared.differingFields.length === 0) {
+        second = { agreed: "yes", differingFields: [], latencyMs };
+      } else {
+        second = { agreed: "no", differingFields: compared.differingFields, latencyMs };
+        if (compared.line) {
+          if (compared.shownField === "amount") {
+            if (!finalQuestion) {
+              envelope.flags = [...envelope.flags, compared.line];
+              finalQuestion = compared.line;
+            } else {
+              const merged = `${finalQuestion} ${compared.line}`;
+              const at = envelope.flags.lastIndexOf(finalQuestion);
+              const echoAt = envelope.flags.lastIndexOf(`${MODEL_QUESTION_PREFIX}${finalQuestion}`);
+              const i = at !== -1 ? at : echoAt;
+              envelope.flags = i === -1
+                ? [...envelope.flags, merged]
+                : envelope.flags.map((f, j) => (j === i ? merged : f));
+              finalQuestion = merged;
+            }
+          } else if (!envelope.assumptions.includes(compared.line)) {
+            envelope.assumptions.push(compared.line);
+          }
+          if (!envelope.assumptions.includes(SECOND_CHECK_CREDIT)) envelope.assumptions.push(SECOND_CHECK_CREDIT);
+        }
+      }
     }
   }
   const row = proposals.create({

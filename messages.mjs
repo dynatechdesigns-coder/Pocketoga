@@ -43,6 +43,7 @@ export const AUDIO_FAILED = "Sorry, I couldn't process that voice note. Please s
 export const VOICE_ACK = "Got it, checking…";
 export const HEAR_FAILED = "I couldn't hear that — please send the correction again.";
 export const BAD_AUDIO_JSON = "I no hear am well — abeg talk am again.";
+export const TEXT_FAILED = "I no understand that note — abeg send am again.";
 export const CORRECTION_AS_TEXT = "Please send the correction as text or a voice note.";
 export const FIX_LAST_HELP = "To fix your last entry, send: fix last followed by what it should be. Example: fix last Ada paid 12k.";
 export const FIX_LAST_NO_ENTRIES = "You have no entries yet — nothing to fix.";
@@ -254,8 +255,9 @@ export function dedupeChecks(proposal) {
 // Code-built remainder-mismatch flags ("numbers do not add up: ...") are
 // restated as one Pidgin-friendly line from the labelled numbers, and the
 // model's own question about the same mismatch is suppressed, so the card
-// asks once. Anything else on the card is untouched.
-const MISMATCH_PREFIX = "numbers do not add up";
+// asks once. Anything else on the card is untouched. Exported so the checks
+// build the exact prefix the card restates.
+export const MISMATCH_PREFIX = "numbers do not add up";
 
 function parseKoboAmount(text) {
   const m = /^₦([\d,]+)(\.\d{2})?$/.exec(text);
@@ -375,9 +377,14 @@ function hintLine(proposal) {
 }
 
 // Soft assumptions in one short block ("PocketOga assumed:"). Deduped: the
-// promise customer often repeats an entry's line.
+// promise customer often repeats an entry's line. Correction cards never
+// claim a new customer: they amend an existing ledger entry, so a "New
+// customer" line built without that entry's context would always be wrong.
 function assumedBlock(proposal) {
-  const lines = [...new Set((proposal.assumptions ?? []).filter((l) => typeof l === "string" && l))];
+  let lines = [...new Set((proposal.assumptions ?? []).filter((l) => typeof l === "string" && l))];
+  if (proposal.correctionOf !== null && proposal.correctionOf !== undefined) {
+    lines = lines.filter((l) => !/^New customer:/.test(l));
+  }
   if (lines.length === 0) return null;
   return `PocketOga assumed:\n${lines.map((l) => escapeMd(l)).join("\n")}`;
 }
