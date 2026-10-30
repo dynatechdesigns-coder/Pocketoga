@@ -10,6 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   buildDeps,
   createStaticHandler,
+  findStaticRoot,
   handleVoiceRequest,
   resolveDataDir,
   resolveDbPath,
@@ -187,5 +188,38 @@ describe("deploy static app (temp folder)", () => {
   it("returns null without a build folder (backend-only mode)", () => {
     assert.equal(createStaticHandler(null), null);
     assert.equal(createStaticHandler(join(scratch, "no-such-dir")), null);
+  });
+
+  it("serves / with no header, keeps the shop check on API paths, leaves /health alone", async () => {
+    const root = join(scratch, "dist-root");
+    mkdirSync(join(root, "assets"), { recursive: true });
+    writeFileSync(join(root, "index.html"), "<html>app</html>");
+    writeFileSync(join(root, "assets", "app-1.js"), "console.log(1)");
+    const deps = buildDeps(FAKE_ENV);
+    try {
+      deps.static = createStaticHandler(root);
+      const none = {};
+      let res = await get(deps, "/", none);
+      assert.equal(res.statusCode, 200);
+      assert.ok(res.text.includes("<html>app</html>"));
+      res = await get(deps, "/assets/app-1.js", none);
+      assert.equal(res.statusCode, 200);
+      assert.ok(res.text.includes("console.log(1)"));
+      res = await get(deps, "/ledger", none);
+      assert.equal(res.statusCode, 400);
+      assert.deepEqual(JSON.parse(res.text), { error: "x-shop-id header is required" });
+      res = await get(deps, "/health", none);
+      assert.equal(res.statusCode, 200);
+      assert.deepEqual(JSON.parse(res.text), { ok: true });
+    } finally {
+      deps.db.close();
+    }
+  });
+
+  it("finds the dist folder by presence, never by NODE_ENV", () => {
+    const present = join(scratch, "dist-found");
+    mkdirSync(present, { recursive: true });
+    assert.equal(findStaticRoot([join(scratch, "nope"), present]), present);
+    assert.equal(findStaticRoot([join(scratch, "nope")]), null);
   });
 });

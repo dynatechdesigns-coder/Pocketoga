@@ -192,6 +192,26 @@ export function createStaticHandler(rootDir) {
   };
 }
 
+// Where the built web app can live. The Docker image builds it into
+// web/dist next to server.mjs; a checkout run from its root resolves to the
+// same folder through the working directory. Presence of the folder — never
+// NODE_ENV — decides whether the app is served.
+export const STATIC_CANDIDATES = [
+  join(dirname(fileURLToPath(import.meta.url)), "web", "dist"),
+  join(process.cwd(), "web", "dist"),
+];
+
+export function findStaticRoot(candidates = STATIC_CANDIDATES) {
+  for (const dir of candidates) {
+    try {
+      if (statSync(dir).isDirectory()) return dir;
+    } catch {
+      // Missing or unreadable: try the next candidate.
+    }
+  }
+  return null;
+}
+
 // WhatsApp webhook. No x-shop-id header: Meta calls it, and the sender's
 // shop comes from the message itself via the allow-list.
 async function handleWebhookRoute(req, res, url, deps) {
@@ -683,8 +703,6 @@ export function buildDeps(env = process.env) {
   };
 }
 
-const STATIC_ROOT = join(dirname(fileURLToPath(import.meta.url)), "web", "dist");
-
 const invokedAsMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (invokedAsMain) {
   const env = process.env;
@@ -697,7 +715,12 @@ if (invokedAsMain) {
     console.log("database restored from backup");
   }
   const deps = buildDeps(env);
-  deps.static = createStaticHandler(existsSync(STATIC_ROOT) ? STATIC_ROOT : null);
+  // One boot line names the outcome, so a missing frontend is visible in
+  // the host logs instead of surfacing as a shop-header error on "/".
+  const staticRoot = findStaticRoot();
+  deps.static = createStaticHandler(staticRoot);
+  if (staticRoot) console.log(`static web: serving ${staticRoot}`);
+  else console.log(`static web: no dist folder found (checked ${STATIC_CANDIDATES.join(", ")}); API only`);
   // The free plan resets storage on restart, so the public demo reseeds on
   // every boot that finds it empty — before the server accepts requests.
   // Milliseconds, no model calls, no keys needed.

@@ -81,6 +81,7 @@ Main server only, except `/webhook` (served on both ports). Every route except `
 | DELETE `/session` | Bearer → `{ revoked: true }` (401 without a live token) | auth |
 | GET `/webhook` | Meta handshake query → challenge text | server, whatsapp |
 | POST `/webhook` | signed Meta payload → `{ ok: true }` (work runs after responding) | whatsapp |
+| GET `/health` | → 200 `{ ok: true }` (no auth, no secrets; host liveness probe) | deploy |
 
 Shapes: `proposal` is `{ id, shop_id, status, heard, question, created_at, entries, totals, flags, notes, recorded_ids, name_checked, promise, correctionOf, correctionReason, photoCheck, effects, source, hint, hintNote, assumptions }` (`assumptions` is the string list behind the "PocketOga assumed:" card block) (`correctionOf`/`correctionReason` set only on correction proposals, `photoCheck` only on photo proposals, where `recorded_ids` is `{ paymentCheckId }`; `effects` is per-entry `{ destination, stockBefore, stockAfter, stockItem, stockUnit, negativeStock, costUnknown }`; `source` is voice/text/form); entry is `{ id, shop_id, seq, prev_hash, entry_hash, type, amount_kobo, customer, item, quantity, unit, corrects_id, created_at }`; `verify` is `{ ok, count, shopId }`; `product` is `{ id, name, unit, sellPriceKobo, costPriceKobo, costSource, stockOnHand, lowStock }` (`costSource`: trader/purchases/unknown); `customer` is `{ id, name, phone, owedKobo, lastActivityAt }`.
 

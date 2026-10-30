@@ -18,6 +18,9 @@ RUN cd web && (npm ci || npm install)
 # (VITE_API_BASE="" makes api.js call the server it was served from.)
 COPY web/ web/
 RUN cd web && VITE_API_BASE="" npm run build
+# Fail the image build loudly when the frontend did not build: without
+# web/dist the server runs API-only and "/" answers the shop-header error.
+RUN test -f web/dist/index.html
 
 # Backend sources only: no tests, scripts, audio, or local state.
 COPY server.mjs auth.mjs backup.mjs customers.mjs debts.mjs demo-seed.mjs \
