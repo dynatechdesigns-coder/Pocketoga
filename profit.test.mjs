@@ -185,7 +185,7 @@ describe("expense entries", () => {
     }
   });
 
-  it("expense quantity and unit are dropped; an each-price is flagged", async () => {
+  it("expense quantity and unit are dropped; an each-price is assumed a total, softly", async () => {
     const ctx = setup();
     try {
       const proposal = await proposeExpense(
@@ -196,8 +196,9 @@ describe("expense entries", () => {
       assert.equal(proposal.entries[0].unit, null);
       assert.equal(proposal.entries[0].priceBasis, "total");
       assert.equal(proposal.entries[0].amountKobo, 500000);
-      assert.ok(proposal.flags.some((f) => f.includes("an expense is a total, not an each-price")), proposal.flags.join("; "));
-      assert.ok(proposal.question, "flagged proposal asks a question");
+      assert.deepEqual(proposal.flags, []);
+      assert.equal(proposal.question, null);
+      assert.deepEqual(proposal.assumptions, ["Expense taken as a total."]);
     } finally {
       teardown(ctx);
     }

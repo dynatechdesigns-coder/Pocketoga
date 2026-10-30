@@ -11,7 +11,7 @@
 // Both sides only touch the import inside function bodies, after both
 // modules initialize, so the cycle is safe.
 import { DatabaseSync } from "node:sqlite";
-import { SYSTEM_PROMPT, parseModelJson } from "./model.mjs";
+import { SYSTEM_PROMPT, parseModelJson, fetchWithRetry } from "./model.mjs";
 import { formatKobo } from "./money.mjs";
 import { resolvePromiseDate } from "./promises.mjs";
 import { checkModelOutput } from "./voice.mjs";
@@ -82,19 +82,23 @@ async function fetchSecondReading(heardText, { apiKey, model, fetchFn, timeoutMs
   const start = Date.now();
   const failed = () => ({ reading: null, latencyMs: Date.now() - start });
   try {
-    const res = await fetchFn(`${BASETEN_BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: heardText },
-        ],
-      }),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+    const res = await fetchWithRetry(
+      fetchFn,
+      `${BASETEN_BASE_URL}/chat/completions`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: heardText },
+          ],
+        }),
+      },
+      { timeoutMs }
+    );
     if (!res.ok) return failed();
     const data = await res.json().catch(() => null);
     const reading = parseModelJson(data?.choices?.[0]?.message?.content ?? "");
@@ -133,8 +137,11 @@ function pluralize(n, one, many) {
 // customer difference (null when the readings agree). Item, heard-text and
 // question wording never count; neither does casing. The one exception is
 // the expense category, which lives in item and is compared as "category".
-export function compareReadings(primaryEntries, primaryPromise, secondRaw, { shopId, now = Date.now() } = {}) {
-  const second = checkModelOutput(secondRaw, shopId, { existingCustomers: [], now });
+export function compareReadings(primaryEntries, primaryPromise, secondRaw, { shopId, now = Date.now(), existingCustomers = [] } = {}) {
+  // The second reading runs the same customer matching as the primary, so
+  // the comparison is on recorded values ("Chinedu" both sides) rather than
+  // raw hearings ("Mama Chinedu" vs "Chinedu").
+  const second = checkModelOutput(secondRaw, shopId, { existingCustomers, now });
   const fields = [];
   let line = null;
   const note = (field, text) => {
@@ -239,6 +246,7 @@ export async function runSecondOpinion({
   fetchFn = fetch,
   env = process.env,
   timeoutMs = SECOND_OPINION_TIMEOUT_MS,
+  existingCustomers = [],
 }) {
   const quiet = { agreed: "no_second_opinion", differingFields: [], latencyMs: 0, line: null };
   const apiKey = env?.BASETEN_API_KEY;
@@ -249,7 +257,7 @@ export async function runSecondOpinion({
   if (!reading) return { ...quiet, latencyMs };
   let compared;
   try {
-    compared = compareReadings(entries ?? [], promise ?? null, reading, { shopId, now });
+    compared = compareReadings(entries ?? [], promise ?? null, reading, { shopId, now, existingCustomers });
   } catch {
     return { ...quiet, latencyMs };
   }

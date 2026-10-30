@@ -227,8 +227,23 @@ describe("promises (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", () => {
     assert.equal(resolvePromiseDate("end of the month", NOW), "2026-10-31");
   });
 
-  it("ambiguous phrases resolve to null so the trader is asked", () => {
-    for (const phrase of ["next friday", "this friday", "someday", "", "31st", "end of week", "friday the 13th", "whenever"]) {
+  it("resolves next-week weekdays, in-N periods, next-next-week and this weekend", () => {
+    // NOW is Wed 28 Oct 2026: next week runs Mon 2 – Sun 8 Nov.
+    assert.equal(resolvePromiseDate("wednesday next week", NOW), "2026-11-04");
+    assert.equal(resolvePromiseDate("next friday", NOW), "2026-11-06");
+    assert.equal(resolvePromiseDate("next monday", NOW), "2026-11-02");
+    assert.equal(resolvePromiseDate("monday next week", NOW), "2026-11-02");
+    assert.equal(resolvePromiseDate("in two weeks", NOW), "2026-11-11");
+    assert.equal(resolvePromiseDate("in 3 days", NOW), "2026-10-31");
+    assert.equal(resolvePromiseDate("in a week", NOW), "2026-11-04");
+    assert.equal(resolvePromiseDate("next next week", NOW), "2026-11-09");
+    assert.equal(resolvePromiseDate("this weekend", NOW), "2026-10-31");
+    assert.equal(resolvePromiseDate("Friday?", NOW), "2026-10-30");
+    assert.equal(resolvePromiseDate("by next friday evening", NOW), "2026-11-06");
+  });
+
+  it("unlisted phrases resolve to null (shown as no pay date, never asked)", () => {
+    for (const phrase of ["this friday", "someday", "", "31st", "end of week", "friday the 13th", "whenever", "next weekend", "5th November"]) {
       assert.equal(resolvePromiseDate(phrase, NOW), null, JSON.stringify(phrase));
     }
   });
@@ -776,20 +791,27 @@ describe("proposal promises (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", 
     }
   });
 
-  it("an unclear day-phrase asks instead of guessing, then a Fix can set it", async () => {
+  it("a day-phrase code cannot read records the debt with no pay date, then a Fix can set it", async () => {
     const ctx = setup(async (req) =>
       req.prior
         ? await withPromise({ customer: "Ada", datePhrase: "friday", amountNaira: null })()
-        : await withPromise({ customer: "Ada", datePhrase: "next friday", amountNaira: null })()
+        : await withPromise({ customer: "Ada", datePhrase: "when I get money", amountNaira: null })()
     );
     try {
       const p = await propose("shop-a", "fake note", { ...ctx.deps, now: NOW });
-      assert.match(p.flags.join(";"), /unclear/);
-      assert.ok(p.question);
-      assert.equal(p.promise, null);
-      assert.throws(() => confirmProposal(p.id, "shop-a", ctx.deps), /cannot confirm/);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+      assert.equal(p.promise.dueDate, null);
+      const card = renderProposalCard(p);
+      assert.ok(card.text.includes("🤝 No pay date set"));
+      assert.ok(card.buttons.some((b) => b.reply.title === "Save"), "Save stays enabled");
+      // The debt records; no promise row without a date.
+      confirmProposal(p.id, "shop-a", ctx.deps);
+      assert.equal(ctx.ledger.list("shop-a").length, 1);
+      assert.equal(ctx.promises.listByShop("shop-a").length, 0);
 
-      const fixed = await fixProposal(p.id, "shop-a", "friday", { ...ctx.deps, now: NOW });
+      const p2 = await propose("shop-a", "fake note", { ...ctx.deps, now: NOW });
+      const fixed = await fixProposal(p2.id, "shop-a", "friday", { ...ctx.deps, now: NOW });
       assert.deepEqual(fixed.flags, []);
       assert.equal(fixed.promise.dueDate, "2026-10-30");
       assert.equal(fixed.promise.amountKobo, null);
@@ -800,18 +822,21 @@ describe("proposal promises (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", 
     }
   });
 
-  it("promise needs a customer and a whole-naira amount", async () => {
-    for (const [promise, want] of [
-      [{ customer: null, datePhrase: "friday", amountNaira: null }, /customer/],
-      [{ customer: "Ada", datePhrase: null, amountNaira: null }, /day/],
-      [{ customer: "Ada", datePhrase: "friday", amountNaira: 20.5 }, /whole naira/],
-      [{ customer: "Ada", datePhrase: "friday", amountNaira: -5 }, /negative/],
+  it("bad promise details degrade softly and never block the debt", async () => {
+    for (const [promise, check] of [
+      [{ customer: null, datePhrase: "friday", amountNaira: null }, (p) => assert.equal(p.promise, null)],
+      [{ customer: "Ada", datePhrase: null, amountNaira: null }, (p) => assert.equal(p.promise.dueDate, null)],
+      [{ customer: "Ada", datePhrase: "friday", amountNaira: 20.5 }, (p) => assert.equal(p.promise.amountKobo, null)],
+      [{ customer: "Ada", datePhrase: "friday", amountNaira: -5 }, (p) => assert.equal(p.promise.amountKobo, null)],
     ]) {
       const ctx = setup(withPromise(promise));
       try {
         const p = await propose("shop-a", "fake note", { ...ctx.deps, now: NOW });
-        assert.match(p.flags.join(";"), want, JSON.stringify(promise));
-        assert.equal(p.promise, null);
+        assert.deepEqual(p.flags, [], JSON.stringify(promise));
+        assert.equal(p.question, null, JSON.stringify(promise));
+        check(p);
+        // Save stays enabled: the sale records even when the promise degrades.
+        assert.equal(confirmProposal(p.id, "shop-a", ctx.deps).recordedIds.length, 1, JSON.stringify(promise));
       } finally {
         teardown(ctx);
       }

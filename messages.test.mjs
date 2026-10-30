@@ -91,7 +91,7 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p, { existing: [], shopId: SHOP });
     assert.equal(
       card.text,
-      `🛒 *Ada*\n\n2 bags of rice × ₦15,000 = *₦30,000* → Sales\n\n⚖️ Ada owes *₦30,000* after saving\n\n_"Ada buy rice 2 bags, na 15k each."_`
+      `🛒 *Ada*\n\n2 bags of rice × ₦15,000 = *₦30,000* → Sales\n\nPocketOga assumed:\nNew customer: Ada.\n\n⚖️ Ada owes *₦30,000* after saving\n\n_"Ada buy rice 2 bags, na 15k each."_`
     );
     assert.deepEqual(
       card.buttons.map((b) => b.reply.id),
@@ -117,7 +117,7 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p, { existing: HISTORY, shopId: SHOP });
     assert.equal(
       card.text,
-      `🛒 *Ada*\n\n2 bags of rice: *₦15,000* → Sales\n💵 Paid: *₦10,000* → Debts\n\n⚖️ Ada owes *₦20,000* after saving\n\n_"Ada buy rice 2 bags, na 15k. She pay 10k, remain 5k."_`
+      `🛒 *Ada*\n\n2 bags of rice: *₦15,000* → Sales\n💵 Paid: *₦10,000* → Debts\n\nPocketOga assumed:\nNew customer: Ada.\n\n⚖️ Ada owes *₦20,000* after saving\n\n_"Ada buy rice 2 bags, na 15k. She pay 10k, remain 5k."_`
     );
   });
 
@@ -199,7 +199,7 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p);
     assert.equal(
       card.text,
-      `⚠️ *Check this one*\n\n2 bags of rice: *₦15,000* → Sales\n💵 Paid: *₦10,000* → Debts\nTotal: *₦15,000*\nPaid: *₦10,000*\nRemainder: *₦4,000*\n\n₦15,000 − ₦10,000 = ₦5,000, but you said ₦4,000 remain. Which one na correct?\n\n_"Ada buy rice 2 bags, na 15k. She pay 10k, remain 4k."_`
+      `⚠️ *Check this one*\n\n2 bags of rice: *₦15,000* → Sales\n💵 Paid: *₦10,000* → Debts\nTotal: *₦15,000*\nPaid: *₦10,000*\nRemainder: *₦4,000*\n\nPocketOga assumed:\nNew customer: Ada.\n\n₦15,000 − ₦10,000 = ₦5,000, but you said ₦4,000 remain. Which one na correct?\n\n_"Ada buy rice 2 bags, na 15k. She pay 10k, remain 4k."_`
     );
     assert.deepEqual(
       card.buttons.map((b) => b.reply.id),
@@ -218,7 +218,7 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p);
     assert.equal(
       card.text,
-      `⚠️ *Check this one*\n\n2 bags of rice × ₦15,000 = *₦30,000* → Sales\n💵 Paid: *₦10,000* → Debts\n\n₦30,000 − ₦10,000 = ₦20,000, but you said ₦5,000 remain. Which one na correct?\n\n_"Ada buy rice 2 bags, na 15k each. She pay 10k, remain 5k."_`
+      `⚠️ *Check this one*\n\n2 bags of rice × ₦15,000 = *₦30,000* → Sales\n💵 Paid: *₦10,000* → Debts\n\nPocketOga assumed:\nNew customer: Ada.\n\n₦30,000 − ₦10,000 = ₦20,000, but you said ₦5,000 remain. Which one na correct?\n\n_"Ada buy rice 2 bags, na 15k each. She pay 10k, remain 5k."_`
     );
     assert.deepEqual(
       card.buttons.map((b) => b.reply.id),
@@ -241,7 +241,7 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p);
     assert.equal(
       card.text,
-      `⚠️ *Check this one*\n\n2 bags of rice: *₦15,000* → Sales\n💵 Paid: *₦10,000* → Debts\nTotal: *₦15,000*\nPaid: *₦10,000*\nRemainder: *₦4,000*\n\n₦15,000 − ₦10,000 = ₦5,000, but you said ₦4,000 remain. Which one na correct?\n\n_"Ada buy rice 2 bags, na 15k. She pay 10k, remain 4k."_`
+      `⚠️ *Check this one*\n\n2 bags of rice: *₦15,000* → Sales\n💵 Paid: *₦10,000* → Debts\nTotal: *₦15,000*\nPaid: *₦10,000*\nRemainder: *₦4,000*\n\nPocketOga assumed:\nNew customer: Ada.\n\n₦15,000 − ₦10,000 = ₦5,000, but you said ₦4,000 remain. Which one na correct?\n\n_"Ada buy rice 2 bags, na 15k. She pay 10k, remain 4k."_`
     );
     assert.ok(!card.text.includes("which total correct?"));
   });
@@ -256,7 +256,7 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p, { existing: [], shopId: SHOP });
     assert.equal(
       card.text,
-      `🛒 *Ada*\n\n*Ada*: 1 bag of rice: *₦8,000* → Sales\n*Bola*: 💵 Paid: *₦3,000* → Debts\n\n⚖️ Ada owes *₦8,000* after saving\n\n_"Ada buy rice 1 bag na 8k and Bola pay 3k for garri."_`
+      `🛒 *Ada*\n\n*Ada*: 1 bag of rice: *₦8,000* → Sales\n*Bola*: 💵 Paid: *₦3,000* → Debts\n\nPocketOga assumed:\nNew customer: Ada.\nNew customer: Bola.\n\n⚖️ Ada owes *₦8,000* after saving\n\n_"Ada buy rice 1 bag na 8k and Bola pay 3k for garri."_`
     );
   });
 
@@ -270,7 +270,7 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p, { existing: [], shopId: SHOP });
     assert.equal(
       card.text,
-      `🛒 *Mama ＊Nkechi＊ ＿Best＿*\n\n2 tins of beans: *₦4,000* → Sales\n\n⚖️ Mama ＊Nkechi＊ ＿Best＿ owes *₦4,000* after saving\n\n_"Mama star buy beans 2 tins, na 4k."_`
+      `🛒 *Mama ＊Nkechi＊ ＿Best＿*\n\n2 tins of beans: *₦4,000* → Sales\n\nPocketOga assumed:\nNew customer: Mama ＊Nkechi＊ ＿Best＿.\n\n⚖️ Mama ＊Nkechi＊ ＿Best＿ owes *₦4,000* after saving\n\n_"Mama star buy beans 2 tins, na 4k."_`
     );
     assert.ok(!card.text.includes("*Nkechi*"));
     assert.ok(!card.text.includes("_Best_"));
@@ -532,7 +532,7 @@ describe("entry effects and expenses (fake data)", () => {
     const card = renderProposalCard(p, { existing: [], shopId: SHOP });
     assert.equal(
       card.text,
-      `🛒 *Ada*\n\n2 bags of rice: *₦15,000* → Sales\n\nrice stock 10 → 8 bags\n\n⚖️ Ada owes *₦15,000* after saving\n\n_"sold rice"_`
+      `🛒 *Ada*\n\n2 bags of rice: *₦15,000* → Sales\n\nrice stock 10 → 8 bags\n\nPocketOga assumed:\nNew customer: Ada.\n\n⚖️ Ada owes *₦15,000* after saving\n\n_"sold rice"_`
     );
   });
 
@@ -569,18 +569,21 @@ describe("entry effects and expenses (fake data)", () => {
     assert.match(card.text, /You said this was an expense, but it sounds like a sale\. Saving it as a sale\./);
   });
 
-  it("product questions render bold like customer questions", () => {
-    const p = proposal(53, {
-      heard: "sold rise",
-      entries: [saleEntry({ item: "rise" })],
-      totals: null,
-      question: null,
-    });
-    p.flags = ["Is *rise* the same product as *rice*? Send the right name, or say new product."];
-    p.question = `Abeg check am: ${p.flags[0]}`;
+  it("two-candidate customer question renders bold, never escaped", () => {
+    const { heard, question, ...envelope } = checkModelOutput(
+      {
+        heard: "sold rice",
+        entries: [saleEntry({ customer: "Adabo" })],
+        totals: null,
+        question: null,
+      },
+      SHOP,
+      { existingCustomers: ["Ada", "Adaboy"] }
+    );
+    const p = { id: 53, shop_id: SHOP, status: "pending", heard, question, ...envelope };
     const card = renderProposalCard(p);
-    assert.match(card.text, /Is \*rise\* the same product as \*rice\*\? Send the right name, or say new product\./);
-    assert.ok(!card.text.includes("＊rise＊"), card.text);
+    assert.match(card.text, /Is \*Adabo\* Adaboy or Ada\? Send the right name, or say new customer\./);
+    assert.ok(!card.text.includes("＊Adabo＊"), card.text);
   });
 
   it("expenses reply names the total, categories and newest lines", () => {

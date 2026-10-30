@@ -200,6 +200,7 @@ describe("voice loop (mock model, no API calls)", () => {
       [{ type: "sale", customer: "Test Customer Ada", item: "fake-rice", quantity: 0, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" }, /quantity/],
       [{ type: "sale", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: 15.5, amountPhrase: "15k", priceBasis: "total" }, /whole naira/],
       [{ type: "sale", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: -5, amountPhrase: "5k", priceBasis: "total" }, /negative/],
+      [{ type: "sale", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: null, amountPhrase: null, priceBasis: "total" }, /missing amount/],
       [{ type: "debt", customer: "Test Customer Ada", item: null, quantity: null, amountNaira: 5, amountPhrase: "5", priceBasis: "total" }, /unknown type/],
     ];
     for (const [entry, want] of cases) {
@@ -571,15 +572,38 @@ describe("similar-name check (fake data)", () => {
     ctx.ledger.append({ shopId, type: "sale", amountKobo: 800000, customer, item: "fake-rice", quantity: 1, unit: "bag" });
   }
 
-  it("Adaboy vs existing Ada is flagged", async () => {
+  it("Adaboy vs only Ada is a new customer, softly", async () => {
     const ctx = setup(nameFixture("Adaboy"));
     try {
       seedCustomer(ctx, SHOP_A, "Ada");
       const p = await propose(SHOP_A, "fake note", ctx.deps);
       assert.equal(p.status, "pending");
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+      assert.deepEqual(p.assumptions, ["New customer: Adaboy."]);
+      assert.equal(p.entries[0].customer, "Adaboy");
+      const card = renderProposalCard(p);
+      assert.deepEqual(
+        card.buttons.map((b) => b.reply.title),
+        ["Save", "Fix", "Reject"]
+      );
+      assert.match(card.text, /PocketOga assumed:\nNew customer: Adaboy\./);
+      assert.equal(confirmProposal(p.id, SHOP_A, ctx.deps).recordedIds.length, 1);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("Adabo vs Ada and Adaboy asks which one", async () => {
+    const ctx = setup(nameFixture("Adabo"));
+    try {
+      seedCustomer(ctx, SHOP_A, "Ada");
+      seedCustomer(ctx, SHOP_A, "Adaboy");
+      const p = await propose(SHOP_A, "fake note", ctx.deps);
+      assert.equal(p.status, "pending");
       assert.equal(p.flags.length, 1);
-      assert.equal(p.flags[0], "Is *Adaboy* the same person as *Ada*? Send the right name, or say new customer.");
-      assert.deepEqual(p.name_checked, ["adaboy"]);
+      assert.equal(p.flags[0], "Is *Adabo* Adaboy or Ada? Send the right name, or say new customer.");
+      assert.deepEqual(p.name_checked, ["adabo"]);
       assert.ok(p.question);
       assert.throws(() => confirmProposal(p.id, SHOP_A, ctx.deps), /cannot confirm/);
       const card = renderProposalCard(p);
@@ -587,7 +611,7 @@ describe("similar-name check (fake data)", () => {
         card.buttons.map((b) => b.reply.title),
         ["Fix", "Reject"]
       );
-      assert.equal(card.text.split(p.flags[0]).length - 1, 1, "question shows once");
+      assert.equal(card.text.split("Is *Adabo* Adaboy or Ada?").length - 1, 1, "question shows once");
     } finally {
       teardown(ctx);
     }
@@ -605,13 +629,15 @@ describe("similar-name check (fake data)", () => {
     }
   });
 
-  it("Chinedu vs existing Mama Chinedu is flagged", async () => {
+  it("Chinedu vs existing Mama Chinedu is the same customer, softly", async () => {
     const ctx = setup(nameFixture("Chinedu"));
     try {
       seedCustomer(ctx, SHOP_A, "Mama Chinedu");
       const p = await propose(SHOP_A, "fake note", ctx.deps);
-      assert.equal(p.flags.length, 1);
-      assert.equal(p.flags[0], "Is *Chinedu* the same person as *Mama Chinedu*? Send the right name, or say new customer.");
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+      assert.deepEqual(p.assumptions, ["Chinedu taken as your customer Mama Chinedu."]);
+      assert.equal(p.entries[0].customer, "Mama Chinedu");
     } finally {
       teardown(ctx);
     }
@@ -641,15 +667,57 @@ describe("similar-name check (fake data)", () => {
   });
 
   it("after a Fix the same name is not flagged again", async () => {
-    const ctx = setup(nameFixture("Adaboy"));
+    const ctx = setup(nameFixture("Adabo"));
     try {
       seedCustomer(ctx, SHOP_A, "Ada");
+      seedCustomer(ctx, SHOP_A, "Adaboy");
       const p = await propose(SHOP_A, "fake note", ctx.deps);
       assert.equal(p.flags.length, 1);
       const fixed = await fixProposal(p.id, SHOP_A, "na new customer", ctx.deps);
       assert.deepEqual(fixed.flags, []);
       assert.equal(fixed.question, null);
-      assert.deepEqual(fixed.name_checked, ["adaboy"]);
+      assert.deepEqual(fixed.name_checked, ["adabo"]);
+      assert.equal(fixed.entries[0].customer, "Adabo");
+      assert.equal(confirmProposal(fixed.id, SHOP_A, ctx.deps).recordedIds.length, 1);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("honorifics strip before matching: Mama, Aunty, Oga, Alhaji", async () => {
+    for (const [heard, stored] of [
+      ["Mama Funke", "Funke"],
+      ["Aunty Funke", "Funke"],
+      ["Oga Emeka", "Emeka"],
+      ["Alhaji Musa", "Musa"],
+    ]) {
+      const ctx = setup(nameFixture(heard));
+      try {
+        seedCustomer(ctx, SHOP_A, stored);
+        const p = await propose(SHOP_A, "fake note", ctx.deps);
+        assert.deepEqual(p.flags, [], heard);
+        assert.equal(p.question, null, heard);
+        assert.equal(p.entries[0].customer, stored, heard);
+        assert.ok(p.assumptions.includes(`${heard} taken as your customer ${stored}.`), heard);
+      } finally {
+        teardown(ctx);
+      }
+    }
+  });
+
+  it("saying 'new customer' on a Fix settles a taken name", async () => {
+    const ctx = setup(nameFixture("Adabo"));
+    try {
+      seedCustomer(ctx, SHOP_A, "Adaboy");
+      const p = await propose(SHOP_A, "fake note", ctx.deps);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.entries[0].customer, "Adaboy");
+      const fixed = await fixProposal(p.id, SHOP_A, "na new customer", ctx.deps);
+      assert.deepEqual(fixed.flags, []);
+      assert.equal(fixed.question, null);
+      assert.equal(fixed.entries[0].customer, "Adabo");
+      assert.ok(fixed.assumptions.includes("New customer: Adabo."), fixed.assumptions.join("; "));
+      assert.ok(fixed.name_checked.includes("adabo"));
       assert.equal(confirmProposal(fixed.id, SHOP_A, ctx.deps).recordedIds.length, 1);
     } finally {
       teardown(ctx);

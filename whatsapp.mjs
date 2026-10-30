@@ -22,6 +22,7 @@ import {
   NOT_REGISTERED,
   FFMPEG_MISSING,
   AUDIO_FAILED,
+  VOICE_ACK,
   FIX_ASK,
   ALREADY_SAVED,
   UNSUPPORTED,
@@ -283,26 +284,49 @@ async function graphSend(ctx, payload) {
   return res.json().catch(() => ({}));
 }
 
-async function sendText(ctx, to, body) {
+async function sendText(ctx, to, body, { timings = null } = {}) {
   if (!to) return null;
   let text = String(body);
   const extra = dueTodayBlock(ctx, ctx.store.findShop(digitsOf(to)));
   if (extra && text.length + extra.length <= MAX_BODY_CHARS) text += extra;
-  return graphSend(ctx, { to, type: "text", text: { body: text.slice(0, 4000) } });
+  const t0 = Date.now();
+  const out = await graphSend(ctx, { to, type: "text", text: { body: text.slice(0, 4000) } });
+  if (timings) timings.sendMs = (timings.sendMs ?? 0) + (Date.now() - t0);
+  return out;
 }
 
-async function sendCard(ctx, to, proposal, shopId) {
+async function sendCard(ctx, to, proposal, shopId, { timings = null } = {}) {
+  const tRender = Date.now();
   const existing = ctx.ledger && shopId ? ctx.ledger.list(shopId) : [];
   const products = ctx.products && shopId ? ctx.products.listByShop(shopId) : [];
   const { text: cardText, buttons } = renderProposalCard(proposal, { existing, shopId, products });
+  if (timings) timings.renderMs = Date.now() - tRender;
   let text = cardText;
   const extra = dueTodayBlock(ctx, shopId);
   if (extra && text.length + extra.length <= MAX_BODY_CHARS) text += extra;
-  return graphSend(ctx, {
+  const tSend = Date.now();
+  const out = await graphSend(ctx, {
     to,
     type: "interactive",
     interactive: { type: "button", body: { text }, action: { buttons } },
   });
+  if (timings) timings.sendMs = (timings.sendMs ?? 0) + (Date.now() - tSend);
+  return out;
+}
+
+// Dev-only one-line timing report for a finished note: step durations in ms
+// plus the question count. Numbers only — never message text, names or
+// amounts. Silent unless POCKETOGA_TIMING=1.
+function logNoteTiming(ctx, kind, timings, proposal, t0) {
+  if (process.env.POCKETOGA_TIMING !== "1") return;
+  const ms = (k) => timings[k] ?? 0;
+  const questions = Array.isArray(proposal?.flags) ? proposal.flags.length : 0;
+  ctx.log(
+    `timing kind=${kind} download=${ms("downloadMs")} convert=${ms("convertMs")} ` +
+      `transcribe=${ms("transcribeMs")} classify=${ms("classifyMs")} checks=${ms("checksMs")} ` +
+      `second=${ms("secondMs")} render=${ms("renderMs")} send=${ms("sendMs")} ` +
+      `total=${Date.now() - t0} questions=${questions}`
+  );
 }
 
 // Promises due today ride on the reply to the trader's own message — never
@@ -435,20 +459,24 @@ async function downloadMedia(ctx, url) {
 // Downloads the voice note immediately (links expire) and converts OGG Opus
 // to 16 kHz mono WAV. Returns { converted: false } when ffmpeg is missing;
 // the temp directory is always removed.
-async function withWavFromMedia(ctx, mediaId, fn) {
+async function withWavFromMedia(ctx, mediaId, fn, timings = null) {
+  const tDownload = Date.now();
   const url = await fetchMediaUrl(ctx, mediaId);
   const bytes = await downloadMedia(ctx, url);
+  if (timings) timings.downloadMs = Date.now() - tDownload;
   const dir = mkdtempSync(join(ctx.tmpBase, "wa-audio-"));
   try {
     const oggPath = join(dir, "note.ogg");
     const wavPath = join(dir, "note.wav");
     writeFileSync(oggPath, bytes);
+    const tConvert = Date.now();
     try {
       await ctx.execFileFn("ffmpeg", ["-y", "-i", oggPath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wavPath]);
     } catch (err) {
       if (err && err.code === "ENOENT") return { converted: false };
       throw err;
     }
+    if (timings) timings.convertMs = Date.now() - tConvert;
     return { converted: true, result: await fn(wavPath) };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -573,15 +601,19 @@ async function handleFixError(ctx, sender, err) {
 
 async function handleCorrection(ctx, sender, shopId, fixProposalId, message) {
   if (message?.type === "text") {
+    const t0 = Date.now();
+    const timings = {};
     try {
       const revised = await fixProposal(fixProposalId, shopId, message.text?.body ?? "", {
         proposals: ctx.proposals,
         model: ctx.model,
         ledger: ctx.ledger,
         products: ctx.products,
+        timings,
       });
       ctx.store.clearFixState(sender);
-      await sendCard(ctx, sender, revised, shopId);
+      await sendCard(ctx, sender, revised, shopId, { timings });
+      logNoteTiming(ctx, "text-fix", timings, revised, t0);
     } catch (err) {
       await handleFixError(ctx, sender, err);
     }
@@ -593,9 +625,11 @@ async function handleCorrection(ctx, sender, shopId, fixProposalId, message) {
       await sendText(ctx, sender, AUDIO_FAILED);
       return;
     }
+    const t0 = Date.now();
+    const timings = {};
     let data;
     try {
-      const got = await withWavFromMedia(ctx, mediaId, async (wavPath) => readFileSync(wavPath).toString("base64"));
+      const got = await withWavFromMedia(ctx, mediaId, async (wavPath) => readFileSync(wavPath).toString("base64"), timings);
       if (!got.converted) {
         await sendText(ctx, sender, FFMPEG_MISSING);
         return;
@@ -608,7 +642,10 @@ async function handleCorrection(ctx, sender, shopId, fixProposalId, message) {
     }
     let heard;
     try {
+      await sendText(ctx, sender, VOICE_ACK, { timings });
+      const tTranscribe = Date.now();
       const raw = await ctx.model.complete({ audio: { data, format: "wav" } });
+      timings.transcribeMs = Date.now() - tTranscribe;
       heard = typeof raw?.heard === "string" && raw.heard.trim() ? raw.heard.trim() : null;
       if (!heard) {
         await sendText(ctx, sender, HEAR_FAILED);
@@ -624,9 +661,10 @@ async function handleCorrection(ctx, sender, shopId, fixProposalId, message) {
       return;
     }
     try {
-      const revised = await fixProposal(fixProposalId, shopId, heard, { proposals: ctx.proposals, model: ctx.model, ledger: ctx.ledger, products: ctx.products });
+      const revised = await fixProposal(fixProposalId, shopId, heard, { proposals: ctx.proposals, model: ctx.model, ledger: ctx.ledger, products: ctx.products, timings });
       ctx.store.clearFixState(sender);
-      await sendCard(ctx, sender, revised, shopId);
+      await sendCard(ctx, sender, revised, shopId, { timings });
+      logNoteTiming(ctx, "audio-fix", timings, revised, t0);
     } catch (err) {
       await handleFixError(ctx, sender, err);
     }
@@ -681,25 +719,34 @@ async function handleIncomingMessage(message, ctx) {
   }
   await replyFriendly(ctx, sender, async () => {
     if (message?.type === "text") {
+      const t0 = Date.now();
+      const timings = {};
       const proposal = await propose(shopId, message.text?.body ?? "", {
         proposals: ctx.proposals,
         model: ctx.model,
         ledger: ctx.ledger,
         products: ctx.products,
         secondOpinions: ctx.secondOpinions,
+        timings,
       });
-      await sendCard(ctx, sender, proposal, shopId);
+      await sendCard(ctx, sender, proposal, shopId, { timings });
+      logNoteTiming(ctx, "text", timings, proposal, t0);
     } else if (message?.type === "audio") {
       const mediaId = message.audio?.id;
       if (!mediaId) {
         await sendText(ctx, sender, AUDIO_FAILED);
         return;
       }
+      const t0 = Date.now();
+      const timings = {};
       let got;
       try {
-        got = await withWavFromMedia(ctx, mediaId, async (wavPath) =>
-          propose(shopId, { audioPath: wavPath }, { proposals: ctx.proposals, model: ctx.model, ledger: ctx.ledger, products: ctx.products, secondOpinions: ctx.secondOpinions })
-        );
+        got = await withWavFromMedia(ctx, mediaId, async (wavPath) => {
+          // The audio is in hand and the slow part (transcription +
+          // classification) starts now: say so before it, not after.
+          await sendText(ctx, sender, VOICE_ACK, { timings });
+          return propose(shopId, { audioPath: wavPath }, { proposals: ctx.proposals, model: ctx.model, ledger: ctx.ledger, products: ctx.products, secondOpinions: ctx.secondOpinions, timings });
+        }, timings);
       } catch (err) {
         ctx.log(`audio download failed: ${err?.message ?? err}`);
         await sendText(ctx, sender, AUDIO_FAILED);
@@ -709,7 +756,8 @@ async function handleIncomingMessage(message, ctx) {
         await sendText(ctx, sender, FFMPEG_MISSING);
         return;
       }
-      await sendCard(ctx, sender, got.result, shopId);
+      await sendCard(ctx, sender, got.result, shopId, { timings });
+      logNoteTiming(ctx, "audio", timings, got.result, t0);
     } else if (message?.type === "image") {
       const mediaId = message.image?.id;
       const mime = message.image?.mime_type;

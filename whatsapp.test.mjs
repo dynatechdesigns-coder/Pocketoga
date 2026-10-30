@@ -591,11 +591,13 @@ describe("whatsapp webhook (mocked fetch, no network)", () => {
       assert.ok(args.includes("1") && args.includes("-ac"));
       assert.ok(args.some((a) => a.endsWith("note.ogg")));
       assert.ok(args.some((a) => a.endsWith("note.wav")));
-      // The model got wav audio and the trader got a card.
+      // The model got wav audio and the trader got an ack plus a card.
       assert.equal(seen.length, 1);
       assert.equal(seen[0].audio.format, "wav");
-      assert.equal(sends(ctx).length, 1);
-      assert.equal(sends(ctx)[0].body.type, "interactive");
+      assert.equal(sends(ctx).length, 2);
+      assert.equal(sends(ctx)[0].body.type, "text");
+      assert.equal(sends(ctx)[0].body.text.body, "Got it, checking…");
+      assert.equal(sends(ctx)[1].body.type, "interactive");
       assert.equal(proposalCount(ctx), 1);
       // Temp audio cleaned up.
       assert.deepEqual(readdirSync(TMP_BASE), []);

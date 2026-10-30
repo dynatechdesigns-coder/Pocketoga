@@ -4,13 +4,21 @@
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
 import { parseNaira, formatKobo } from "./money.mjs";
-import { escapeMd } from "./messages.mjs";
+import { escapeMd, customerOwedKobo } from "./messages.mjs";
 import { resolvePromiseDate } from "./promises.mjs";
 import { runSecondOpinion, SECOND_OPINION_TIMEOUT_MS } from "./secondopinion.mjs";
 import { stockLevels, productKey } from "./products.mjs";
 import { costBasisByProduct, costBasisKey } from "./profit.mjs";
 
 export const PROPOSAL_TTL_MS = 30 * 60 * 1000;
+// A second model call costs as much as the first, so the second opinion
+// runs only when code already smells something (any flag) or the note moves
+// serious money (total at or above this, in naira).
+export const SECOND_OPINION_MIN_NAIRA = 100000;
+
+function noteTotalKobo(entries) {
+  return (entries ?? []).reduce((t, e) => t + (Number.isInteger(e?.amountKobo) ? e.amountKobo : 0), 0);
+}
 // Types stored in the ledger. The model, hints and forms say "purchase";
 // code normalizes it to "restock" before anything is checked or stored, so
 // the chain never sees a new type and the hash rules do not change.
@@ -70,6 +78,7 @@ export function toProposal(row) {
     source: row.source ?? null,
     hint: env.hint ?? null,
     hintNote: env.hintNote ?? null,
+    assumptions: env.assumptions ?? [],
   };
 }
 
@@ -118,13 +127,21 @@ function checkLeg(naira, phrase, label, flags, notes, required = false) {
   return { naira, kobo, phrase: cleanPhrase };
 }
 
-function checkEntry(rawEntry, index, shopId, flags, notes, heard) {
+function checkEntry(rawEntry, index, shopId, flags, notes, heard, assumptions, hint = null) {
   const label = `entry ${index + 1}`;
   const e = rawEntry && typeof rawEntry === "object" ? rawEntry : {};
-  const type = normalizeEntryType(e.type);
+  let type = normalizeEntryType(e.type);
   if (!type) {
-    flags.push(`${label}: unknown type "${String(e.type)}" (want sale, payment, purchase, restock or expense)`);
-    return null;
+    // The note fits the tapped hint but the type came back unreadable: trust
+    // the trader's tap and say so, instead of asking which type it is.
+    const hinted = normalizeEntryType(hint);
+    if (hinted) {
+      type = hinted;
+      assumptions.push(`Taken as ${withArticle(TYPE_WORDS[hinted])} from your tap.`);
+    } else {
+      flags.push(`${label}: unknown type "${String(e.type)}" (want sale, payment, purchase, restock or expense)`);
+      return null;
+    }
   }
   const { naira, kobo, phrase } = checkLeg(e.amountNaira, e.amountPhrase, label, flags, notes, true);
 
@@ -177,7 +194,7 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard) {
   // Payments store money only: no item, quantity or unit reaches the ledger.
   if (type === "payment") {
     if (basis === "each") {
-      flags.push(`${label}: a payment is a total, not an each-price`);
+      assumptions.push("Payment taken as a total.");
       basis = "total";
     }
     if (item !== null || quantity !== null || unit !== null) {
@@ -188,16 +205,11 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard) {
     }
   }
 
-  if (type === "restock") {
-    if (item === null) flags.push(`${label}: restock needs an item`);
-    if (e.quantity === null || e.quantity === undefined) flags.push(`${label}: restock needs a quantity`);
-  }
-
   // Expenses store money and a category only: quantity and unit never reach
   // the ledger, the amount is always a total, and code picks the category.
   if (type === "expense") {
     if (basis === "each") {
-      flags.push(`${label}: an expense is a total, not an each-price`);
+      assumptions.push("Expense taken as a total.");
       basis = "total";
     }
     if (quantity !== null || unit !== null) {
@@ -205,14 +217,14 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard) {
       quantity = null;
       unit = null;
     }
+    const rawCategory = typeof e.item === "string" ? e.item.trim().toLowerCase().replace(/\s+/g, " ") : "";
     item = pickExpenseCategory(e.item);
-  }
-  if (type === "sale" && item !== null && (e.quantity === null || e.quantity === undefined)) {
-    flags.push(`${label}: how many ${item}? quantity is missing`);
+    if (rawCategory !== item) assumptions.push("Expense category assumed: other.");
   }
 
   // The note says per-item but the model read a total: do not trust it.
-  if (basis === "total" && type !== "payment") {
+  // A quantity of one is exempt — each and total are the same money.
+  if (basis === "total" && type !== "payment" && quantity !== 1) {
     const match = `${heard ?? ""} ${phrase ?? ""}`.match(EACH_WORDS);
     if (match) {
       flags.push(`${label}: note says "${match[0].toLowerCase()}" but the amount was read as a total`);
@@ -239,6 +251,18 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard) {
   } else if (basis === "unclear" && quantity !== null && quantity > 1) {
     const figure = phrase ? `"${phrase}"` : kobo !== null ? formatKobo(kobo) : "the amount";
     flags.push(`${label}: is ${figure} for each one or for all ${quantity}?`);
+  } else if (basis === "unclear" && quantity === 1) {
+    basis = "total"; // one item: each and total are the same money
+    eachNaira = naira;
+    eachKobo = kobo;
+  }
+
+  // Money known but stock descriptors missing: record the money, move no
+  // stock, and say so. (Each-basis without quantity still blocks above:
+  // there the total itself is unknown.)
+  if ((type === "sale" || type === "restock") && Number.isInteger(totalKobo)) {
+    if (item === null) assumptions.push("No item stated; stock unchanged.");
+    else if (!Number.isInteger(quantity)) assumptions.push("No quantity stated; stock unchanged.");
   }
 
   return {
@@ -359,12 +383,25 @@ function checkStatedRemainder(heard, entries, flags) {
   }
 }
 
-// Leading titles stripped for the similar-name check, so "Mama Chinedu"
-// matches "Chinedu".
-const NAME_TITLES = ["mama", "baba", "mr", "mrs", "alhaji", "alhaja", "chief", "madam", "oga"];
+// Leading titles stripped before customer names are compared, so
+// "Mama Chinedu" matches "Chinedu". Whole leading words only — never
+// substrings — and never the whole name.
+export const NAME_TITLES = [
+  "mama", "mummy", "aunty", "auntie", "oga", "baba", "papa", "alhaji", "alhaja",
+  "hajia", "chief", "madam", "mrs", "mr", "sir", "ma", "brother", "bro",
+  "sister", "sis", "pastor", "doctor", "dr", "engineer", "engr", "prince",
+  "princess", "uncle",
+];
 
 function normalizeName(name) {
   return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+export function stripTitle(normalized) {
+  const parts = String(normalized ?? "").split(" ").filter(Boolean);
+  let i = 0;
+  while (i < parts.length - 1 && NAME_TITLES.includes(parts[i].replace(/\.+$/, ""))) i++;
+  return parts.slice(i).join(" ") || String(normalized ?? "");
 }
 
 // Plain edit distance over normalized names. Trader ledgers are small, so
@@ -386,14 +423,6 @@ function editDistance(a, b) {
   return prev[b.length];
 }
 
-// A leading title word plus the rest ("mama chinedu" -> "chinedu").
-// Unchanged when there is no leading title.
-function stripTitle(normalized) {
-  const m = /^(\S+)\s+(.+)$/.exec(normalized);
-  if (m && NAME_TITLES.includes(m[1])) return m[2];
-  return normalized;
-}
-
 // True when two already-normalized, non-equal names may be the same person:
 // a small typo, one name extending the other, or a title difference.
 // Exported for the photo pipeline's sender check.
@@ -408,56 +437,119 @@ export function namesSimilar(a, b) {
   return false;
 }
 
-// Similar-name check: each proposed customer against the shop's own ledger
-// names. Exact-after-normalization is clean; near matches ask the trader.
-// Names in checkedNames (already questioned on this proposal) are skipped.
-// Questioned names are collected into questioned (normalized).
-function checkSimilarNames(entries, shopId, existingCustomers, checkedNames, flags, questioned) {
-  if (!existingCustomers || existingCustomers.length === 0) return;
-  const checked = new Set((checkedNames ?? []).map((n) => normalizeName(n)));
-  const stored = existingCustomers
-    .filter((c) => typeof c === "string" && normalizeName(c))
-    .map((c) => ({ raw: c.trim(), norm: normalizeName(c) }));
-  const asked = new Set();
-  for (const e of entries) {
-    if (!e.customer || e.customer === shopId) continue;
-    const norm = normalizeName(e.customer);
-    if (!norm || checked.has(norm) || asked.has(norm)) continue;
-    if (stored.some((s) => s.norm === norm)) continue;
-    const match = stored.find((s) => namesSimilar(norm, s.norm));
-    if (match) {
-      asked.add(norm);
-      questioned.push(norm);
-      flags.push(`Is *${escapeMd(e.customer.trim())}* the same person as *${escapeMd(match.raw)}*? Send the right name, or say new customer.`);
-    }
-  }
+// Customer matcher over the shop's own ledger names. Titles are stripped on
+// both sides before comparing, so "Mama Chinedu" equals "Chinedu".
+function customerMatcher(existingCustomers, checkedNames) {
+  return {
+    stored: (existingCustomers ?? [])
+      .filter((c) => typeof c === "string" && normalizeName(c))
+      .map((c) => ({ raw: c.trim(), norm: normalizeName(c), stripped: stripTitle(normalizeName(c)) })),
+    checked: new Set((checkedNames ?? []).map((n) => normalizeName(n))),
+    asked: new Set(),
+  };
 }
 
-// Similar-product check: each sale/restock item against the shop's catalog.
-// An exact (name, unit) match is clean; a near name with the same unit asks
-// the trader once ("...or say new product"). Questioned items are collected
-// into questioned as "item:<name>" so they never collide with customer
-// names in the same skip-list. Skipped entirely without a catalog.
-function checkSimilarProducts(entries, catalog, checkedNames, flags, questioned) {
+// One heard customer name against the shop's customers. Exact (after title
+// stripping) rewrites to the stored spelling; a clearly-closest near match
+// does the same; no match at all means a new customer. All three are soft
+// assumption lines, never questions. The ONLY name question left: two
+// different existing customers about equally close (within one edit of each
+// other), which blocks with one short flag.
+function matchCustomerName(heardRaw, mc, flags, questioned, assumptions) {
+  const heard = heardRaw.trim();
+  const norm = normalizeName(heardRaw);
+  const stripped = stripTitle(norm);
+  const exact = mc.stored.find((s) => s.norm === norm) ?? (stripped ? mc.stored.find((s) => s.stripped === stripped) : undefined);
+  if (exact) {
+    if (exact.raw === heard) return { action: "silent", name: exact.raw };
+    return { action: "taken", name: exact.raw, line: `${heard} taken as your customer ${exact.raw}.` };
+  }
+  // Already settled on a Fix ("new customer", or asked before): the trader's
+  // spelling stands and records as a new customer. Exact matches above still
+  // win, so this can never duplicate a stored name.
+  if (mc.checked.has(norm) || (stripped && mc.checked.has(stripped))) {
+    return { action: "new", name: heard, line: `New customer: ${heard}.` };
+  }
+  const scored = [];
+  for (const s of mc.stored) {
+    if (!stripped || !s.stripped) continue;
+    const d = editDistance(stripped, s.stripped);
+    if (d <= 2) scored.push({ s, d });
+  }
+  scored.sort((a, b) => a.d - b.d);
+  if (scored.length === 0) {
+    return { action: "new", name: heard, line: `New customer: ${heard}.` };
+  }
+  const [best, second] = [scored[0], scored[1]];
+  if (!second || second.d - best.d >= 2) {
+    return { action: "taken", name: best.s.raw, line: `${heard} taken as your customer ${best.s.raw}.` };
+  }
+  if (mc.asked.has(stripped)) {
+    return { action: "silent", name: heard }; // asked already in this note: ask once
+  }
+  mc.asked.add(stripped);
+  questioned.push(stripped);
+  flags.push(`Is *${escapeMd(heard)}* ${escapeMd(best.s.raw)} or ${escapeMd(second.s.raw)}? Send the right name, or say new customer.`);
+  return { action: "ask", name: heard };
+}
+
+// Customer matching for sale/payment entries: rewrites each customer to the
+// matched stored spelling and records soft assumption lines. Restock
+// suppliers and expense payees are not debt customers and pass untouched.
+// Returns the matcher so the promise customer can be resolved the same way.
+function checkSimilarNames(entries, shopId, existingCustomers, checkedNames, flags, questioned, assumptions) {
+  const mc = customerMatcher(existingCustomers, checkedNames);
+  for (const e of entries) {
+    if (e.type !== "sale" && e.type !== "payment") continue;
+    if (!e.customer || e.customer === shopId) continue;
+    if (!normalizeName(e.customer)) continue;
+    const out = matchCustomerName(e.customer, mc, flags, questioned, assumptions);
+    if (out.action === "taken" || out.action === "new") {
+      e.customer = out.name;
+      if (!assumptions.includes(out.line)) assumptions.push(out.line);
+    }
+  }
+  return mc;
+}
+
+// Product matching: each sale/restock item against the shop's catalog.
+// Exact (name, unit) is silent; the closest near name with the same unit is
+// assumed (the entry is rewritten to the catalog spelling); no match means
+// a new product. All soft assumption lines — products never block.
+// Skipped entirely without a catalog.
+function checkSimilarProducts(entries, catalog, assumptions, checked = []) {
   if (!catalog || catalog.length === 0) return;
-  const checked = new Set((checkedNames ?? []).map((n) => normalizeName(n)));
-  const stored = (catalog ?? [])
+  const checkedSet = new Set((checked ?? []).map((n) => normalizeName(n)));
+  const stored = catalog
     .filter((p) => p && normalizeName(p.name))
     .map((p) => ({ name: p.name.trim(), norm: normalizeName(p.name), unit: normalizeName(p.unit ?? "") }));
-  const asked = new Set();
   for (const e of entries) {
     if ((e.type !== "sale" && e.type !== "restock") || !e.item) continue;
+    const heard = e.item.trim();
     const norm = normalizeName(e.item);
-    const key = `item:${norm}`;
-    if (!norm || checked.has(key) || asked.has(norm)) continue;
+    if (!norm) continue;
     const unit = normalizeName(e.unit ?? "");
     if (stored.some((s) => s.norm === norm && s.unit === unit)) continue;
-    const match = stored.find((s) => s.unit === unit && namesSimilar(norm, s.norm));
-    if (match) {
-      asked.add(norm);
-      questioned.push(key);
-      flags.push(`Is *${escapeMd(e.item.trim())}* the same product as *${escapeMd(match.name)}*? Send the right name, or say new product.`);
+    // Settled as new on a Fix: the trader's spelling stands.
+    if (checkedSet.has(`item:${norm}`)) {
+      const line = `New product: ${heard}${e.unit ? ` (${String(e.unit).trim()})` : ""}.`;
+      if (!assumptions.includes(line)) assumptions.push(line);
+      continue;
     }
+    const scored = stored
+      .filter((s) => s.unit === unit)
+      .map((s) => ({ s, d: editDistance(norm, s.norm) }))
+      .filter((x) => x.d <= 2)
+      .sort((a, b) => a.d - b.d);
+    if (scored.length === 0) {
+      const line = `New product: ${heard}${e.unit ? ` (${String(e.unit).trim()})` : ""}.`;
+      if (!assumptions.includes(line)) assumptions.push(line);
+      continue;
+    }
+    const best = scored[0].s;
+    e.item = best.name;
+    const line = `${heard} taken as your product ${best.name}${e.unit ? ` (${String(e.unit).trim()})` : ""}.`;
+    if (!assumptions.includes(line)) assumptions.push(line);
   }
 }
 
@@ -544,71 +636,104 @@ function shopCustomers(ledger, shopId) {
 // Promise validation. The model only supplies the customer's day-phrase;
 // code resolves it to a real date. Anything unclear becomes a clarifying
 // question — never a guess. Returns the envelope promise or null.
-function checkPromise(rawPromise, flags, nowMs) {
+// Promise dates are soft: code resolves the day-phrase, and whatever it
+// cannot resolve becomes "no pay date" on the card — never a question. The
+// debt itself always records. Never flags; malformed model output degrades
+// to notes. dueDate null means "no pay date set".
+function checkPromise(rawPromise, notes, nowMs) {
   if (rawPromise === null || rawPromise === undefined) return null;
   if (typeof rawPromise !== "object" || Array.isArray(rawPromise)) {
-    flags.push("promise must be an object with customer, datePhrase and amountNaira");
+    notes.push("ignoring promise with unknown shape");
     return null;
   }
   const customer = cleanText(rawPromise.customer);
-  if (!customer) flags.push("promise needs a customer name");
-  const datePhrase = cleanText(rawPromise.datePhrase);
-  let dueDate = null;
-  if (!datePhrase) {
-    flags.push(`promise needs a day: when will ${customer ?? "the customer"} pay?`);
-  } else {
-    dueDate = resolvePromiseDate(datePhrase, nowMs);
-    if (!dueDate) flags.push(`promise date "${datePhrase}" is unclear — which day will ${customer ?? "the customer"} pay?`);
+  if (!customer) {
+    notes.push("ignoring promise without a customer");
+    return null;
   }
+  const datePhrase = cleanText(rawPromise.datePhrase);
+  const dueDate = datePhrase ? resolvePromiseDate(datePhrase, nowMs) : null;
   let amountNaira = null;
-  let amountBad = false;
   if (rawPromise.amountNaira !== null && rawPromise.amountNaira !== undefined) {
-    if (typeof rawPromise.amountNaira !== "number" || !Number.isInteger(rawPromise.amountNaira)) {
-      flags.push(`promise amount must be whole naira, got ${String(rawPromise.amountNaira)}`);
-      amountBad = true;
-    } else if (rawPromise.amountNaira < 0) {
-      flags.push("promise amount must not be negative");
-      amountBad = true;
+    if (typeof rawPromise.amountNaira !== "number" || !Number.isInteger(rawPromise.amountNaira) || rawPromise.amountNaira < 0) {
+      notes.push("ignoring bad promise amount");
     } else {
       amountNaira = rawPromise.amountNaira;
     }
   }
-  if (!customer || !dueDate || amountBad) return null;
   return { customer, datePhrase, amountNaira, amountKobo: amountNaira === null ? null : amountNaira * 100, dueDate };
 }
 
-// Runs every check on raw model output. Missing or ambiguous input stays
-// pending with a clarifying question; nothing is ever guessed. ledgerRows
-// and catalog are optional: without rows there are no effect lines, without
-// a catalog there is no similar-product check.
+// Overpayments against a KNOWN balance block with one short question: the
+// money cannot be recorded safely (typo? wrong customer?). Payments for
+// customers with no recorded balance pass freely — code cannot judge an
+// advance or an unrecorded history — as do payments settled inside the note
+// by their own sale. Skipped entirely without ledger rows.
+function checkOverpayment(entries, ledgerRows, flags) {
+  if (!ledgerRows) return;
+  const paidBy = new Map();
+  const soldTo = new Set();
+  for (const e of entries) {
+    if (!e.customer) continue;
+    const norm = normalizeName(e.customer);
+    if (e.type === "sale") soldTo.add(norm);
+    if (e.type === "payment" && Number.isInteger(e.amountKobo)) {
+      paidBy.set(norm, (paidBy.get(norm) ?? 0) + e.amountKobo);
+    }
+  }
+  for (const [norm, paid] of paidBy) {
+    if (soldTo.has(norm)) continue;
+    const name = entries.find((e) => e.type === "payment" && normalizeName(e.customer) === norm)?.customer ?? norm;
+    const owed = customerOwedKobo({ existing: ledgerRows, proposalEntries: [], customer: name });
+    if (owed > 0 && paid > owed) {
+      flags.push(`${name} owes ${formatKobo(owed)} but ${formatKobo(paid)} was paid. Which is right?`);
+    }
+  }
+}
+
+// Runs every check on raw model output. BLOCKING problems (flags) lock Save
+// and ask at most two short questions; everything else becomes a soft
+// assumption line on the card with Save enabled. ledgerRows and catalog are
+// optional: without rows there are no effect lines or overpayment checks,
+// without a catalog there is no product matching.
 export function checkModelOutput(
   raw,
   shopId,
-  { existingCustomers = [], checkedNames = [], now = Date.now(), ledgerRows = null, catalog = null } = {}
+  { existingCustomers = [], checkedNames = [], now = Date.now(), ledgerRows = null, catalog = null, hint = null } = {}
 ) {
   const flags = [];
   const notes = [];
+  const assumptions = [];
   const questionedNames = [];
   const heard = cleanText(raw.heard) ?? "(no transcript)";
   let entries = [];
   if (!Array.isArray(raw.entries)) {
     flags.push("model returned no entries list");
   } else {
-    entries = raw.entries.map((e, i) => checkEntry(e, i, shopId, flags, notes, heard)).filter(Boolean);
+    entries = raw.entries.map((e, i) => checkEntry(e, i, shopId, flags, notes, heard, assumptions, hint)).filter(Boolean);
   }
   const totals = checkTotals(raw.totals, flags, notes);
   checkStatedRemainder(heard, entries, flags);
-  checkSimilarNames(entries, shopId, existingCustomers, checkedNames, flags, questionedNames);
-  checkSimilarProducts(entries, catalog, checkedNames, flags, questionedNames);
-  const promise = checkPromise(raw.promise, flags, now);
+  const matcher = checkSimilarNames(entries, shopId, existingCustomers, checkedNames, flags, questionedNames, assumptions);
+  checkSimilarProducts(entries, catalog, assumptions, checkedNames);
+  const promise = checkPromise(raw.promise, notes, now);
+  if (promise && promise.customer) {
+    // The promise customer resolves exactly like entry customers, so the
+    // promise row (if any) lands on the same stored spelling.
+    const out = matchCustomerName(promise.customer, matcher, flags, questionedNames, assumptions);
+    promise.customer = out.name;
+    if (out.line && !assumptions.includes(out.line)) assumptions.push(out.line);
+  }
+  checkOverpayment(entries, ledgerRows, flags);
   if (entries.length === 0 && flags.length === 0) {
     flags.push("no entries to record");
   }
   let question = cleanText(raw.question);
   if (question) flags.push(`needs clarification: ${question}`);
-  if (!question && flags.length > 0) question = `Abeg check am: ${flags.join("; ")}`;
+  // At most two questions in one line; the card still lists every check.
+  if (!question && flags.length > 0) question = `Abeg check am: ${flags.slice(0, 2).join("; ")}`;
   const effects = computeEffects(entries, { rows: ledgerRows, catalog });
-  return { version: 1, entries, totals, flags, notes, heard, question, questionedNames, promise, effects };
+  return { version: 1, entries, totals, flags, notes, heard, question, questionedNames, promise, effects, assumptions };
 }
 
 // --- Input handling --------------------------------------------------------
@@ -648,7 +773,7 @@ function isBadJson(err) {
 
 function confusedEnvelope(heard) {
   const msg = "I no hear am well — abeg talk am again.";
-  return { envelope: { version: 1, entries: [], totals: null, flags: [msg], notes: [] }, heard, question: msg };
+  return { envelope: { version: 1, entries: [], totals: null, flags: [msg], notes: [], assumptions: [] }, heard, question: msg };
 }
 
 // --- Proposal operations ---------------------------------------------------
@@ -679,6 +804,8 @@ export async function propose(
     secondOpinionFetch = fetch,
     secondOpinionEnv = process.env,
     secondOpinionTimeoutMs = SECOND_OPINION_TIMEOUT_MS,
+    secondOpinionMode = "auto",
+    timings = null,
   }
 ) {
   if (!shopId || typeof shopId !== "string") throw voiceError(400, "shopId is required");
@@ -690,16 +817,29 @@ export async function propose(
   const norm = normalizeInput(input);
   const fallbackHeard = norm.kind === "text" ? norm.text : "(voice note)";
   const source = norm.kind === "audio" ? "voice" : "text";
+  // The model call starts first so its network time overlaps the local prep
+  // below (ledger + catalog reads). Deferred one microtask so a
+  // synchronously-throwing model still surfaces as a rejection below, exactly
+  // as before. The noop catch only marks the promise handled; the await
+  // below still throws into the same handler.
+  const modelKey = norm.kind === "audio" ? "transcribeMs" : "classifyMs";
+  const tModel = Date.now();
+  const modelPromise = Promise.resolve().then(() =>
+    norm.kind === "text"
+      ? model.complete({ text: norm.text, ...(cleanHint ? { hint: cleanHint } : null) })
+      : model.complete({ audio: norm.audio, ...(cleanHint ? { hint: cleanHint } : null) })
+  );
+  modelPromise.catch(() => {});
+  const ledgerRows = ledger && typeof ledger.list === "function" ? ledger.list(shopId) : null;
+  const catalog = products && typeof products.listByShop === "function" ? products.listByShop(shopId) : null;
   let raw;
   try {
-    raw =
-      norm.kind === "text"
-        ? await model.complete({ text: norm.text, ...(cleanHint ? { hint: cleanHint } : null) })
-        : await model.complete({ audio: norm.audio, ...(cleanHint ? { hint: cleanHint } : null) });
+    raw = await modelPromise;
   } catch (err) {
     if (!isBadJson(err)) throw err; // transport/API errors propagate; nothing stored
     raw = null;
   }
+  if (timings) timings[modelKey] = Date.now() - tModel;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     const c = confusedEnvelope(fallbackHeard);
     const confused = proposals.create({ shopId, envelope: c.envelope, heard: c.heard, question: c.question, source });
@@ -708,24 +848,33 @@ export async function propose(
     }
     return toProposal(confused);
   }
-  const ledgerRows = ledger && typeof ledger.list === "function" ? ledger.list(shopId) : null;
-  const catalog = products && typeof products.listByShop === "function" ? products.listByShop(shopId) : null;
+  const tChecks = Date.now();
   const { heard, question, questionedNames, ...envelope } = checkModelOutput(raw, shopId, {
     existingCustomers: customersOf(ledgerRows),
     now,
     ledgerRows,
     catalog,
+    hint: cleanHint,
   });
+  if (timings) timings.checksMs = Date.now() - tChecks;
   envelope.hint = cleanHint;
   envelope.hintNote = hintMismatchNote(cleanHint, envelope.entries);
   // Second opinion: a second model re-reads the heard text and plain code
   // compares. Disagreement adds one code-built flag (the question when the
   // proposal has none, so the card asks once); entries are never touched.
   // Without the stats store the feature is off entirely, so legacy callers
-  // never call out. The check itself never throws.
+  // never call out. In auto mode the extra call runs only for flagged notes
+  // and big money; clean small notes skip it and record no_second_opinion.
+  // "always" forces the call (used by tests of the comparison itself).
+  // The check itself never throws.
   let finalQuestion = question;
   let second = { agreed: "no_second_opinion", differingFields: [], latencyMs: 0 };
-  if (secondOpinions) {
+  const secondWanted =
+    secondOpinionMode === "always" ||
+    envelope.flags.length > 0 ||
+    noteTotalKobo(envelope.entries) >= SECOND_OPINION_MIN_NAIRA * 100;
+  if (secondOpinions && secondWanted) {
+    const tSecond = Date.now();
     second = await runSecondOpinion({
       heardText: heard,
       entries: envelope.entries,
@@ -735,7 +884,9 @@ export async function propose(
       fetchFn: secondOpinionFetch,
       env: secondOpinionEnv,
       timeoutMs: secondOpinionTimeoutMs,
+      existingCustomers: customersOf(ledgerRows),
     });
+    if (timings) timings.secondMs = Date.now() - tSecond;
     if (second.line) {
       envelope.flags = [...envelope.flags, second.line];
       if (!finalQuestion) finalQuestion = second.line;
@@ -768,7 +919,7 @@ export async function propose(
 // Present-but-wrong input is a plain 400; absent-but-needed input becomes a
 // clarifying question, exactly like the voice path. Nothing here touches
 // the ledger.
-export function proposeFromForm(shopId, fields, { proposals, ledger = null, products = null, now = Date.now() } = {}) {
+export function proposeFromForm(shopId, fields, { proposals, ledger = null, products = null, now = Date.now(), timings = null } = {}) {
   if (!proposals) throw new Error("proposeFromForm needs { proposals }");
   if (!shopId || typeof shopId !== "string") throw voiceError(400, "shopId is required");
   const f = fields && typeof fields === "object" ? fields : null;
@@ -858,11 +1009,13 @@ export function proposeFromForm(shopId, fields, { proposals, ledger = null, prod
     .join(" ");
   const ledgerRows = ledger && typeof ledger.list === "function" ? ledger.list(shopId) : null;
   const catalog = products && typeof products.listByShop === "function" ? products.listByShop(shopId) : null;
+  const tChecks = Date.now();
   const { heard: checkedHeard, question, questionedNames, ...envelope } = checkModelOutput(
     { heard: cleanText(note) ?? heardAuto, entries, totals: null, promise: null, question: null },
     shopId,
     { existingCustomers: customersOf(ledgerRows), now, ledgerRows, catalog }
   );
+  if (timings) timings.checksMs = Date.now() - tChecks;
   envelope.hint = null;
   envelope.hintNote = null;
   const row = proposals.create({
@@ -958,6 +1111,7 @@ function correctionEnvelope(entry, target, reason, { flags = [], question = null
     promise: null,
     correctionOf: target.id,
     correctionReason: reason,
+    assumptions: [],
   };
 }
 
@@ -1159,7 +1313,9 @@ export function confirmProposal(proposalId, shopId, { proposals, ledger, promise
   // A promise on the proposal is created only now, on confirm — never on
   // propose. Same crash window as the confirmed mark below; the data was
   // validated when the proposal was checked, so this cannot fail on content.
-  if (proposal.promise) {
+  // A promise without a resolved due date records no row: the debt is in
+  // the ledger, the card said "no pay date", and nothing else is needed.
+  if (proposal.promise && proposal.promise.dueDate) {
     if (!promises) throw new Error("confirmProposal needs { promises } to record the proposal's promise");
     promises.create({
       shopId: row.shop_id,
@@ -1175,7 +1331,7 @@ export function confirmProposal(proposalId, shopId, { proposals, ledger, promise
 
 // Re-proposes using the previous proposal plus the trader's correction.
 // Renews the proposal clock. Never touches confirmed proposals.
-export async function fixProposal(proposalId, shopId, correctionText, { proposals, model, ledger = null, products = null, now = Date.now() }) {
+export async function fixProposal(proposalId, shopId, correctionText, { proposals, model, ledger = null, products = null, now = Date.now(), timings = null }) {
   if (!proposals || !model) throw new Error("fixProposal needs { proposals, model }");
   if (!correctionText || typeof correctionText !== "string" || !correctionText.trim()) {
     throw voiceError(400, "correction text is required");
@@ -1190,12 +1346,14 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
   const prior = toProposal(row);
   const priorSummary = { heard: prior.heard, entries: prior.entries, totals: prior.totals, question: prior.question };
   let raw;
+  const tClassify = Date.now();
   try {
     raw = await model.complete({ text: correctionText.trim(), prior: priorSummary });
   } catch (err) {
     if (!isBadJson(err)) throw err;
     raw = null;
   }
+  if (timings) timings.classifyMs = Date.now() - tClassify;
   const stamp = new Date().toISOString();
   const priorCorrection = { correctionOf: prior.correctionOf ?? null, correctionReason: prior.correctionReason ?? null };
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -1210,6 +1368,7 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
       effects: prior.effects ?? [],
       hint: prior.hint ?? null,
       hintNote: prior.hintNote ?? null,
+      assumptions: prior.assumptions ?? [],
       ...priorCorrection,
     };
     const updated = proposals.update(row.id, {
@@ -1223,16 +1382,39 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
     return toProposal(updated);
   }
   const priorChecked = Array.isArray(prior.name_checked) ? prior.name_checked : [];
+  // Explicit "new customer" / "new product" on a Fix settles that spelling:
+  // the model's returned names stand even when they near-match something
+  // stored. Exact stored spellings still win inside the matcher, so this can
+  // never duplicate a customer or silently merge into one.
+  const fixLower = correctionText.trim().toLowerCase();
+  const extraChecked = [];
+  if (Array.isArray(raw.entries)) {
+    if (/\bnew customers?\b/.test(fixLower)) {
+      for (const e of raw.entries) {
+        const norm = normalizeName(e?.customer);
+        if (norm) extraChecked.push(norm, stripTitle(norm));
+      }
+    }
+    if (/\bnew products?\b/.test(fixLower)) {
+      for (const e of raw.entries) {
+        const norm = normalizeName(e?.item);
+        if (norm) extraChecked.push(`item:${norm}`);
+      }
+    }
+  }
   const ledgerRows = ledger && typeof ledger.list === "function" ? ledger.list(shopId) : null;
   const catalog = products && typeof products.listByShop === "function" ? products.listByShop(shopId) : null;
+  const tChecks = Date.now();
   const checked = checkModelOutput(raw, shopId, {
     existingCustomers: customersOf(ledgerRows),
-    checkedNames: priorChecked,
+    checkedNames: [...priorChecked, ...extraChecked],
     now,
     ledgerRows,
     catalog,
+    hint: prior.hint ?? null,
   });
-  const merged = [...new Set([...priorChecked, ...checked.questionedNames])];
+  if (timings) timings.checksMs = Date.now() - tChecks;
+  const merged = [...new Set([...priorChecked, ...extraChecked, ...checked.questionedNames])];
   // The hint describes how the note started, so it survives fixes; the
   // mismatch sentence is recomputed against the revised entries.
   const hint = prior.hint ?? null;
@@ -1248,6 +1430,7 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
       effects: checked.effects,
       hint,
       hintNote: hintMismatchNote(hint, checked.entries),
+      assumptions: checked.assumptions,
       ...priorCorrection,
     },
     heard: checked.heard !== "(no transcript)" ? checked.heard : `${prior.heard}\nTrader: ${correctionText.trim()}`,

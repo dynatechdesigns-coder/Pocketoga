@@ -84,6 +84,7 @@ async function proposeWithSecond(ctx, primaryReading, secondReading, opts = {}) 
     secondOpinions: ctx.secondOpinions,
     secondOpinionFetch: opts.fetchFn ?? fetchFn,
     secondOpinionEnv: opts.env ?? FAKE_ENV,
+    secondOpinionMode: opts.secondOpinionMode ?? "always",
     ...(opts.timeoutMs !== undefined ? { secondOpinionTimeoutMs: opts.timeoutMs } : {}),
   });
   return { proposal, seen };

@@ -386,7 +386,7 @@ describe("products, cost and stock effects", () => {
     }
   });
 
-  it("a near-miss product name asks one question; the answer settles it", async () => {
+  it("a near-miss product name is assumed, softly; saying 'new product' settles it the other way", async () => {
     const ctx = setup();
     try {
       ctx.products.ensure({ shopId: SHOP, name: "rice", unit: "bag" });
@@ -395,9 +395,12 @@ describe("products, cost and stock effects", () => {
         "I sold 2 bags of rise to Ada, 30k",
         reading("I sold 2 bags of rise to Ada, 30k", [saleEntry({ item: "rise" })])
       );
-      assert.match(p.flags.join("; "), /same product as \*rice\*/);
-      assert.match(p.question, /same product/);
-      assert.deepEqual(JSON.parse(ctx.proposals.get(p.id).name_checked), ["item:rise"]);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+      assert.equal(p.entries[0].item, "rice");
+      assert.ok(p.assumptions.includes("rise taken as your product rice (bag)."), p.assumptions.join("; "));
+      const card = renderProposalCard(p, { existing: [], shopId: SHOP });
+      assert.ok(card.buttons.some((b) => b.reply.title === "Save"), "Save stays enabled");
 
       ctx.model = createMockModelClient(async () => reading("rice", [saleEntry()]));
       const fixed = await fixProposal(p.id, SHOP, "rice", {
@@ -413,12 +416,17 @@ describe("products, cost and stock effects", () => {
         "I sold 2 bags of rise to Ada, 30k",
         reading("I sold 2 bags of rise to Ada, 30k", [saleEntry({ item: "rise" })])
       );
-      assert.match(p2.flags.join("; "), /same product/);
+      assert.deepEqual(p2.flags, []);
       ctx.model = createMockModelClient(async () => reading("new product", [saleEntry({ item: "rise" })]));
       const fixed2 = await fixProposal(p2.id, SHOP, "new product", {
         proposals: ctx.proposals, model: ctx.model, ledger: ctx.ledger, products: ctx.products,
       });
       assert.deepEqual(fixed2.flags, []);
+      assert.equal(fixed2.entries[0].item, "rise");
+      assert.ok(fixed2.assumptions.includes("New product: rise (bag)."), fixed2.assumptions.join("; "));
+      assert.ok(JSON.parse(ctx.proposals.get(p2.id).name_checked).includes("item:rise"));
+      confirm(ctx, fixed2.id);
+      assert.equal(ctx.ledger.list(SHOP)[1].item, "rise");
     } finally {
       teardown(ctx);
     }
@@ -846,6 +854,110 @@ describe("red team: message text is data, never instructions", () => {
       const saved = confirm(ctx, p.id);
       assert.equal(saved.alreadyConfirmed, false);
       assert.equal(ctx.ledger.list(SHOP).length, 1);
+    } finally {
+      teardown(ctx);
+    }
+  });
+});
+
+describe("Mama Chinedu end-to-end (mock model, clock fixed at Thu 29 Oct 2026 Lagos)", () => {
+  const MAMA_NOW = Date.UTC(2026, 9, 29, 12, 0, 0);
+  const NOTE = "Mama Chinedu buy 2 bag of rice for me. Each 15k each she paid 25k and she go pay on Wednesday next week";
+  const mamaReading = () => reading(NOTE, [
+    { type: "sale", customer: "Mama Chinedu", item: "rice", unit: "bag", quantity: 2, amountNaira: 15000, amountPhrase: "15k", priceBasis: "each" },
+    { type: "payment", customer: "Mama Chinedu", item: null, quantity: null, unit: null, amountNaira: 25000, amountPhrase: "25k", priceBasis: "total" },
+  ], { promise: { customer: "Mama Chinedu", datePhrase: "Wednesday next week", amountNaira: null } });
+
+  it("zero questions: taken as Chinedu, Wed 4 Nov, Save enabled, 30k/25k/5k", async () => {
+    const ctx = setup();
+    try {
+      ctx.ledger.append({ shopId: SHOP, type: "restock", amountKobo: 45000000, customer: SHOP, item: "rice", quantity: 10, unit: "bag" });
+      ctx.ledger.append({ shopId: SHOP, type: "sale", amountKobo: 1500000, customer: "Chinedu", item: "rice", quantity: 1, unit: "bag" });
+      const p = await proposeNote(ctx, NOTE, mamaReading(), { now: MAMA_NOW });
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+      assert.equal(p.entries[0].customer, "Chinedu");
+      assert.equal(p.entries[1].customer, "Chinedu");
+      assert.equal(p.entries[0].amountNaira, 30000); // code multiplies 15k each × 2
+      assert.equal(p.entries[0].amountKobo, 3000000);
+      assert.equal(p.entries[1].amountNaira, 25000);
+      assert.equal(p.entries[0].amountKobo - p.entries[1].amountKobo, 500000); // 5k still owed
+      assert.equal(p.assumptions.filter((a) => a === "Mama Chinedu taken as your customer Chinedu.").length, 1);
+      assert.equal(p.promise.customer, "Chinedu");
+      assert.equal(p.promise.dueDate, "2026-11-04");
+
+      const card = renderProposalCard(p, { existing: ctx.ledger.list(SHOP), shopId: SHOP });
+      assert.ok(card.buttons.some((b) => b.reply.title === "Save"), "Save stays enabled");
+      assert.ok(card.text.includes("Mama Chinedu taken as your customer Chinedu."), card.text);
+      assert.ok(card.text.includes("🤝 Chinedu to pay by Wed 4 Nov"), card.text);
+      assert.ok(card.text.includes("2 bags of rice × ₦15,000 = *₦30,000* → Sales"), card.text);
+      assert.ok(card.text.includes("⚖️ Chinedu owes *₦20,000* after saving"), card.text); // 15k before + 30k − 25k
+
+      const out = confirm(ctx, p.id);
+      assert.equal(out.recordedIds.length, 2);
+      assert.equal(ctx.ledger.verify(SHOP).ok, true);
+      const rows = ctx.promises.listByShop(SHOP);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].customer, "Chinedu");
+      assert.equal(rows[0].due_date, "2026-11-04");
+      assert.equal(rows[0].amount_kobo, null);
+    } finally {
+      teardown(ctx);
+    }
+  });
+});
+
+describe("blocking versus soft (mock model)", () => {
+  it("a pile of soft checks never locks Save", async () => {
+    const ctx = setup();
+    try {
+      ctx.products.ensure({ shopId: SHOP, name: "rice", unit: "bag" });
+      const p = await proposeNote(
+        ctx,
+        "sold millet",
+        reading("Zainab buy 5 bags millet 20k. Spent 2k repairs.", [
+          { type: "sale", customer: "Zainab", item: "millet", unit: "bag", quantity: 5, amountNaira: 20000, amountPhrase: "20k", priceBasis: "total" },
+          { type: "expense", customer: null, item: "repairs", quantity: null, unit: null, amountNaira: 2000, amountPhrase: "2k", priceBasis: "total" },
+        ], { promise: { customer: "Zainab", datePhrase: "when I get money", amountNaira: null } })
+      );
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+      assert.ok(p.assumptions.includes("New customer: Zainab."), p.assumptions.join("; "));
+      assert.ok(p.assumptions.includes("New product: millet (bag)."), p.assumptions.join("; "));
+      assert.ok(p.assumptions.includes("Expense category assumed: other."), p.assumptions.join("; "));
+      assert.equal(p.effects[0].negativeStock, true);
+      assert.equal(p.effects[0].costUnknown, true);
+      const card = renderProposalCard(p, { existing: [], shopId: SHOP });
+      assert.ok(card.buttons.some((b) => b.reply.title === "Save"), "Save stays enabled");
+      assert.ok(card.text.includes("🤝 No pay date set"), card.text);
+      assert.ok(card.text.includes("millet stock 0 → -5 bags — stock would go negative"), card.text);
+      assert.equal(confirm(ctx, p.id).recordedIds.length, 2);
+      assert.equal(ctx.ledger.verify(SHOP).ok, true);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("three blocking problems ask at most two questions; the card lists all three", async () => {
+    const ctx = setup();
+    try {
+      ctx.ledger.append({ shopId: SHOP, type: "sale", amountKobo: 800000, customer: "Ada" });
+      ctx.ledger.append({ shopId: SHOP, type: "sale", amountKobo: 800000, customer: "Adaboy" });
+      const heard = "Adabo buy rice 8k. Bola buy 2 bags rice 15k. Chidi buy 2 bags garri 5k each.";
+      const p = await proposeNote(ctx, heard, reading(heard, [
+        { type: "sale", customer: "Adabo", item: "rice", unit: "bag", quantity: 1, amountNaira: 8000, amountPhrase: "8k", priceBasis: "total" },
+        { type: "sale", customer: "Bola", item: "rice", unit: "bag", quantity: 2, amountNaira: 15000, amountPhrase: "15k", priceBasis: "unclear" },
+        { type: "sale", customer: "Chidi", item: "garri", unit: "bag", quantity: 2, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" },
+      ]));
+      assert.ok(p.flags.length >= 3, p.flags.join("; "));
+      assert.ok(p.question.startsWith("Abeg check am: "), p.question);
+      assert.equal(p.question.replace(/^Abeg check am: /, "").split("; ").length, 2);
+      assert.throws(() => confirm(ctx, p.id), /cannot confirm/);
+      const card = renderProposalCard(p, { existing: [], shopId: SHOP });
+      assert.ok(card.text.includes("Adaboy or Ada? Send the right name"), card.text);
+      assert.ok(card.text.includes("each one or for all 2"), card.text);
+      assert.ok(card.text.includes('note says "each" but the amount was read as a total'), card.text);
+      assert.ok(card.buttons.every((b) => !b.reply.id.startsWith("confirm:")), "blocked card has no Save");
     } finally {
       teardown(ctx);
     }

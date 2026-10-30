@@ -44,6 +44,34 @@ function badJson(message) {
   return Object.assign(new Error(message), { code: "MODEL_BAD_JSON" });
 }
 
+export const MODEL_TEXT_TIMEOUT_MS = 30000;
+export const MODEL_AUDIO_TIMEOUT_MS = 90000;
+export const MODEL_PHOTO_TIMEOUT_MS = 30000;
+
+// One fetch with a timeout and a single retry. Retries transport failures,
+// timeouts, 429s and 5xx responses; anything else (other 4xx, bad payloads)
+// fails fast so a broken request never doubles its cost.
+export async function fetchWithRetry(fetchFn, url, opts, { timeoutMs, retries = 1 } = {}) {
+  let attempt = 0;
+  for (;;) {
+    try {
+      const res = await fetchFn(url, { ...opts, signal: AbortSignal.timeout(timeoutMs) });
+      const retryableStatus = res && (res.status === 429 || (Number.isInteger(res.status) && res.status >= 500 && res.status <= 599));
+      if (retryableStatus && attempt < retries) {
+        attempt++;
+        continue;
+      }
+      return res;
+    } catch (err) {
+      if (attempt < retries && (err?.name === "TimeoutError" || err instanceof TypeError)) {
+        attempt++;
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 // The trader's shortcut tap, passed to the model as a likely type only —
 // never an order. Plain code re-checks the classification afterwards and
 // says so on the card when the note clearly says something else.
@@ -82,7 +110,9 @@ export function createModelClient({
   textModel = TEXT_MODEL,
   audioModel = AUDIO_MODEL,
   fetchFn = fetch,
-  timeoutMs = 60000,
+  textTimeoutMs = MODEL_TEXT_TIMEOUT_MS,
+  audioTimeoutMs = MODEL_AUDIO_TIMEOUT_MS,
+  photoTimeoutMs = MODEL_PHOTO_TIMEOUT_MS,
 } = {}) {
   return {
     async complete({ text = null, audio = null, image = null, prior = null, system = null, hint = null }) {
@@ -111,20 +141,24 @@ export function createModelClient({
       }
       let res;
       try {
-        res = await fetchFn(`${baseUrl}/chat/completions`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-          body: JSON.stringify({
-            model: isAudio ? audioModel : textModel,
-            reasoning_effort: "minimal",
-            response_format: { type: "json_object" },
-            messages: [
-              { role: "system", content: prompt },
-              { role: "user", content: userContent },
-            ],
-          }),
-          signal: AbortSignal.timeout(timeoutMs),
-        });
+        res = await fetchWithRetry(
+          fetchFn,
+          `${baseUrl}/chat/completions`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+            body: JSON.stringify({
+              model: isAudio ? audioModel : textModel,
+              reasoning_effort: "minimal",
+              response_format: { type: "json_object" },
+              messages: [
+                { role: "system", content: prompt },
+                { role: "user", content: userContent },
+              ],
+            }),
+          },
+          { timeoutMs: isAudio ? audioTimeoutMs : isImage ? photoTimeoutMs : textTimeoutMs }
+        );
       } catch (err) {
         throw apiError(`model API request failed: ${err.message}`);
       }

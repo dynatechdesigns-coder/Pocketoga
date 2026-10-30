@@ -40,6 +40,7 @@ export const PROPOSAL_NOT_FOUND = "I can't find that proposal. Send your note ag
 export const OTHER_SHOP = "That proposal belongs to another shop.";
 export const FFMPEG_MISSING = "Sorry, I can't listen to voice notes right now. Please send it as text.";
 export const AUDIO_FAILED = "Sorry, I couldn't process that voice note. Please send it as text.";
+export const VOICE_ACK = "Got it, checking…";
 export const HEAR_FAILED = "I couldn't hear that — please send the correction again.";
 export const BAD_AUDIO_JSON = "I no hear am well — abeg talk am again.";
 export const CORRECTION_AS_TEXT = "Please send the correction as text or a voice note.";
@@ -280,16 +281,16 @@ function mismatchLine(flag) {
   return `${formatKobo(total)} − ${formatKobo(paid)} = ${formatKobo(total - paid)}, but you said ${formatKobo(stated)} remain. Which one na correct?`;
 }
 
-// Similar-name flags carry code-added *bold* around the two names. The names
-// are escaped again here (idempotent for code-built flags) so a forged shape
-// with raw markdown still cannot break card formatting. Person and product
-// flags share the shape.
-const SAME_PERSON_RE = /^Is \*(.+?)\* the same (person|product) as \*(.+?)\*\? Send the right name, or say new (customer|product)\.$/;
+// The two-candidate name flag carries code-added *bold* around the heard
+// name; the candidates render plain (escaped). Everything interpolated is
+// escaped again here, so a forged shape with raw markdown still cannot
+// break card formatting.
+const TWO_CANDIDATES_RE = /^Is \*(.+?)\* (.+)\? Send the right name, or say new customer\.$/;
 
 function renderCheckLine(text) {
-  const match = SAME_PERSON_RE.exec(text);
+  const match = TWO_CANDIDATES_RE.exec(text);
   if (match) {
-    return `Is *${escapeMd(match[1])}* the same ${match[2]} as *${escapeMd(match[3])}*? Send the right name, or say new ${match[4]}.`;
+    return `Is *${escapeMd(match[1])}* ${escapeMd(match[2])}? Send the right name, or say new customer.`;
   }
   return escapeMd(text);
 }
@@ -373,6 +374,14 @@ function hintLine(proposal) {
   return typeof proposal.hintNote === "string" && proposal.hintNote ? escapeMd(proposal.hintNote) : null;
 }
 
+// Soft assumptions in one short block ("PocketOga assumed:"). Deduped: the
+// promise customer often repeats an entry's line.
+function assumedBlock(proposal) {
+  const lines = [...new Set((proposal.assumptions ?? []).filter((l) => typeof l === "string" && l))];
+  if (lines.length === 0) return null;
+  return `PocketOga assumed:\n${lines.map((l) => escapeMd(l)).join("\n")}`;
+}
+
 function renderCleanCard(proposal, { existing = [], shopId = null, products = [], heardMax = MAX_HEARD_CHARS }) {
   const multi = multipleCustomers(proposal.entries);
   const entries = proposal.entries.map((e) => entryLine(e, multi)).join("\n");
@@ -382,6 +391,7 @@ function renderCleanCard(proposal, { existing = [], shopId = null, products = []
     entries,
     effectLines(proposal).join("\n"),
     hintLine(proposal),
+    assumedBlock(proposal),
     usualPriceLines(proposal.entries, products).join("\n"),
     promiseCardLine(proposal.promise),
     owesLines(proposal, existing, shopId, " after saving").join("\n"),
@@ -400,6 +410,7 @@ function renderCheckCard(proposal, { products = [], heardMax = MAX_HEARD_CHARS }
     arithmetic,
     effectLines(proposal).join("\n"),
     hintLine(proposal),
+    assumedBlock(proposal),
     usualPriceLines(proposal.entries, products).join("\n"),
     dedupeChecks(proposal).join("\n"),
     heardLine(proposal.heard, heardMax),
@@ -541,9 +552,12 @@ export function formatDueDay(day) {
   return `${DOW_SHORT[dt.getUTCDay()]} ${dt.getUTCDate()} ${MONTH_SHORT[dt.getUTCMonth()]}`;
 }
 
-// " Ada to pay ₦20,000 by Fri 30 Oct". Null when there is no promise.
+// " Ada to pay ₦20,000 by Fri 30 Oct", or "No pay date set" when the note
+// mentions paying later without a resolvable day. Null when there is no
+// promise at all.
 export function promiseCardLine(promise) {
   if (!promise) return null;
+  if (!promise.dueDate) return `${EMOJI.promise} No pay date set`;
   const name = escapeMd(String(promise.customer ?? "?").trim() || "?");
   const amount = Number.isInteger(promise.amountKobo) ? ` to pay ${formatKobo(promise.amountKobo)}` : " to pay";
   return `${EMOJI.promise} ${name}${amount} by ${formatDueDay(promise.dueDate)}`;

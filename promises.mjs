@@ -109,35 +109,64 @@ export class PromiseStore {
 
 const WEEKDAY_INDEX = {
   sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
-  sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
+  sun: 0, mon: 1, tue: 2, tues: 2, wed: 3, thu: 4, thurs: 4, fri: 5, sat: 6,
 };
 
-// Resolves the model's day-phrase to "YYYY-MM-DD" in Africa/Lagos: today,
-// tomorrow, weekday names (the next occurrence, strictly future — a bare
-// weekday never means today), "next week" (next Monday) and "end of month".
-// Returns null when the phrase is ambiguous or unknown; callers must ask
-// the trader instead of guessing.
+const NUMBER_WORDS = {
+  a: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+  seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+};
+
+function parseCount(word) {
+  if (/^\d+$/.test(word)) return Number(word);
+  return NUMBER_WORDS[word] ?? null;
+}
+
+// Resolves the model's day-phrase to "YYYY-MM-DD" in Africa/Lagos. Weeks
+// start Monday. Covered forms: today, tomorrow, bare weekdays (the next
+// upcoming one, strictly future — never today), "next week" (next Monday),
+// "end of month", a weekday of next week in either order ("wednesday next
+// week", "next friday"), "in N days|weeks" (digits or number words),
+// "next next week" (the Monday after next) and "this weekend" (the upcoming
+// Saturday, today when today is Saturday). Leading on|by|come, trailing
+// time-of-day words and trailing punctuation are ignored. Returns null for
+// anything else; callers show "no pay date" instead of asking.
 export function resolvePromiseDate(phrase, nowMs = Date.now()) {
-  const s = String(phrase ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  const s = String(phrase ?? "").trim().toLowerCase().replace(/\s+/g, " ").replace(/[?!.,;]+$/, "");
   if (!s) return null;
   const today = lagosDay(nowMs);
   if (s === "today") return today;
   if (s === "tomorrow") return addDays(today, 1);
-  if (s === "next week") {
-    const delta = ((8 - lagosWeekday(nowMs)) % 7) || 7;
-    return addDays(today, delta);
+  const core = s.replace(/^(on|by|come)\s+/, "").replace(/\s+(morning|afternoon|evening|night)$/, "");
+  const mondayDelta = ((8 - lagosWeekday(nowMs)) % 7) || 7; // next Monday, strictly future
+  if (core === "next week") return addDays(today, mondayDelta);
+  if (core === "next next week") return addDays(today, mondayDelta + 7);
+  if (core === "this weekend") {
+    const saturdayDelta = (6 - lagosWeekday(nowMs) + 7) % 7;
+    return addDays(today, saturdayDelta);
   }
-  if (s === "end of month" || s === "end of the month") {
+  if (core === "end of month" || core === "end of the month") {
     const [y, m] = today.split("-").map(Number);
     const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
     return `${today.slice(0, 8)}${String(last).padStart(2, "0")}`;
   }
-  const m = /^(?:(?:on|by|come)\s+)?([a-z]+)(?:\s+(morning|afternoon|evening|night))?$/.exec(s);
-  if (!m) return null;
-  const target = WEEKDAY_INDEX[m[1]];
-  if (target === undefined) return null;
-  const delta = ((target - lagosWeekday(nowMs) + 7) % 7) || 7;
-  return addDays(today, delta);
+  let m = /^in\s+(\w+)\s+(days?|weeks?)$/.exec(core);
+  if (m) {
+    const n = parseCount(m[1]);
+    if (n !== null && n > 0) return addDays(today, m[2].startsWith("week") ? n * 7 : n);
+    return null;
+  }
+  m = /^([a-z]+)\s+next\s+week$/.exec(core) ?? /^next\s+([a-z]+)$/.exec(core);
+  if (m) {
+    const target = WEEKDAY_INDEX[m[1]];
+    if (target === undefined) return null;
+    return addDays(today, mondayDelta + ((target - 1 + 7) % 7));
+  }
+  if (/^[a-z]+$/.test(core) && WEEKDAY_INDEX[core] !== undefined) {
+    const delta = ((WEEKDAY_INDEX[core] - lagosWeekday(nowMs) + 7) % 7) || 7;
+    return addDays(today, delta);
+  }
+  return null;
 }
 
 function isPaymentLike(row, byId) {
