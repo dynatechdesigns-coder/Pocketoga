@@ -18,6 +18,7 @@
 // modules initialize, so the cycle is safe.
 import { DatabaseSync } from "node:sqlite";
 import { parseModelJson, fetchWithRetry, MODEL_TEMPERATURE, MODEL_SEED } from "./model.mjs";
+import { formatModelLog, failureReason, logLine } from "./log.mjs";
 import { formatKobo } from "./money.mjs";
 import { resolvePromiseDate } from "./promises.mjs";
 import { checkModelOutput } from "./voice.mjs";
@@ -151,6 +152,13 @@ export async function fetchSecondReading(heardText, { apiKey, model, fetchFn, ti
   const failed = () => {
     info.attempts = fetchCalls;
     logSecondAttempt({ ...info, ms: Date.now() - start });
+    // Always on (not just POCKETOGA_TIMING): the failure kind is what the
+    // host logs need. info.fail keeps its stats values; the log classifies
+    // separately so the stats contract never changes.
+    const status = typeof info.status === "number" ? info.status : null;
+    logLine(
+      formatModelLog({ kind: "second-opinion", provider: "Baseten", status, reason: failureReason({ status, err: info.thrown ?? null }), attempts: fetchCalls, ms: Date.now() - start })
+    );
     return { reading: null, latencyMs: Date.now() - start, failure: info.fail };
   };
   // Count fetch invocations so attempts is exact even when fetchWithRetry
@@ -204,7 +212,9 @@ export async function fetchSecondReading(heardText, { apiKey, model, fetchFn, ti
     logSecondAttempt({ ...info, ms: Date.now() - start });
     return { reading, latencyMs: Date.now() - start, failure: null };
   } catch (err) {
-    info.fail = err?.name === "TimeoutError" ? "timeout" : "error"; return failed();
+    info.fail = err?.name === "TimeoutError" ? "timeout" : "error";
+    info.thrown = err;
+    return failed();
   }
 }
 

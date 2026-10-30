@@ -36,6 +36,7 @@ import {
 } from "./whatsapp.mjs";
 import { seedDemoShop } from "./demo-seed.mjs";
 import { backupNow, restoreIfMissing } from "./backup.mjs";
+import { formatRequestLog, startupEnvLines, ffmpegAvailable, logLine } from "./log.mjs";
 
 const MAX_BODY_BYTES = 12 * 1024 * 1024;
 
@@ -652,12 +653,35 @@ export async function handleVoiceRequest(req, res, deps) {
   return send(res, 404, { error: "not found" });
 }
 
+// One log line per finished request: method, path without query string,
+// status, duration, masked shop, and a short scrubbed fragment on failure.
+// Unexpected handler errors are logged once here; the response stays the
+// same plain JSON error as before.
+function withRequestLog(handler) {
+  return (req, res) => {
+    const t0 = Date.now();
+    const path = String(req.url ?? "/").split("?")[0] || "/";
+    const shop = req.headers ? req.headers["x-shop-id"] ?? null : null;
+    let status = null;
+    const origWriteHead = res.writeHead.bind(res);
+    res.writeHead = (code, ...rest) => {
+      status = code;
+      return origWriteHead(code, ...rest);
+    };
+    handler(req, res).then(
+      () => logLine(formatRequestLog({ method: req.method, path, status: status ?? 200, ms: Date.now() - t0, shop })),
+      (err) => {
+        if (!res.headersSent) send(res, err.status ?? 500, { error: err.message ?? "internal error" });
+        logLine(
+          formatRequestLog({ method: req.method, path, status: status ?? err.status ?? 500, ms: Date.now() - t0, shop, error: err })
+        );
+      }
+    );
+  };
+}
+
 export function createVoiceServer(deps) {
-  return createServer((req, res) => {
-    handleVoiceRequest(req, res, deps).catch((err) => {
-      if (!res.headersSent) send(res, err.status ?? 500, { error: err.message ?? "internal error" });
-    });
-  });
+  return createServer(withRequestLog((req, res) => handleVoiceRequest(req, res, deps)));
 }
 
 // Webhook-only listener. Serves GET/POST /webhook through the shared
@@ -672,11 +696,7 @@ export async function handleWebhookOnlyRequest(req, res, deps) {
 }
 
 export function createWebhookServer(deps) {
-  return createServer((req, res) => {
-    handleWebhookOnlyRequest(req, res, deps).catch((err) => {
-      if (!res.headersSent) send(res, err.status ?? 500, { error: err.message ?? "internal error" });
-    });
-  });
+  return createServer(withRequestLog((req, res) => handleWebhookOnlyRequest(req, res, deps)));
 }
 
 // Builds every dependency the HTTP handlers need — real model client,
@@ -706,6 +726,10 @@ export function buildDeps(env = process.env) {
 const invokedAsMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (invokedAsMain) {
   const env = process.env;
+  // Start-up checks first, so a missing key or binary is visible even when
+  // boot later fails. Names only, never values.
+  for (const line of startupEnvLines(env)) logLine(line);
+  logLine(ffmpegAvailable() ? "ffmpeg: ok" : "warning: ffmpeg is missing; voice notes will fail");
   const dataDir = resolveDataDir(env);
   const dbPath = resolveDbPath(env);
   mkdirSync(dataDir, { recursive: true });

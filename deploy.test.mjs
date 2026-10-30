@@ -17,6 +17,18 @@ import {
   resolveDataDir,
   resolveDbPath,
 } from "./server.mjs";
+import { createModelClient } from "./model.mjs";
+import { fetchSecondReading } from "./secondopinion.mjs";
+import {
+  maskShopId,
+  scrub,
+  failureReason,
+  formatRequestLog,
+  formatModelLog,
+  startupEnvLines,
+  ffmpegAvailable,
+  setLogSink,
+} from "./log.mjs";
 import { seedDemoShop } from "./demo-seed.mjs";
 import { backupNow, newestBackup, pruneBackups, restoreIfMissing, BACKUP_KEEP } from "./backup.mjs";
 import { Ledger } from "./ledger.mjs";
@@ -277,5 +289,197 @@ describe("deploy static app (temp folder)", () => {
     } finally {
       deps.db.close();
     }
+  });
+});
+
+describe("safe logging (fake data, silenced sink)", () => {
+  let lines;
+  function silence() {
+    lines = [];
+    setLogSink((line) => lines.push(String(line)));
+  }
+  function restore() {
+    setLogSink();
+  }
+
+  it("masks shops, scrubs digit runs, strips query strings", () => {
+    assert.equal(maskShopId("demoshop01"), "dem***");
+    assert.equal(maskShopId(null), "-");
+    assert.equal(scrub("call 08031234567 now"), "call ***67 now");
+    assert.equal(scrub("no digits here"), "no digits here");
+    assert.equal(failureReason({ status: 401 }), "auth");
+    assert.equal(failureReason({ status: 403 }), "auth");
+    assert.equal(failureReason({ status: 500 }), "error");
+    assert.equal(failureReason({ err: Object.assign(new Error("x"), { name: "TimeoutError" }) }), "timeout");
+    assert.equal(failureReason({ err: new TypeError("fetch failed") }), "network");
+    const line = formatRequestLog({ method: "POST", path: "/propose?x=1", status: 502, ms: 12, shop: "wa-abcdef", error: { code: "MODEL_TRUNCATED" } });
+    assert.ok(line.startsWith("POST /propose 502 12ms shop=wa-***"), line);
+    assert.ok(line.includes("err=MODEL_TRUNCATED"), line);
+    assert.ok(!line.includes("?x=1"), line);
+    assert.ok(!line.includes("wa-abcdef"), line);
+  });
+
+  it("request lines never carry headers, query text, tokens or full shop ids", async () => {
+    // Secrets ride in headers, the query string and the body — none of
+    // which the logger reads, so none may appear in the line.
+    silence();
+    const deps = buildDeps(FAKE_ENV);
+    try {
+      const server = createVoiceServer(deps);
+      const res = await new Promise((done) => {
+        const req = new EventEmitter();
+        req.method = "GET";
+        req.url = "/propose?text=Ada+don+pay+5k+for+rice";
+        req.headers = {
+          "x-shop-id": "wa-abcdef123456",
+          authorization: "Bearer tok_deadbeef_token_999",
+          "x-forwarded-for": "197.210.29.4",
+        };
+        req.destroy = () => {};
+        let text = "";
+        const resObj = new EventEmitter();
+        resObj.headersSent = false;
+        resObj.writeHead = (status) => {
+          resObj.statusCode = status;
+          resObj.headersSent = true;
+        };
+        resObj.end = (chunk) => {
+          if (chunk) text += chunk;
+          done({ status: resObj.statusCode, text });
+        };
+        server.emit("request", req, resObj);
+      });
+      assert.equal(res.status, 401);
+    } finally {
+      deps.db.close();
+      restore();
+    }
+    assert.equal(lines.length, 1, lines.join("\n"));
+    const [line] = lines;
+    assert.ok(line.startsWith("GET /propose 401"), line);
+    assert.ok(!line.includes("?text=") && !line.includes("Ada"), line);
+    assert.ok(!line.includes("tok_deadbeef_token_999"), line);
+    assert.ok(!line.includes("197.210.29.4"), line);
+    assert.ok(!line.includes("wa-abcdef123456") && line.includes("shop=wa-***"), line);
+  });
+
+  it("error fragments mask the shop id and digit runs", () => {
+    // Real message shapes from the handlers: a correction error naming the
+    // shop, a provider error body, and a transport failure.
+    let line = formatRequestLog({
+      method: "POST",
+      path: "/correct-last",
+      status: 404,
+      ms: 9,
+      shop: "wa-abcdef123456",
+      error: { status: 404, message: "shop wa-abcdef123456 has no entries to correct" },
+    });
+    assert.ok(!line.includes("wa-abcdef123456"), line);
+    assert.ok(line.includes("shop=wa-***") && line.includes("wa-*** has no entries"), line);
+    line = formatRequestLog({
+      method: "POST",
+      path: "/propose",
+      status: 502,
+      ms: 9,
+      shop: "demo",
+      error: { status: 502, message: "model API error 500: overloaded, call 08031234567" },
+    });
+    assert.ok(!line.includes("08031234567") && line.includes("***67"), line);
+    assert.ok(line.includes("shop=dem***"), line);
+    line = formatRequestLog({
+      method: "POST", path: "/propose", status: 502, ms: 9, shop: null, error: new TypeError("fetch failed"),
+    });
+    assert.ok(line.includes("shop=-") && line.includes("err=fetch failed"), line);
+    const modelLine = formatModelLog({ kind: "audio", provider: "Meta", status: 500, reason: "error", attempts: 2, ms: 31 });
+    assert.ok(modelLine.includes("kind=audio") && modelLine.includes("provider=Meta"), modelLine);
+    assert.ok(modelLine.includes("status=500") && modelLine.includes("reason=error"), modelLine);
+  });
+
+  it("startup env lines name variables, never values", () => {
+    const fakeEnv = { META_API_KEY: "", BASETEN_API_KEY: "baseten-secret", BASETEN_MODEL: "" };
+    const out = startupEnvLines(fakeEnv).join("\n");
+    assert.ok(out.includes("META_API_KEY"), out);
+    assert.ok(out.includes("BASETEN_API_KEY/BASETEN_MODEL"), out);
+    assert.ok(!out.includes("baseten-secret"), out);
+    assert.deepEqual(startupEnvLines({ META_API_KEY: "k", BASETEN_API_KEY: "b", BASETEN_MODEL: "m" }), []);
+    assert.equal(typeof ffmpegAvailable(), "boolean");
+  });
+
+  it("model failures log provider, status and reason without secrets", async () => {
+    silence();
+    try {
+      const failing = (status) => async () => ({ ok: false, status, json: async () => ({}), text: async () => "boom" });
+      const client = createModelClient({ apiKey: "META-SECRET-KEY-999", fetchFn: failing(500) });
+      await assert.rejects(client.complete({ text: "fake note" }), /model API error 500/);
+      const denied = createModelClient({ apiKey: "META-SECRET-KEY-999", fetchFn: failing(401) });
+      await assert.rejects(denied.complete({ text: "fake note" }), /model API error 401/);
+      const badFetch = createModelClient({
+        apiKey: "META-SECRET-KEY-999",
+        fetchFn: async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: "not json" } }] }), text: async () => "" }),
+      });
+      await assert.rejects(badFetch.complete({ text: "fake note" }), /not JSON|was not JSON/);
+    } finally {
+      restore();
+    }
+    const joined = lines.join("\n");
+    assert.ok(joined.includes("provider=Meta"), joined);
+    assert.ok(joined.includes("status=500 reason=error"), joined);
+    assert.ok(joined.includes("status=401 reason=auth"), joined);
+    assert.ok(!joined.includes("META-SECRET-KEY-999"), joined);
+    assert.ok(!joined.includes("fake note"), joined);
+  });
+
+  it("second-opinion failures log provider and reason without secrets", async () => {
+    silence();
+    try {
+      const out = await fetchSecondReading("fake note", {
+        apiKey: "BASETEN-SECRET-KEY-999",
+        model: "m",
+        fetchFn: async () => ({ ok: false, status: 503, json: async () => ({}), text: async () => "down" }),
+        timeoutMs: 1000,
+      });
+      assert.equal(out.reading, null);
+    } finally {
+      restore();
+    }
+    const joined = lines.join("\n");
+    assert.ok(joined.includes("kind=second-opinion provider=Baseten"), joined);
+    assert.ok(joined.includes("status=503 reason=error"), joined);
+    assert.ok(!joined.includes("BASETEN-SECRET-KEY-999"), joined);
+    assert.ok(!joined.includes("fake note"), joined);
+  });
+
+  it("unexpected handler errors log exactly once and stay plain JSON", async () => {
+    silence();
+    const deps = buildDeps(FAKE_ENV);
+    try {
+      const server = createVoiceServer({ ...deps, auths: null });
+      const res = await new Promise((done) => {
+        const req = new EventEmitter();
+        req.method = "POST";
+        req.url = "/session";
+        req.headers = {};
+        req.destroy = () => {};
+        let text = "";
+        const resObj = new EventEmitter();
+        resObj.headersSent = false;
+        resObj.writeHead = (status) => {
+          resObj.statusCode = status;
+          resObj.headersSent = true;
+        };
+        resObj.end = (chunk) => {
+          if (chunk) text += chunk;
+          done({ status: resObj.statusCode, text });
+        };
+        server.emit("request", req, resObj);
+      });
+      assert.equal(res.status, 500);
+      assert.deepEqual(JSON.parse(res.text), { error: "auth store is required" });
+    } finally {
+      deps.db.close();
+      restore();
+    }
+    assert.equal(lines.length, 1, lines.join("\n"));
+    assert.ok(/^POST \/session 500 \d+ms shop=- err=/.test(lines[0]), lines[0]);
   });
 });

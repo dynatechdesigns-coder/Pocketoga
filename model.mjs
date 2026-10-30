@@ -21,6 +21,7 @@
 // Images use the OpenAI-compatible image_url part on the 1.3 checkpoint
 // (dev.meta.ai/docs/image-understanding):
 //   { type: "image_url", image_url: { url: "data:image/jpeg;base64,..." } }
+import { formatModelLog, failureReason, logLine } from "./log.mjs";
 
 export const META_BASE_URL = "https://api.meta.ai/v1";
 export const TEXT_MODEL = "muse-spark-1.3";
@@ -193,12 +194,16 @@ async function callOnce({ baseUrl, model, fetchFn, timeoutMs, userContent, kind,
     );
   } catch (err) {
     logModelCall({ kind, retry, attempts: "n/a", status: "error", finish: "none", input: "n/a", output: "n/a", reasoning: "n/a", contentChars: 0, ok: false, ms: Date.now() - t0 });
+    // Always on (not just POCKETOGA_TIMING): a dead voice/photo path must be
+    // visible in host logs. Numbers and labels only, never bodies or keys.
+    logLine(formatModelLog({ kind, provider: "Meta", reason: failureReason({ err }), ms: Date.now() - t0 }));
     throw apiError(`model API request failed: ${err.message}`);
   }
   const attempts = Number.isInteger(res?.attempts) ? res.attempts : "n/a";
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     logModelCall({ kind, retry, attempts, status: res.status, finish: "none", input: "n/a", output: "n/a", reasoning: "n/a", contentChars: 0, ok: false, ms: Date.now() - t0 });
+    logLine(formatModelLog({ kind, provider: "Meta", status: res.status, reason: failureReason({ status: res.status }), attempts, ms: Date.now() - t0 }));
     throw apiError(`model API error ${res.status}: ${body.slice(0, 300)}`);
   }
   const data = await res.json().catch(() => ({}));
@@ -223,6 +228,9 @@ async function callOnce({ baseUrl, model, fetchFn, timeoutMs, userContent, kind,
     return out;
   } catch (err) {
     logModelCall({ ...info, ok: false });
+    // Unparseable output degrades to a confused card downstream; log the
+    // failure here while the provider status is still at hand.
+    logLine(formatModelLog({ kind, provider: "Meta", status: res.status, reason: failureReason({ status: res.status }), attempts, ms: Date.now() - t0 }));
     throw Object.assign(err, { finish: choice.finish_reason ?? null });
   }
 }
