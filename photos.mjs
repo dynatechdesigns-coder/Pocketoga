@@ -111,6 +111,28 @@ export class PhotoCheckStore {
     return !!row;
   }
 
+// Public check shape for the web "Check alert" screen: extracted fields
+// only — never the photo (raw photos are never stored) and no phone
+// numbers. `sender` is the stored sender name as recorded. `warnings` is
+// the stored list, parsed defensively.
+  toPublicCheck(row) {
+  let warnings = [];
+  try {
+    const parsed = JSON.parse(row.warnings_json ?? "[]");
+    if (Array.isArray(parsed)) warnings = parsed.filter((w) => typeof w === "string");
+  } catch {
+    warnings = [];
+  }
+  return {
+    id: row.id,
+    amount_kobo: row.amount_kobo,
+    sender: row.sender ?? null,
+    alert_date: row.alert_date ?? null,
+    created_at: row.created_at,
+    warnings,
+  };
+}
+
   // "I saw it in my bank": unconfirmed -> confirmed, stamping seen_at.
   // Idempotent: an already-confirmed row comes back unchanged.
   markSeen(id) {

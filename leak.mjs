@@ -149,6 +149,7 @@ export function moneyLeakReport(ledgerRows, promises, { now = Date.now(), paymen
     count: unconfirmedRows.length,
     totalKobo: unconfirmedRows.reduce((t, c) => t + (Number.isInteger(c.amount_kobo) ? c.amount_kobo : 0), 0),
     items: unconfirmedRows.map((c) => ({
+      id: c.id,
       customer: c.customer ?? c.sender ?? null,
       amountKobo: c.amount_kobo,
       reference: c.reference ?? null,

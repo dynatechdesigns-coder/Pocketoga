@@ -679,6 +679,62 @@ export function renderProfit(profit) {
   return fitBody(lines.join("\n"));
 }
 
+export const SUMMARY_EMPTY_DAY = "Nothing to report today yet.";
+
+const SUMMARY_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function shortDay(day) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(day ?? ""));
+  if (!m) return "today";
+  return `${Number(m[3])} ${SUMMARY_MONTHS[Number(m[2]) - 1] ?? ""}`.trim();
+}
+
+function summaryHighlightLine(h) {
+  const kind = h?.kind ?? "none";
+  if (kind === "promise") {
+    const name = escapeMd(String(h.customer ?? "?").trim() || "?");
+    const amount = Number.isInteger(h.amountKobo) ? ` *${formatKobo(h.amountKobo)}*` : "";
+    const when = (h.overdueDays ?? 0) > 0 ? ` — ${h.overdueDays} day${h.overdueDays === 1 ? "" : "s"} late` : " today";
+    return `${EMOJI.promise} *${name}* suppose pay${amount}${when}.`;
+  }
+  if (kind === "debt") {
+    return `${EMOJI.balance} New debt: *${escapeMd(h.customer)}* owes *${formatKobo(h.amountKobo ?? 0)}* from today.`;
+  }
+  if (kind === "stock") {
+    const display = h.unit ? `${escapeMd(h.name)} (${escapeMd(h.unit)})` : escapeMd(h.name);
+    return `${EMOJI.restock} Low stock: *${display}*: ${h.stockOnHand} left.`;
+  }
+  if (kind === "transfer") {
+    const what = Number.isInteger(h.amountKobo) ? `Transfer *${formatKobo(h.amountKobo)}*` : "A transfer";
+    return `${EMOJI.payment} ${what} still unconfirmed.`;
+  }
+  return `${EMOJI.saved} Nothing needs attention.`;
+}
+
+// Daily summary: today's figures plus the one most important thing, all
+// computed by code in summary.mjs — the model never touches this text.
+// Same emoji set and 1024 cap as every other reply; names are escaped and
+// phone numbers never appear (nothing passed in ever holds one).
+export function renderDailySummary(data) {
+  const d = data ?? {};
+  const net = Number.isInteger(d.estimatedProfitKobo) ? d.estimatedProfitKobo : 0;
+  const result = d.result ?? (net > 0 ? "profit" : net < 0 ? "loss" : "break_even");
+  const amount = Number.isInteger(d.resultKobo) ? d.resultKobo : Math.abs(net);
+  const lines = [
+    `${EMOJI.payment} *Today, ${shortDay(d.date)}*`,
+    `Sales *${formatKobo(d.salesKobo ?? 0)}*`,
+    `Collected *${formatKobo(d.collectedKobo ?? 0)}*`,
+    `Expenses *${formatKobo(d.expensesKobo ?? 0)}*`,
+    result === "loss" ? `Loss: *${formatKobo(amount)}*` : `Profit: *${formatKobo(amount)}*`,
+    `Owed to you: *${formatKobo(d.owedKobo ?? 0)}*`,
+  ];
+  if (Number.isInteger(d.missingCost) && d.missingCost > 0) {
+    lines.push(`cost missing for ${d.missingCost} items, so this may be too high`);
+  }
+  lines.push("", summaryHighlightLine(d.highlight));
+  return fitBody(lines.join("\n"));
+}
+
 const EXPENSE_TITLES = { today: "Expenses today", week: "Expenses this week", month: "Expenses this month", year: "Expenses this year" };
 
 // Expenses for a period: the total, every category, then the five newest

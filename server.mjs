@@ -27,6 +27,8 @@ import {
   processWhatsAppPayload,
   trackWhatsAppJob,
   buildWhatsAppContext,
+  previewSummaryText,
+  runSummaryTick,
 } from "./whatsapp.mjs";
 
 const MAX_BODY_BYTES = 12 * 1024 * 1024;
@@ -239,6 +241,25 @@ export async function handleVoiceRequest(req, res, deps) {
       { proposals: deps.proposals, model: deps.model, ledger: deps.ledger, photoChecks: deps.photoChecks }
     );
     return send(res, 201, { proposal });
+  }
+
+  // Saved payment checks for the web "Check alert" screen: extracted fields
+  // only, oldest first. Same-shop only, like every other shop route.
+  if (req.method === "GET" && parts.length === 2 && parts[0] === "photo-checks" && parts[1] === "unconfirmed") {
+    const checks = deps.photoChecks.listUnconfirmedByShop(shopId).map((row) => deps.photoChecks.toPublicCheck(row));
+    return send(res, 200, { checks });
+  }
+
+  // Web equivalent of the WhatsApp "I saw it in my bank" tap: the same
+  // checks — refuse when the check isn't saved, refuse another shop's
+  // check, idempotent when already confirmed. Returns the updated check.
+  if (req.method === "POST" && parts.length === 3 && parts[0] === "photo-checks" && parts[2] === "bank-confirm") {
+    const id = Number(decodeURIComponent(parts[1]));
+    const check = Number.isInteger(id) ? deps.photoChecks.get(id) : null;
+    if (!check) return send(res, 404, { error: "check not found" });
+    if (check.shop_id !== shopId) return send(res, 403, { error: "that check belongs to another shop" });
+    const updated = deps.photoChecks.markSeen(check.id);
+    return send(res, 200, { check: { ...deps.photoChecks.toPublicCheck(updated), check_status: updated.check_status, seen_at: updated.seen_at ?? null } });
   }
 
   if (req.method === "POST" && parts.length === 2 && ["confirm", "fix", "reject"].includes(parts[0])) {
@@ -474,6 +495,12 @@ export async function handleVoiceRequest(req, res, deps) {
     return send(res, 200, expensesForPeriod(deps.ledger.list(shopId), period, {}));
   }
 
+  // Today's summary text for the logged-in shop. Authenticated like every
+  // other shop route; the webhook-only listener never serves it (404).
+  if (req.method === "GET" && parts.length === 2 && parts[0] === "summary" && parts[1] === "preview") {
+    return send(res, 200, { text: previewSummaryText(deps, shopId, Date.now()) });
+  }
+
   return send(res, 404, { error: "not found" });
 }
 
@@ -537,4 +564,10 @@ if (invokedAsMain) {
   createWebhookServer(deps).listen(webhookPort, () =>
     console.log(`webhook server on :${webhookPort} (tunnel this one)`)
   );
+  // Daily summary scheduler: once a minute, main process only. Per-shop
+  // errors are logged (masked) inside the tick; this catch is one static
+  // line so a failure can never leak secrets or numbers.
+  setInterval(() => {
+    runSummaryTick(deps, {}).catch(() => console.log("summary tick failed"));
+  }, 60_000);
 }

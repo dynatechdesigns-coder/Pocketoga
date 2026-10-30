@@ -401,7 +401,8 @@ describe("unconfirmed transfers in the report", () => {
       const warned = await proposePhotoCheck(SHOP, { photoBase64: FAKE_PHOTO, photoFormat: "jpeg" }, { ...depsFor(ctx, alertReading({ sender: "Chinedu", amountNaira: 9999, amountPhrase: "9,999", reference: "REF-13" })), ledger: ctx.ledger });
       const deps = { ...depsFor(ctx, alertReading()), ledger: ctx.ledger, photoChecks: ctx.photoChecks };
       const first = confirmProposal(clean.id, SHOP, deps);
-      confirmProposal(warned.id, SHOP, deps);
+      const second = confirmProposal(warned.id, SHOP, deps);
+      const warnedId = second.proposal.recorded_ids.paymentCheckId;
       ctx.photoChecks.markSeen(first.proposal.recorded_ids.paymentCheckId);
 
       const out = await dispatch(deps, { url: "/report", headers });
@@ -410,6 +411,7 @@ describe("unconfirmed transfers in the report", () => {
       assert.equal(out.json.report.unconfirmed.totalKobo, 999900);
       assert.deepEqual(out.json.report.unconfirmed.items, [
         {
+          id: warnedId,
           customer: "Chinedu",
           amountKobo: 999900,
           reference: "REF-13",
@@ -421,6 +423,100 @@ describe("unconfirmed transfers in the report", () => {
 
       const other = await dispatch(deps, { url: "/report", headers: { "x-shop-id": OTHER_SHOP } });
       assert.deepEqual(other.json.report.unconfirmed, { count: 0, totalKobo: 0, items: [] });
+    } finally {
+      teardown(ctx);
+    }
+  });
+});
+
+describe("bank-confirm route (fake data)", () => {
+  async function savedCheck(ctx, over = {}) {
+    const deps = { ...depsFor(ctx, alertReading({ reference: "REF-BANK" })), ledger: ctx.ledger };
+    const p = await proposePhotoCheck(SHOP, { photoBase64: FAKE_PHOTO, photoFormat: "jpeg" }, deps);
+    const out = confirmProposal(p.id, SHOP, deps);
+    return { deps, checkId: out.proposal.recorded_ids.paymentCheckId, ...over };
+  }
+
+  it("confirms once and is idempotent, returning the updated check", async () => {
+    const ctx = setup();
+    try {
+      const { deps, checkId } = await savedCheck(ctx);
+      const first = await dispatch(deps, { method: "POST", url: `/photo-checks/${checkId}/bank-confirm`, headers: { "x-shop-id": SHOP } });
+      assert.equal(first.status, 200);
+      assert.equal(first.json.check.id, checkId);
+      assert.equal(first.json.check.check_status, "confirmed");
+      assert.ok(typeof first.json.check.seen_at === "string" && first.json.check.seen_at.length > 0);
+      assert.equal(first.json.check.amount_kobo, 1200000);
+      const second = await dispatch(deps, { method: "POST", url: `/photo-checks/${checkId}/bank-confirm`, headers: { "x-shop-id": SHOP } });
+      assert.equal(second.status, 200);
+      assert.deepEqual(second.json.check, first.json.check);
+      assert.equal(ctx.photoChecks.listUnconfirmedByShop(SHOP).length, 0);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("refuses another shop's check", async () => {
+    const ctx = setup();
+    try {
+      const { deps, checkId } = await savedCheck(ctx);
+      const out = await dispatch(deps, { method: "POST", url: `/photo-checks/${checkId}/bank-confirm`, headers: { "x-shop-id": OTHER_SHOP } });
+      assert.equal(out.status, 403);
+      assert.equal(ctx.photoChecks.get(checkId).check_status, "unconfirmed");
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("refuses a check that was never saved", async () => {
+    const ctx = setup();
+    try {
+      seedSale(ctx);
+      const deps = { ...depsFor(ctx, alertReading()), ledger: ctx.ledger };
+      await proposePhotoCheck(SHOP, { photoBase64: FAKE_PHOTO, photoFormat: "jpeg" }, deps);
+      const out = await dispatch(deps, { method: "POST", url: "/photo-checks/99999/bank-confirm", headers: { "x-shop-id": SHOP } });
+      assert.equal(out.status, 404);
+      const badId = await dispatch(deps, { method: "POST", url: "/photo-checks/nope/bank-confirm", headers: { "x-shop-id": SHOP } });
+      assert.equal(badId.status, 404);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("is not served on the webhook-only port", async () => {
+    const ctx = setup();
+    try {
+      const deps = { ...depsFor(ctx, alertReading()), ledger: ctx.ledger };
+      const confirmed = await dispatchOnly(deps, { method: "POST", url: "/photo-checks/1/bank-confirm" });
+      assert.equal(confirmed.status, 404);
+      const listed = await dispatchOnly(deps, { method: "GET", url: "/photo-checks/unconfirmed" });
+      assert.equal(listed.status, 404);
+    } finally {
+      teardown(ctx);
+    }
+  });
+});
+
+describe("unconfirmed list route (fake data)", () => {
+  it("lists oldest first with the public shape only", async () => {
+    const ctx = setup();
+    try {
+      const older = ctx.photoChecks.create({ shopId: SHOP, photoType: "payment_alert", customer: "Ada", sender: "Ada", amountKobo: 1200000, reference: "R-OLD", alertDate: lagosDay(Date.now()), warnings: [], createdAt: "2026-10-27T10:00:00.000Z" });
+      const newer = ctx.photoChecks.create({ shopId: SHOP, photoType: "payment_alert", customer: "Bola", sender: "Bola", amountKobo: 500000, reference: "R-NEW", alertDate: lagosDay(Date.now()), warnings: ["Amount ₦5,000 matches no unpaid sale."], createdAt: "2026-10-28T10:00:00.000Z" });
+      ctx.photoChecks.create({ shopId: SHOP, photoType: "payment_alert", customer: "Ada", sender: "Ada", amountKobo: 999900, createdAt: "2026-10-26T10:00:00.000Z" });
+      ctx.photoChecks.markSeen(newer.id + 1);
+      const deps = { ...depsFor(ctx, alertReading()), ledger: ctx.ledger };
+      const out = await dispatch(deps, { method: "GET", url: "/photo-checks/unconfirmed", headers: { "x-shop-id": SHOP } });
+      assert.equal(out.status, 200);
+      assert.deepEqual(out.json.checks, [
+        { id: older.id, amount_kobo: 1200000, sender: "Ada", alert_date: lagosDay(Date.now()), created_at: "2026-10-27T10:00:00.000Z", warnings: [] },
+        { id: newer.id, amount_kobo: 500000, sender: "Bola", alert_date: lagosDay(Date.now()), created_at: "2026-10-28T10:00:00.000Z", warnings: ["Amount ₦5,000 matches no unpaid sale."] },
+      ]);
+      for (const item of out.json.checks) {
+        assert.ok(!("photo" in item) && !("phone" in item) && !("shop_id" in item));
+      }
+      const other = await dispatch(deps, { method: "GET", url: "/photo-checks/unconfirmed", headers: { "x-shop-id": OTHER_SHOP } });
+      assert.deepEqual(other.json.checks, []);
     } finally {
       teardown(ctx);
     }

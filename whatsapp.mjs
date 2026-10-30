@@ -17,7 +17,9 @@ import { customerDebts, chaseForShop, lagosDay } from "./debts.mjs";
 import { PromiseStore, refreshPromises, keptRate } from "./promises.mjs";
 import { moneyLeakReport } from "./leak.mjs";
 import { withStock } from "./products.mjs";
-import { profitForPeriod, expensesForPeriod } from "./profit.mjs";
+import { formatKobo } from "./money.mjs";
+import { profitForPeriod, expensesForPeriod, lagosHour } from "./profit.mjs";
+import { SummaryStore, collectDailySummary } from "./summary.mjs";
 import {
   NOT_REGISTERED,
   FFMPEG_MISSING,
@@ -59,6 +61,8 @@ import {
   renderProfit,
   renderExpenses,
   renderPhotoSaved,
+  renderDailySummary,
+  SUMMARY_EMPTY_DAY,
   waButton,
 } from "./messages.mjs";
 
@@ -203,6 +207,13 @@ export function getPhotoCheckStore(deps) {
   return deps._photoCheckStore;
 }
 
+export function getSummaryStore(deps) {
+  if (deps.summary) return deps.summary;
+  if (!deps.ledger) return null;
+  deps._summaryStore ??= new SummaryStore(deps.ledger.db);
+  return deps._summaryStore;
+}
+
 export function getAuthStore(deps) {
   if (deps.auths) return deps.auths;
   if (!deps.ledger) return null;
@@ -221,6 +232,7 @@ export function buildWhatsAppContext(deps, env = deps.env ?? process.env) {
     products: deps.products ?? null,
     secondOpinions: deps.secondOpinions ?? null,
     photoChecks: getPhotoCheckStore(deps),
+    summary: getSummaryStore(deps),
     auths: getAuthStore(deps),
     model: deps.model,
     nowMs: deps.nowMs ?? Date.now(),
@@ -256,6 +268,15 @@ export function parseCommand(text) {
   if (lower === "expenses") return { name: "expenses", period: "today" };
   if (lower === "fix last") return { name: "fixlast" };
   if (lower === "dashboard") return { name: "dashboard" };
+  if (lower === "summary on") return { name: "summary", arg: "on" };
+  if (lower === "summary off") return { name: "summary", arg: "off" };
+  if (lower === "summary now") return { name: "summary", arg: "now" };
+  const sm = /^summary\s+(\d{1,2})\s*([ap]m)?$/.exec(lower);
+  if (sm) {
+    const n = Number(sm[1]);
+    if ((sm[2] === undefined || sm[2] === "pm") && n >= 5 && n <= 11) return { name: "summary", arg: `hour:${n + 12}` };
+    return { name: "summary", arg: "bad" };
+  }
   const m = /^balance\s+(.+)$/i.exec(clean);
   if (m && m[1].trim()) return { name: "balance", arg: m[1].trim() };
   const fl = /^fix last\s+(.+)$/i.exec(clean);
@@ -341,7 +362,133 @@ function dueTodayBlock(ctx, shopId) {
   return `\n\n${dueTodayLines(due).join("\n")}`;
 }
 
+// --- Daily summary scheduler -------------------------------------------------
+// Free-form text only works within 24 hours of the trader's last message;
+// anything older must go through the approved template instead.
+const SUMMARY_DAY_MS = 24 * 3600 * 1000;
+
+async function sendTemplateSummary(ctx, to, template, data) {
+  return graphSend(ctx, {
+    to,
+    type: "template",
+    template: {
+      name: template,
+      language: { code: "en" },
+      components: [
+        {
+          type: "body",
+          parameters: [
+            { type: "text", text: data.date },
+            { type: "text", text: formatKobo(data.salesKobo) },
+            { type: "text", text: formatKobo(data.collectedKobo) },
+            { type: "text", text: formatKobo(data.expensesKobo) },
+          ],
+        },
+      ],
+    },
+  });
+}
+
+async function sendScheduledSummary(ctx, store, row, template, now, day) {
+  const data = todaySummaryData(ctx, row.shop_id, now);
+  store.markSent(row.shop_id, row.wa_number, day);
+  if (!data) return; // quiet day still counts as handled for today
+  const lastIn = Number.isInteger(row.last_inbound_at) ? row.last_inbound_at : 0;
+  if (now - lastIn <= SUMMARY_DAY_MS) {
+    await sendText(ctx, row.wa_number, renderDailySummary(data));
+    return;
+  }
+  if (template) {
+    await sendTemplateSummary(ctx, row.wa_number, template, data);
+    return;
+  }
+  ctx.log("summary waiting for template");
+  store.setPending(row.shop_id, row.wa_number, renderDailySummary(data), day);
+}
+
+// Once-a-minute scheduler tick (main server process only): every opted-in
+// shop whose Lagos hour has come and which hasn't been served today gets one
+// summary. last_sent_date makes a restart unable to double-send. The clock
+// is injectable for tests.
+export async function runSummaryTick(deps, { now = Date.now() } = {}) {
+  const ctx = buildWhatsAppContext(deps);
+  const store = ctx.summary;
+  if (!ctx.ledger || !store) return;
+  const template = (deps.env ?? process.env).WHATSAPP_SUMMARY_TEMPLATE ?? null;
+  const day = lagosDay(now);
+  const hour = Number(lagosHour(now));
+  for (const row of store.listEnabled()) {
+    if (row.last_sent_date === day) continue;
+    if (hour < row.hour) continue;
+    try {
+      await sendScheduledSummary(ctx, store, row, template || null, now, day);
+    } catch (err) {
+      ctx.log(`summary tick failed: ${err?.message ?? err}`);
+    }
+  }
+}
+
+function hourLabel(hour) {
+  return `${hour - 12} PM`;
+}
+
+function todaySummaryData(ctx, shopId, now) {
+  const rows = ctx.ledger ? ctx.ledger.list(shopId) : [];
+  if (ctx.promises && ctx.ledger) refreshPromises(ctx.promises, ctx.ledger, shopId, { now });
+  return collectDailySummary({
+    shopId,
+    rows,
+    openPromises: ctx.promises ? ctx.promises.listOpenByShop(shopId) : [],
+    catalog: ctx.products ? ctx.products.listByShop(shopId) : [],
+    paymentChecks: ctx.photoChecks ? ctx.photoChecks.listUnconfirmedByShop(shopId) : [],
+    now,
+  });
+}
+
+// Today's summary text for the logged-in shop (GET /summary/preview).
+// Null on a quiet day.
+export function previewSummaryText(deps, shopId, now = Date.now()) {
+  return buildTodaySummary(buildWhatsAppContext(deps), shopId, now);
+}
+
+function buildTodaySummary(ctx, shopId, now) {
+  const data = todaySummaryData(ctx, shopId, now);
+  return data ? renderDailySummary(data) : null;
+}
+
+async function handleSummaryCommand(ctx, sender, shopId, cmd) {
+  const store = ctx.summary;
+  if (!store) {
+    await sendText(ctx, sender, GENERIC_ERROR);
+    return;
+  }
+  if (cmd.arg === "now") {
+    await sendText(ctx, sender, buildTodaySummary(ctx, shopId, ctx.nowMs) ?? SUMMARY_EMPTY_DAY);
+    return;
+  }
+  if (cmd.arg === "on") {
+    const row = store.setEnabled(shopId, sender, true, null, ctx.nowMs);
+    await sendText(ctx, sender, `Daily summary on — I'll send it around ${hourLabel(row.hour)}. Send "summary 7pm" to change the time.`);
+    return;
+  }
+  if (cmd.arg === "off") {
+    store.setEnabled(shopId, sender, false, null, ctx.nowMs);
+    await sendText(ctx, sender, `Daily summary off. Send "summary on" anytime to restart it.`);
+    return;
+  }
+  if (cmd.arg && cmd.arg.startsWith("hour:")) {
+    const row = store.setEnabled(shopId, sender, true, Number(cmd.arg.slice(5)), ctx.nowMs);
+    await sendText(ctx, sender, `Daily summary on — I'll send it around ${hourLabel(row.hour)}.`);
+    return;
+  }
+  await sendText(ctx, sender, `Send "summary on", "summary off" or "summary 7pm" (5 to 11 PM).`);
+}
+
 async function handleDebtCommand(ctx, sender, shopId, cmd) {
+  if (cmd.name === "summary") {
+    await handleSummaryCommand(ctx, sender, shopId, cmd);
+    return;
+  }
   const rows = ctx.ledger.list(shopId);
   if (cmd.name === "whoowes") {
     await sendText(ctx, sender, renderWhoOwes(customerDebts(rows, { now: ctx.nowMs })));
@@ -691,6 +838,18 @@ async function handleIncomingMessage(message, ctx) {
     return;
   }
   const shopId = ctx.store.getOrCreateShop(sender);
+  if (ctx.summary) {
+    ctx.summary.touchInbound(shopId, sender, ctx.nowMs);
+    const pending = ctx.summary.takePending(shopId, sender);
+    if (pending) {
+      try {
+        await sendText(ctx, sender, `Your summary from last evening:\n${pending.text}`);
+      } catch (err) {
+        ctx.log(`pending summary failed: ${err?.message ?? err}`);
+        ctx.summary.setPending(shopId, sender, pending.text, pending.date);
+      }
+    }
+  }
   // Reply-button taps arrive as type "interactive" with the tapped id in
   // interactive.button_reply.id. Other interactive types (e.g. list replies,
   // which our cards never send) fall through to the text/audio handling.
