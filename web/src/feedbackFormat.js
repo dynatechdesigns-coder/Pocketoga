@@ -3,24 +3,24 @@
 //
 //   POST /feedback   (JSON; same login and x-shop-id headers as the other shop
 //                     routes, which the api layer already adds; no x-request-id)
-//   body    { type: "suggestion" | "problem" | "review",   required
-//             rating?: 1..5 (integer),
+//   body    { rating?: 1..5 (integer),
 //             text: string (trimmed, 1 to 1000 characters)   EITHER text
 //             audioBase64 + audioFormat: "wav" }             OR audio, never both
+//   No "type" is sent: the server works out whether it is a suggestion, a
+//   problem or a review.
 //   audio uses the voice note route's own fields (audioBase64, audioFormat), at
 //   most 45 seconds.
 //   201 { ok: true }                          typed message
 //   201 { ok: true, text: "<what was heard>" } audio: the transcript comes back
-//   400 { error }  validation (bad type or rating, empty or too long text, both)
+//   400 { error }  validation (bad rating, empty or too long text)
 //   429 { error }  too many (5 per hour per person)
 export const FEEDBACK_ROUTE = "/feedback";
-export const FEEDBACK_TYPES = ["suggestion", "problem", "review"];
 export const FEEDBACK_TEXT_MAX = 1000;
 export const FEEDBACK_AUDIO_MAX_SECONDS = 45;
 
-// input: { type, rating?, text? , audioBase64? } -> { path, body }
+// input: { rating?, text? , audioBase64? } -> { path, body }
 export function buildFeedbackRequest(input) {
-  const body = { type: input.type };
+  const body = {};
   if (Number.isInteger(input.rating)) body.rating = input.rating;
   if (input.audioBase64) {
     body.audioBase64 = input.audioBase64;

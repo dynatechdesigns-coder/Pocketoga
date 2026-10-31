@@ -10,18 +10,21 @@ const THEMES = [
   { key: "dark", label: "Dark" },
 ];
 
-// Top to bottom: Theme, Your shop (demo or real), Install PocketOga (where it
-// is possible), Feedback, then the leave button (Sign out for a real shop). `intent` "feedback"
-// scrolls to the Feedback section (the quiet link at the bottom of Home).
-// `onLogin` opens the login screen from the sample shop.
+// Top to bottom: Theme, Your shop (with the leave button inside it: Sign out for
+// a real shop), Install PocketOga (where it is possible), then Send feedback,
+// folded until tapped. Nothing important sits below Feedback. `intent`
+// "feedback" opens the Feedback card and scrolls to it (the quiet link at the
+// bottom of Home). `onLogin` opens the login screen from the sample shop.
 export default function SettingsScreen({ shop, intent, onExit, onLogin }) {
   const dark = useDark();
   const info = shopInfo(shop);
   const [installSteps, setInstallSteps] = useState(false); // iPhone and iPad: how to add it to the home screen
+  const [feedbackOpen, setFeedbackOpen] = useState(intent === "feedback");
   const feedbackRef = useRef(null);
 
   useEffect(() => {
     if (intent !== "feedback") return;
+    setFeedbackOpen(true);
     const section = feedbackRef.current;
     if (!section) return;
     section.scrollIntoView({ block: "start" });
@@ -36,15 +39,19 @@ export default function SettingsScreen({ shop, intent, onExit, onLogin }) {
         <SectionTitle as="h2" className="mt-0">
           Theme
         </SectionTitle>
-        <p className="text-sm text-muted">Light is easiest to read outdoors. Your choice is kept on this phone.</p>
         <PeriodTabs periods={THEMES} value={dark ? "dark" : "light"} onChange={setTheme} label="Theme" />
       </Card>
 
       <section data-part="settings-shop" data-kind={info.kind} aria-labelledby="your-shop-title" className="grid gap-4">
         <Card as="article" className="grid gap-3">
-          <SectionTitle as="h2" id="your-shop-title" className="mt-0">
-            Your shop
-          </SectionTitle>
+          <div className="flex items-center justify-between gap-3">
+            <SectionTitle as="h2" id="your-shop-title" className="mt-0">
+              Your shop
+            </SectionTitle>
+            <Button data-part="leave" variant={info.leave.variant} size="sm" className="w-auto shrink-0 whitespace-nowrap" onClick={onExit}>
+              <LogOut aria-hidden="true" /> {info.leave.label}
+            </Button>
+          </div>
           <div className="flex items-center gap-4">
             <Avatar name={info.name} size="lg" />
             <div className="grid min-w-0 gap-1">
@@ -79,11 +86,7 @@ export default function SettingsScreen({ shop, intent, onExit, onLogin }) {
       </ul>
       <InstallSteps open={installSteps} onClose={() => setInstallSteps(false)} />
 
-      <FeedbackSection sectionRef={feedbackRef} />
-
-      <Button data-part="leave" variant={info.leave.variant} className="mt-2" onClick={onExit}>
-        <LogOut aria-hidden="true" /> {info.leave.label}
-      </Button>
+      <FeedbackSection sectionRef={feedbackRef} open={feedbackOpen} onToggle={() => setFeedbackOpen((o) => !o)} />
     </section>
   );
 }

@@ -1,15 +1,14 @@
 import { Component, useEffect, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { Check, CloudOff, Lightbulb, Mic, Send, Square, Star, Trash2, TriangleAlert, X } from "lucide-react";
+import { Check, ChevronDown, CloudOff, Mic, Send, Square, Star, Trash2, X } from "lucide-react";
 import { sendFeedback } from "./api.js";
 import { CANCELLED_MESSAGE, CANCELLED_MS, createRunTracker } from "./cancelRun.js";
 import { connection, isOffline } from "./connection.js";
-import { FEEDBACK_AUDIO_MAX_SECONDS, FEEDBACK_TEXT_MAX, PRIVACY_NOTE, THANKS, TYPE_OPTIONS, counterText, emptyFeedback, feedbackReducer, runSubmit, validateFeedback } from "./feedback.js";
+import { COLLAPSE_AFTER_MS, FEEDBACK_AUDIO_MAX_SECONDS, FEEDBACK_TEXT_MAX, MIC_BLOCKED_MESSAGE, MIC_EMPTY_MESSAGE, PRIVACY_NOTE, THANKS, counterText, emptyFeedback, feedbackReducer, messageState, runSubmit, validateFeedback } from "./feedback.js";
 import { createRecordTimer } from "./recordLimits.js";
-import { MESSAGES, isEmptyRecording } from "./recordWait.js";
+import { isEmptyRecording } from "./recordWait.js";
 import { recordingToWavBase64 } from "./wav.js";
 import { Button, cx, inputClass } from "./ui.jsx";
 
-const TYPE_ICON = { suggestion: Lightbulb, problem: TriangleAlert, review: Star };
 const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
 // Feedback must never take the rest of Settings down: if this section breaks,
@@ -29,21 +28,39 @@ class FeedbackBoundary extends Component {
   }
 }
 
-// The Feedback section of Settings: its own card, title and form.
-export default function FeedbackSection({ sectionRef }) {
+// The Feedback card of Settings: folded by default as "Send feedback", opens in
+// place. The form stays mounted while folded, so a half-written message is not
+// lost. `open` / `onToggle` belong to Settings (the Home link opens it).
+export default function FeedbackSection({ sectionRef, open, onToggle }) {
   return (
-    <article id="feedback" ref={sectionRef} data-part="feedback-section" aria-labelledby="feedback-title" className="grid scroll-mt-4 gap-4 rounded-card border border-line bg-card p-5 shadow-soft">
-      <h2 id="feedback-title" tabIndex={-1} className="text-[1.0625rem] font-extrabold outline-none">
-        Feedback
+    <article id="feedback" ref={sectionRef} data-part="feedback-section" data-open={open} aria-labelledby="feedback-title" className="scroll-mt-4 rounded-card border border-line bg-card shadow-soft">
+      <h2 className="text-[1.0625rem] font-extrabold">
+        <button
+          type="button"
+          id="feedback-title"
+          data-part="feedback-toggle"
+          aria-expanded={open}
+          aria-controls="feedback-panel"
+          onClick={onToggle}
+          className="flex min-h-16 w-full items-center gap-3 rounded-card px-5 py-3 text-left"
+        >
+          <span className="grid min-w-0 flex-1">
+            <span>Send feedback</span>
+            <span className="text-sm font-normal text-muted">Tell us what to fix or add</span>
+          </span>
+          <ChevronDown aria-hidden="true" className={cx("size-5 shrink-0 text-grey transition-transform duration-150", open && "rotate-180")} />
+        </button>
       </h2>
-      <FeedbackBoundary>
-        <FeedbackForm />
-      </FeedbackBoundary>
+      <div id="feedback-panel" data-part="feedback-panel" hidden={!open} className="px-5 pb-5">
+        <FeedbackBoundary>
+          <FeedbackForm onDone={onToggle} open={open} />
+        </FeedbackBoundary>
+      </div>
     </article>
   );
 }
 
-function FeedbackForm() {
+function FeedbackForm({ onDone, open }) {
   const [form, dispatch] = useReducer(feedbackReducer, undefined, emptyFeedback);
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
@@ -67,6 +84,18 @@ function FeedbackForm() {
     []
   );
 
+  // The Thank you stays a few seconds, then the form resets and the card folds up.
+  const foldRef = useRef(null);
+  foldRef.current = () => open && onDone?.();
+  useEffect(() => {
+    if (form.status !== "sent") return undefined;
+    const t = setTimeout(() => {
+      dispatch({ type: "reset" });
+      foldRef.current();
+    }, COLLAPSE_AFTER_MS);
+    return () => clearTimeout(t);
+  }, [form.status]);
+
   function flashCancelled() {
     setCancelled(true);
     clearTimeout(cancelTimer.current);
@@ -80,7 +109,7 @@ function FeedbackForm() {
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
-      setMicNote(MESSAGES.mic);
+      setMicNote(MIC_BLOCKED_MESSAGE);
       return;
     }
     const chunks = [];
@@ -103,7 +132,7 @@ function FeedbackForm() {
       const blob = new Blob(chunks, { type: rec.mimeType });
       const length = Math.min(FEEDBACK_AUDIO_MAX_SECONDS, Math.round((Date.now() - started) / 1000));
       if (Date.now() - started < 1000 || isEmptyRecording(blob)) {
-        setMicNote(MESSAGES.empty);
+        setMicNote(MIC_EMPTY_MESSAGE);
         return;
       }
       dispatch({ type: "audio", blob, seconds: length });
@@ -134,7 +163,7 @@ function FeedbackForm() {
 
   async function submit(e) {
     e.preventDefault();
-    if (sending || recording) return;
+    if (sending || recording || !messageState(form).canSend) return;
     const checked = validateFeedback(form);
     if (!checked.ok) return dispatch({ type: "error", message: checked.error });
     dispatch({ type: "sending" });
@@ -167,155 +196,125 @@ function FeedbackForm() {
             <blockquote className="whitespace-pre-line [overflow-wrap:anywhere]">“{form.heard}”</blockquote>
           </figure>
         )}
-        <Button variant="quiet" onClick={() => dispatch({ type: "reset" })}>
-          Send more feedback
-        </Button>
       </div>
     );
   }
 
   const offline = isOffline(conn);
   const hasAudio = !!form.audio;
+  const { canSend, line } = messageState(form);
 
   return (
-    <>
-      <form data-part="feedback-form" onSubmit={submit} className="grid gap-5" aria-busy={sending}>
-        {offline && (
-          <p data-part="feedback-offline" role="status" className="flex items-start gap-2 rounded-2xl border border-line bg-slate px-4 py-3 font-bold [&_svg]:mt-0.5 [&_svg]:size-5 [&_svg]:shrink-0">
-            <CloudOff aria-hidden="true" /> You are offline. You can write it now and send it when you are back online.
-          </p>
-        )}
+    <form data-part="feedback-form" onSubmit={submit} className="grid gap-4" aria-busy={sending}>
+      {offline && (
+        <p data-part="feedback-offline" role="status" className="flex items-start gap-2 rounded-2xl border border-line bg-slate px-4 py-3 font-bold [&_svg]:mt-0.5 [&_svg]:size-5 [&_svg]:shrink-0">
+          <CloudOff aria-hidden="true" /> You are offline. You can write it now and send it when you are back online.
+        </p>
+      )}
 
-        <fieldset className="grid gap-2">
-          <legend className="mb-1 font-bold">What kind of feedback?</legend>
-          {TYPE_OPTIONS.map((t) => {
-            const Icon = TYPE_ICON[t.key];
-            return (
-              <button
-                key={t.key}
-                type="button"
-                data-part="feedback-type"
-                data-type={t.key}
-                aria-pressed={form.type === t.key}
-                disabled={sending}
-                onClick={() => dispatch({ type: "type", value: t.key })}
-                className="flex min-h-16 w-full items-center gap-3 rounded-card border-[1.5px] border-line bg-card px-4 py-2.5 text-left shadow-soft transition-colors aria-pressed:border-accent aria-pressed:bg-lavender [&_svg]:size-6 [&_svg]:shrink-0 [&_svg]:text-link"
-              >
-                <Icon aria-hidden="true" />
-                <span className="grid min-w-0">
-                  <span className="font-bold">{t.label}</span>
-                  <span className="text-sm text-muted">{t.hint}</span>
-                </span>
-                {form.type === t.key && <Check aria-hidden="true" strokeWidth={3} className="ml-auto" />}
-              </button>
-            );
-          })}
-        </fieldset>
-
-        <div className="grid gap-2">
-          <label htmlFor="feedback-text" className="font-bold">
-            Your message
-          </label>
-          {hasAudio ? (
-            <div data-part="feedback-audio" className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border-[1.5px] border-line bg-slate px-4 py-3">
-              <span className="font-bold">Voice message ready · {mmss(form.audio.seconds)}</span>
-              <button type="button" data-part="remove-audio" disabled={sending} onClick={() => dispatch({ type: "removeAudio" })} className="inline-flex min-h-12 items-center gap-1.5 rounded-full px-3 text-sm font-bold text-link underline">
-                <Trash2 aria-hidden="true" className="size-4" /> Remove, type instead
-              </button>
-            </div>
-          ) : (
-            <>
-              <textarea
-                id="feedback-text"
-                rows={5}
-                maxLength={FEEDBACK_TEXT_MAX}
-                value={form.text}
-                disabled={sending || recording}
-                onChange={(e) => dispatch({ type: "text", value: e.target.value })}
-                aria-describedby="feedback-count feedback-privacy"
-                placeholder="Tell us what you think"
-                className={inputClass}
-              />
-              <p id="feedback-count" data-part="feedback-count" className={cx("text-right text-sm tabular-nums", form.text.length >= FEEDBACK_TEXT_MAX ? "font-bold text-coral-ink" : "text-muted")}>
-                {counterText(form.text)}
-              </p>
-            </>
-          )}
-
-          {canRecord && !hasAudio && (
-            <div className="grid gap-2">
-              {recording ? (
-                <div className="flex gap-2">
-                  <Button type="button" data-part="feedback-stop" variant="secondary" className="flex-1" onClick={stopRecording} aria-label="Stop recording">
-                    <Square aria-hidden="true" fill="currentColor" /> <span className="tabular-nums">Recording {mmss(seconds)}</span>
-                  </Button>
-                  <Button type="button" data-part="feedback-cancel-recording" variant="quiet" className="w-auto shrink-0 px-4" onClick={cancelRecording} aria-label="Cancel recording and throw the audio away">
-                    <X aria-hidden="true" />
-                  </Button>
-                </div>
-              ) : (
-                <Button type="button" data-part="feedback-mic" variant="quiet" disabled={sending} onClick={startRecording}>
-                  <Mic aria-hidden="true" /> Record instead (up to {FEEDBACK_AUDIO_MAX_SECONDS} seconds)
-                </Button>
-              )}
-            </div>
-          )}
-          {micNote && (
-            <p role="status" className="text-sm font-semibold text-muted">
-              {micNote}
-            </p>
-          )}
-          {cancelled && (
-            <p data-part="cancelled" role="status" className="rounded-2xl bg-slate px-4 py-2 text-center font-bold">
-              {CANCELLED_MESSAGE}
-            </p>
-          )}
-        </div>
-
-        <div role="group" aria-labelledby="feedback-rating-label" className="grid gap-1.5">
-          <p id="feedback-rating-label" className="font-bold">
-            Rating <span className="font-normal text-muted">(optional)</span>
-          </p>
-          <div className="flex gap-1">
-            {[1, 2, 3, 4, 5].map((n) => (
-              <button
-                key={n}
-                type="button"
-                data-part="feedback-star"
-                aria-pressed={form.rating === n}
-                aria-label={`${n} ${n === 1 ? "star" : "stars"}`}
-                disabled={sending}
-                onClick={() => dispatch({ type: "rating", value: n })}
-                className="grid size-12 shrink-0 place-items-center rounded-full text-grey transition-transform active:scale-96 data-[on=true]:text-amber-ink [&_svg]:size-8"
-                data-on={form.rating !== null && n <= form.rating}
-              >
-                <Star aria-hidden="true" fill={form.rating !== null && n <= form.rating ? "currentColor" : "none"} strokeWidth={1.8} />
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <p id="feedback-privacy" data-part="feedback-privacy" className="rounded-2xl border border-line bg-lavender px-4 py-3 text-sm font-semibold">
-          {PRIVACY_NOTE}
+      <div className="grid gap-2">
+        <label htmlFor="feedback-text" className="sr-only">
+          Your message
+        </label>
+        <textarea
+          id="feedback-text"
+          rows={3}
+          maxLength={FEEDBACK_TEXT_MAX}
+          value={form.text}
+          disabled={sending || recording}
+          onChange={(e) => dispatch({ type: "text", value: e.target.value })}
+          aria-describedby="feedback-count feedback-privacy"
+          placeholder="Tell us what to fix or add"
+          className={inputClass}
+        />
+        <p id="feedback-count" data-part="feedback-count" className={cx("text-right text-sm tabular-nums", form.text.length >= FEEDBACK_TEXT_MAX ? "font-bold text-coral-ink" : "text-muted")}>
+          {counterText(form.text)}
         </p>
 
-        {form.error && (
-          <p data-part="feedback-error" role="alert" className="rounded-2xl bg-slate px-4 py-3 font-bold [overflow-wrap:anywhere]">
-            {form.error}
-          </p>
+        {hasAudio && (
+          <div data-part="feedback-audio" className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border-[1.5px] border-line bg-slate px-4 py-2">
+            <span className="font-bold">Voice message ready · {mmss(form.audio.seconds)}</span>
+            <button type="button" data-part="remove-audio" disabled={sending} onClick={() => dispatch({ type: "removeAudio" })} className="inline-flex min-h-12 items-center gap-1.5 rounded-full px-3 text-sm font-bold text-link underline">
+              <Trash2 aria-hidden="true" className="size-4" /> Remove
+            </button>
+          </div>
         )}
 
-        <div className="grid gap-2">
-          <Button data-part="feedback-send" size="lg" disabled={sending || recording}>
-            <Send aria-hidden="true" /> {sending ? "Sending…" : "Send"}
-          </Button>
-          {sending && (
-            <Button type="button" data-part="feedback-cancel" variant="quiet" onClick={cancelSending}>
-              <X aria-hidden="true" /> Cancel
+        {canRecord &&
+          (recording ? (
+            <div className="flex gap-2">
+              <Button type="button" data-part="feedback-stop" variant="secondary" className="flex-1" onClick={stopRecording} aria-label="Stop recording">
+                <Square aria-hidden="true" fill="currentColor" /> <span className="tabular-nums">Recording {mmss(seconds)}</span>
+              </Button>
+              <Button type="button" data-part="feedback-cancel-recording" variant="quiet" className="w-auto shrink-0 px-4" onClick={cancelRecording} aria-label="Cancel recording and throw the audio away">
+                <X aria-hidden="true" />
+              </Button>
+            </div>
+          ) : (
+            <Button type="button" data-part="feedback-mic" variant="quiet" disabled={sending} onClick={startRecording}>
+              <Mic aria-hidden="true" /> {hasAudio ? "Record again" : "Record a voice message"} (up to {FEEDBACK_AUDIO_MAX_SECONDS} seconds)
             </Button>
-          )}
+          ))}
+        {micNote && (
+          <p role="status" className="text-sm font-semibold text-muted">
+            {micNote}
+          </p>
+        )}
+        {cancelled && (
+          <p data-part="cancelled" role="status" className="rounded-2xl bg-slate px-4 py-2 text-center font-bold">
+            {CANCELLED_MESSAGE}
+          </p>
+        )}
+      </div>
+
+      <div role="group" aria-labelledby="feedback-rating-label" className="grid gap-1">
+        <p id="feedback-rating-label" className="font-bold">
+          Rating <span className="font-normal text-muted">(optional)</span>
+        </p>
+        <div className="flex gap-1">
+          {[1, 2, 3, 4, 5].map((n) => (
+            <button
+              key={n}
+              type="button"
+              data-part="feedback-star"
+              aria-pressed={form.rating === n}
+              aria-label={`${n} ${n === 1 ? "star" : "stars"}`}
+              disabled={sending}
+              onClick={() => dispatch({ type: "rating", value: n })}
+              className="grid size-11 shrink-0 place-items-center rounded-full text-grey transition-transform active:scale-96 data-[on=true]:text-amber-ink [&_svg]:size-7"
+              data-on={form.rating !== null && n <= form.rating}
+            >
+              <Star aria-hidden="true" fill={form.rating !== null && n <= form.rating ? "currentColor" : "none"} strokeWidth={1.8} />
+            </button>
+          ))}
         </div>
-      </form>
-    </>
+      </div>
+
+      <p id="feedback-privacy" data-part="feedback-privacy" className="rounded-2xl border border-line bg-lavender px-4 py-3 text-sm font-semibold">
+        {PRIVACY_NOTE}
+      </p>
+
+      {form.error && (
+        <p data-part="feedback-error" role="alert" className="rounded-2xl bg-slate px-4 py-3 font-bold [overflow-wrap:anywhere]">
+          {form.error}
+        </p>
+      )}
+
+      <div className="grid gap-2">
+        {line && !recording && (
+          <p data-part="feedback-line" role="status" className="text-sm font-semibold text-muted">
+            {line}
+          </p>
+        )}
+        <Button data-part="feedback-send" size="lg" disabled={!canSend || sending || recording}>
+          <Send aria-hidden="true" /> {sending ? "Sending…" : "Send"}
+        </Button>
+        {sending && (
+          <Button type="button" data-part="feedback-cancel" variant="quiet" onClick={cancelSending}>
+            <X aria-hidden="true" /> Cancel
+          </Button>
+        )}
+      </div>
+    </form>
   );
 }

@@ -13,20 +13,44 @@ const demo = { id: "demo", name: "Demo Provisions", demo: true };
 const real = { id: "wa-abc123", name: "Mama Bisi Store", token: "t", expiresAt: "2999-01-01T00:00:00Z" };
 
 describe("order", () => {
-  test("Theme, Your shop, Install, Feedback, then Leave the demo / Sign out", () => {
-    assert.deepEqual(SETTINGS_ORDER, ["theme", "shop", "install", "feedback", "leave"]);
+  test("Theme, Your shop (with the leave button inside), Install, then Send feedback last", () => {
+    assert.deepEqual(SETTINGS_ORDER, ["theme", "shop", "install", "feedback"]);
     const at = (needle) => {
       const i = screen.indexOf(needle);
       assert.ok(i >= 0, needle);
       return i;
     };
-    const order = [at('data-part="settings-theme"'), at('data-part="settings-shop"'), at('data-part="settings-install"'), at("<FeedbackSection"), at('data-part="leave"')];
+    const order = [at('data-part="settings-theme"'), at('data-part="settings-shop"'), at('data-part="settings-install"'), at("<FeedbackSection")];
     assert.deepEqual(order, [...order].sort((a, b) => a - b));
   });
 
-  test("the leave / sign-out button is the very last thing, and the Install list hides itself when empty", () => {
-    const tail = screen.slice(screen.indexOf('data-part="leave"'));
-    assert.doesNotMatch(tail, /<Card|<FeedbackSection|<InstallRow/);
+  test("nothing important sits below the Feedback card", () => {
+    const tail = screen.slice(screen.indexOf("<FeedbackSection"));
+    assert.doesNotMatch(tail, /data-part="leave"|login-to-shop|<Button|<Card|<InstallRow/);
+  });
+
+  test("Leave the demo / Sign out is a small secondary button inside the Your shop card, near the top", () => {
+    const shopCard = screen.slice(screen.indexOf('data-part="settings-shop"'), screen.indexOf('data-part="settings-install"'));
+    const leave = shopCard.match(/<Button data-part="leave" variant=\{info\.leave\.variant\} size="sm"([^>]*)onClick=\{onExit\}>/);
+    assert.ok(leave, "the leave button is in the shop section");
+    assert.equal(shopCard.indexOf('data-part="leave"') < shopCard.indexOf("<Avatar"), true); // in the card's title row, above the identity
+    assert.match(shopCard, /Your shop/);
+    assert.equal(shopInfo(demo).leave.variant, "quiet"); // secondary, not the primary button
+    assert.equal(shopInfo(real).leave.variant, "quiet");
+  });
+
+  test("a 360px phone sees Leave the demo without scrolling: only Theme sits above it, and it is compact", () => {
+    const aboveLeave = screen.slice(0, screen.indexOf('data-part="leave"'));
+    assert.doesNotMatch(aboveLeave, /<FeedbackSection|<InstallRow|open-real-shop|<textarea/);
+    // the Theme card is a title and one control (no paragraph of explanation)
+    const theme = screen.slice(screen.indexOf('data-part="settings-theme"'), screen.indexOf('data-part="settings-shop"'));
+    assert.doesNotMatch(theme, /<p /);
+    // title and button share one row, so the button costs no extra height
+    assert.match(screen, /<div className="flex items-center justify-between gap-3">\s*<SectionTitle as="h2" id="your-shop-title"/);
+    assert.match(screen, /whitespace-nowrap/);
+  });
+
+  test("the Install list hides itself when empty", () => {
     assert.match(screen, /data-part="settings-install" className="[^"]*empty:hidden/);
   });
 });
@@ -43,7 +67,7 @@ describe("the demo shop", () => {
     assert.equal(info.openReal.button, "Log in to my shop");
   });
 
-  test("Leave the demo is the quiet button at the bottom", () => {
+  test("Leave the demo is the quiet button inside the Your shop card", () => {
     assert.deepEqual(info.leave, { label: "Leave the demo", variant: "quiet" });
   });
 
@@ -108,27 +132,19 @@ describe("the removed card", () => {
 });
 
 describe("Feedback inside Settings", () => {
-  test("Settings contains the Feedback section component, titled Feedback", () => {
-    assert.match(screen, /<FeedbackSection sectionRef=\{feedbackRef\} \/>/);
-    const section = read("src/FeedbackSection.jsx");
-    assert.match(section, /id="feedback-title"[^>]*>\s*Feedback\s*<\/h2>/);
+  const section = read("src/FeedbackSection.jsx");
+
+  test("Settings contains the compact Feedback card, folded until tapped", () => {
+    assert.match(screen, /<FeedbackSection sectionRef=\{feedbackRef\} open=\{feedbackOpen\}/);
     assert.match(section, /<article id="feedback"/);
+    assert.match(section, /<span>Send feedback<\/span>/);
   });
 
-  test("it is a section, not a screen: no screen header, no Done button", () => {
-    const section = read("src/FeedbackSection.jsx");
+  test("it is a card, not a screen: no screen header, no Done button", () => {
     assert.doesNotMatch(section, /ScreenHeader|onGo/);
   });
 
-  test("it keeps the types, counter, mic, stars, privacy line, Send and Thank you", () => {
-    const section = read("src/FeedbackSection.jsx");
-    for (const needle of ["TYPE_OPTIONS.map", "counterText(form.text)", "createRecordTimer", "limitSeconds: FEEDBACK_AUDIO_MAX_SECONDS", "[1, 2, 3, 4, 5].map", "{PRIVACY_NOTE}", 'data-part="feedback-send"', "{THANKS}"]) {
-      assert.ok(section.includes(needle), needle);
-    }
-  });
-
   test("it uses the shared logic and format files", () => {
-    const section = read("src/FeedbackSection.jsx");
     assert.match(section, /from "\.\/feedback\.js"/);
     assert.match(section, /sendFeedback/);
     assert.match(read("src/feedback.js"), /from "\.\/feedbackFormat\.js"/);

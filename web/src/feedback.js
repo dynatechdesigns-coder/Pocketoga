@@ -2,15 +2,9 @@
 // Plain JavaScript so the web tests can run it under node. Feedback never goes
 // through the offline queue: offline, or on any error, the trader keeps what
 // they typed and sends it again by hand.
-import { FEEDBACK_AUDIO_MAX_SECONDS, FEEDBACK_TEXT_MAX, FEEDBACK_TYPES, buildFeedbackRequest, parseFeedbackReply } from "./feedbackFormat.js";
+import { FEEDBACK_AUDIO_MAX_SECONDS, FEEDBACK_TEXT_MAX, buildFeedbackRequest, parseFeedbackReply } from "./feedbackFormat.js";
 
 export { FEEDBACK_AUDIO_MAX_SECONDS, FEEDBACK_TEXT_MAX };
-
-export const TYPE_OPTIONS = [
-  { key: "suggestion", label: "Suggestion", hint: "An idea to make PocketOga better" },
-  { key: "problem", label: "Problem", hint: "Something is wrong or confusing" },
-  { key: "review", label: "Review", hint: "What you think of PocketOga" },
-];
 
 export const PRIVACY_NOTE = "Please don't include phone numbers or real customer names. Voice is turned into text and the recording is deleted.";
 export const OFFLINE_MESSAGE = "You are offline. Your feedback is still here. Send it when you are back online.";
@@ -18,6 +12,14 @@ export const TOO_MANY_MESSAGE = "Too many sent. Try again later.";
 export const NETWORK_MESSAGE = "Could not reach PocketOga. Your feedback is still here. Try again in a moment.";
 export const FAILED_MESSAGE = "Something went wrong and your feedback was not sent. It is still here. Try again in a moment.";
 export const THANKS = "Thank you";
+export const COLLAPSE_AFTER_MS = 6000; // the Thank you stays a few seconds, then the card folds up
+export const EMPTY_HINT = "Write or record your message";
+export const SENDING_VOICE = "We'll send your voice message.";
+export const SENDING_TEXT = "We'll send your typed message.";
+export const MIC_BLOCKED_MESSAGE = "PocketOga needs your microphone. Allow it in your browser settings, or type your message.";
+export const MIC_EMPTY_MESSAGE = "We did not catch anything. Tap the mic, talk, then tap again to stop.";
+export const UNREADABLE_MESSAGE = "We could not read that recording. Record it again, or type your message.";
+export const REFUSED_MESSAGE = "We could not send that. Please check your message and try again. It is still here.";
 
 export const counterText = (text) => `${String(text ?? "").length} / ${FEEDBACK_TEXT_MAX}`;
 
@@ -26,25 +28,28 @@ export const clampText = (text) => String(text ?? "").slice(0, FEEDBACK_TEXT_MAX
 
 // --- State -------------------------------------------------------------------
 
-export const emptyFeedback = () => ({ type: null, rating: null, text: "", audio: null, status: "idle", error: null, heard: null });
+export const emptyFeedback = () => ({ rating: null, text: "", audio: null, switched: null, status: "idle", error: null, heard: null });
 
-// Every change after an error keeps what was typed. A voice message and typed
-// text are never held together: adding one drops the other.
+// Exactly one of a typed message and a voice message is ever held. Adding one
+// drops the other and `switched` says which one will be sent ("voice" or
+// "typed"), so the form can tell the person in one plain line. Every change
+// after an error keeps what was typed.
 export function feedbackReducer(state, action) {
   switch (action.type) {
-    case "type":
-      return { ...state, type: action.value, error: null };
     case "rating":
       // Tapping the same star again clears it (the rating is optional).
       return { ...state, rating: state.rating === action.value ? null : action.value, error: null };
-    case "text":
-      return { ...state, text: clampText(action.value), error: null };
+    case "text": {
+      const text = clampText(action.value);
+      if (text.trim() && state.audio) return { ...state, text, audio: null, switched: "typed", error: null };
+      return { ...state, text, switched: text.trim() ? state.switched : null, error: null };
+    }
     case "audio":
-      return { ...state, audio: { blob: action.blob, seconds: action.seconds }, text: "", error: null };
+      return { ...state, audio: { blob: action.blob, seconds: action.seconds }, text: "", switched: state.text.trim() ? "voice" : null, error: null };
     case "removeAudio":
-      return { ...state, audio: null, error: null };
+      return { ...state, audio: null, switched: null, error: null };
     case "sending":
-      return { ...state, status: "sending", error: null };
+      return { ...state, status: "sending", switched: null, error: null };
     case "sent":
       return { ...emptyFeedback(), status: "sent", heard: action.heard ?? null };
     case "failed":
@@ -58,30 +63,46 @@ export function feedbackReducer(state, action) {
   }
 }
 
+// What the form shows under the message: nothing, or one plain line. `canSend`
+// is false only when there is nothing to send.
+export function messageState(s) {
+  const hasText = !!String(s.text ?? "").trim();
+  const hasAudio = !!s.audio;
+  if (!hasText && !hasAudio) return { canSend: false, line: EMPTY_HINT };
+  if (s.switched === "voice" && hasAudio) return { canSend: true, line: SENDING_VOICE };
+  if (s.switched === "typed" && hasText) return { canSend: true, line: SENDING_TEXT };
+  return { canSend: true, line: null };
+}
+
 // --- Checks ------------------------------------------------------------------
 
 // -> { ok: true, mode: "text" | "audio" } or { error, field } in plain words.
 export function validateFeedback(s) {
-  if (!FEEDBACK_TYPES.includes(s.type)) return { error: "Pick what kind of feedback this is.", field: "type" };
   if (s.rating !== null && s.rating !== undefined && !(Number.isInteger(s.rating) && s.rating >= 1 && s.rating <= 5)) {
     return { error: "The rating must be from 1 to 5 stars.", field: "rating" };
   }
   const text = String(s.text ?? "").trim();
-  if (text && s.audio) return { error: "Send either a typed message or a voice message, not both.", field: "text" };
   if (s.audio) {
     if (s.audio.seconds > FEEDBACK_AUDIO_MAX_SECONDS + 1) return { error: `A voice message can be at most ${FEEDBACK_AUDIO_MAX_SECONDS} seconds.`, field: "audio" };
-    return { ok: true, mode: "audio" };
+    return { ok: true, mode: "audio" }; // the form never holds both; if it ever did, the voice message is the newer one
   }
-  if (!text) return { error: "Type your feedback, or record a voice message.", field: "text" };
+  if (!text) return { error: EMPTY_HINT, field: "text" };
   if (text.length > FEEDBACK_TEXT_MAX) return { error: `Your message can be at most ${FEEDBACK_TEXT_MAX} characters.`, field: "text" };
   return { ok: true, mode: "text" };
 }
 
-// The plain sentence for a failed send. A 400 shows the server's own message.
+// A server message with developer wording in it is not shown to the person.
+const TECHNICAL = /\b(audio|payload|body|json|field|type|exactly|must|required|undefined|null|string|integer|param\w*)\b|[a-z][A-Z]|_/;
+
+// The plain sentence for a failed send. A 400 shows the server's own message
+// when it is plain words, and a fixed plain sentence when it is not.
 export function feedbackError(err) {
   const status = err?.status;
   if (status === 429) return TOO_MANY_MESSAGE;
-  if (status === 400 && typeof err.message === "string" && err.message.trim()) return err.message.charAt(0).toUpperCase() + err.message.slice(1);
+  if (status === 400) {
+    const m = typeof err.message === "string" ? err.message.trim() : "";
+    return m && !TECHNICAL.test(m) ? m.charAt(0).toUpperCase() + m.slice(1) : REFUSED_MESSAGE;
+  }
   if (status === 0) return NETWORK_MESSAGE;
   return FAILED_MESSAGE;
 }
@@ -95,12 +116,12 @@ export async function runSubmit(state, { online, toWav, send }) {
   if (!checked.ok) return { type: "error", message: checked.error, field: checked.field };
   if (!online()) return { type: "failed", message: OFFLINE_MESSAGE };
   try {
-    const input = { type: state.type, rating: state.rating ?? undefined };
+    const input = { rating: state.rating ?? undefined };
     if (checked.mode === "audio") {
       try {
         input.audioBase64 = await toWav(state.audio.blob);
       } catch {
-        return { type: "failed", message: "We could not read that recording. Record it again, or type your feedback." };
+        return { type: "failed", message: UNREADABLE_MESSAGE };
       }
     } else {
       input.text = state.text;
