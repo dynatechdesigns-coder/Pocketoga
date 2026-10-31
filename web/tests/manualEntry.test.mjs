@@ -1,6 +1,7 @@
 // Web tests for "Enter it by hand": when it is offered, the checks, naira to
 // request conversion, the queue item and how it is sent. Fake data only.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, test } from "node:test";
 
 const M = await import("../src/manualEntry.js");
@@ -93,20 +94,19 @@ describe("validation", () => {
     assert.match(out.error, /cannot be more than the amount \(₦15,000\)/);
   });
 
-  test("a credit sale needs a customer; a fully paid one does not", () => {
-    const out = bad({ amount: "15000", paid: "5000", paidTouched: true });
-    assert.equal(out.field, "customer");
-    assert.match(out.error, /Who owes you/);
-    ok({ amount: "15000", paid: "5000", paidTouched: true, customer: "Ada" });
-    ok({ amount: "15000" });
-    const nothingPaid = bad({ amount: "15000", paid: "", paidTouched: true });
-    assert.equal(nothingPaid.field, "customer"); // paid nothing = all on credit
-  });
-
-  test("a payment needs a customer; an expense does not", () => {
-    assert.match(bad({ kind: "payment", amount: "5000" }).error, /Who paid you/);
+  test("the customer name is optional for every kind: nobody is ever asked for it", () => {
+    assert.deepEqual(ok({ amount: "15000", paid: "5000", paidTouched: true }), { kind: "sale", amountKobo: 1500000, paidKobo: 500000 });
+    assert.deepEqual(ok({ amount: "15000", paid: "", paidTouched: true }), { kind: "sale", amountKobo: 1500000, paidKobo: 0 }); // all on credit, no name
+    assert.deepEqual(ok({ kind: "payment", amount: "5000" }), { kind: "payment", amountKobo: 500000 });
     assert.deepEqual(ok({ kind: "payment", amount: "5000", customer: " Ada " }), { kind: "payment", amountKobo: 500000, customer: "Ada" });
     assert.deepEqual(ok({ kind: "expense", amount: "1200.50" }), { kind: "expense", amountKobo: 120050 });
+  });
+
+  test("no error message asks for a customer name", () => {
+    const src = readFileSync(new URL("../src/manualEntry.js", import.meta.url), "utf8") + readFileSync(new URL("../src/ManualEntry.jsx", import.meta.url), "utf8");
+    assert.doesNotMatch(src, /Who owes you|Type the customer|needed if not fully paid/);
+    assert.match(src, /Customer \(optional\)/);
+    assert.match(src, /Who paid you\? \(optional\)/);
   });
 
   test("quantity is a whole number, and only for sales", () => {
@@ -192,6 +192,15 @@ describe("queue item", () => {
     assert.equal(row.detail, "Sale · ₦15,000 · Ada · owes ₦10,000");
     await queue.cancel(item.id);
     assert.equal(queue.list().length, 0);
+  });
+
+  test("a queued entry with no name says 'Customer' until it is sent; an expense says no customer", async () => {
+    const { queue } = setup();
+    const sale = await queue.enqueue("manual", { entry: ok({ amount: "20000", paid: "0", paidTouched: true }) });
+    assert.equal(queuedRow(sale, () => "09:00").detail, "Sale · ₦20,000 · Customer · owes ₦20,000");
+    const pay = await queue.enqueue("manual", { entry: ok({ kind: "payment", amount: "5000" }) });
+    assert.equal(queuedRow(pay, () => "09:00").detail, "Payment · ₦5,000 · Customer");
+    assert.equal(M.manualSummary({ kind: "expense", amountKobo: 120050 }), "Expense · ₦1,200.50");
   });
 });
 

@@ -4,6 +4,7 @@
 // Plain JavaScript so the web tests can run it under node.
 import { formatKobo, parseNaira } from "./format.js";
 import { isOffline } from "./connection.js";
+import { UNNAMED_WAITING } from "./debtView.js";
 
 export const MANUAL_SAVED_MESSAGE = "Saved on your phone. It will be sent when you are back online.";
 export const NOTE_MAX = 200;
@@ -74,11 +75,9 @@ export function validateManual(v) {
     if (paid === null) return { error: "Type what was paid in numbers, like 5000.", field: "paid" };
     if (paid > amount) return { error: `Paid now cannot be more than the amount (${formatKobo(amount)}).`, field: "paid" };
     entry.paidKobo = paid;
-    if (amount - paid > 0 && !text("customer")) {
-      return { error: "Who owes you? Type the customer's name for a sale that is not fully paid.", field: "customer" };
-    }
   }
-  if (v.kind === "payment" && !text("customer")) return { error: "Who paid you? Type the customer's name.", field: "customer" };
+  // The customer is always optional: with no name the server labels it
+  // "Customer 1", "Customer 2" and so on.
 
   if (text("customer").length > NAME_MAX) return { error: `The customer's name can be at most ${NAME_MAX} characters.`, field: "customer" };
   if (text("item").length > NAME_MAX) return { error: `The item can be at most ${NAME_MAX} characters.`, field: "item" };
@@ -99,7 +98,9 @@ export function validateManual(v) {
 export function manualSummary(entry) {
   const label = MANUAL_TYPES.find((t) => t.kind === entry?.kind)?.label ?? "Entry";
   const parts = [label.replace(" from customer", ""), formatKobo(entry?.amountKobo)];
+  // Unnamed: "Customer" until it is sent and the server gives it "Customer 1", "Customer 2"...
   if (entry?.customer) parts.push(entry.customer);
+  else if (entry?.kind !== "expense") parts.push(UNNAMED_WAITING);
   if (entry?.kind === "sale" && Number.isInteger(entry.paidKobo) && entry.paidKobo < entry.amountKobo) parts.push(`owes ${formatKobo(entry.amountKobo - entry.paidKobo)}`);
   return parts.join(" · ");
 }

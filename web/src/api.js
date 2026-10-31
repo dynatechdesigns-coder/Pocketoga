@@ -320,6 +320,12 @@ export async function saveCustomer({ name, phone }) {
   return (await newRoute("POST", "/customers", body)).customer;
 }
 
+// POST /customers/rename { from, to } -> { renamed, customer }. Corrects a
+// label (like "Customer 1") everywhere; 404 unknown, 409 name already used.
+export function renameCustomer(from, to) {
+  return newRoute("POST", "/customers/rename", { from, to });
+}
+
 // POST /ledger/:id/correct { amountKobo?, customer?, item?, quantity?, unit?, reason }
 //   -> { entry, verify }. Adds a correction entry; the original is never edited.
 export function correctEntry(id, changes) {

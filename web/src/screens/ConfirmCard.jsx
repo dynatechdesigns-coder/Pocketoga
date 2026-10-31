@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { ArrowDownLeft, CalendarClock, Check, Info, PackagePlus, Pencil, Receipt, ShoppingBag, TriangleAlert, X } from "lucide-react";
+import { ArrowDownLeft, CalendarClock, Check, HandCoins, Info, PackagePlus, Pencil, Receipt, ShoppingBag, TriangleAlert, X } from "lucide-react";
 import { confirmProposal, fixProposal, friendlyError, rejectProposal } from "../api.js";
 import { formatDueDay, formatKobo, itemText } from "../format.js";
+import { amountChoice, choiceFix, debtLines, partPaidRows } from "../debtView.js";
 import { canSave as isSaveable, describeEntry, hintLine, problemsOf } from "../entryWords.js";
 import { Button, Card, IconCircle, cx, figure, inputClass } from "../ui.jsx";
 
@@ -65,6 +66,49 @@ export default function ConfirmCard({ proposal, shopId, onRerun, onUpdate, onFin
 
   const t = proposal.totals;
   const p = proposal.promise;
+  const debts = debtLines(proposal);
+  const partRows = partPaidRows(proposal);
+  const choice = amountChoice(proposal);
+
+  // Two amounts to pick from: no Save here. A pick goes back to the server as the
+  // answer "1" or "2" and comes back as the normal card.
+  if (choice) {
+    const pick = (n) => run(`choice${n}`, async () => onUpdate(await fixProposal(proposal.id, choiceFix(n))));
+    return (
+      <div data-part="amount-choice" className="grid gap-3" aria-busy={!!busy}>
+        <figure data-part="heard" className="border-l-[3px] border-lavender py-1 pl-3.5">
+          <figcaption className="text-sm font-semibold text-muted">PocketOga heard:</figcaption>
+          <blockquote className="mt-0.5 whitespace-pre-line">“{proposal.heard}”</blockquote>
+        </figure>
+        <p data-part="choice-question" className="text-xl font-extrabold">
+          {choice.question}
+        </p>
+        <div className="grid grid-cols-2 gap-3 max-[359px]:grid-cols-1">
+          {choice.options.map((kobo, i) => (
+            <Button
+              key={i}
+              data-part="choice"
+              size="lg"
+              variant="primary"
+              className="min-w-0 text-2xl font-extrabold tabular-nums [overflow-wrap:anywhere]"
+              disabled={!!busy}
+              onClick={() => pick(i + 1)}
+            >
+              {busy === `choice${i + 1}` ? "…" : formatKobo(kobo)}
+            </Button>
+          ))}
+        </div>
+        {error && (
+          <div role="alert" className="rounded-2xl bg-slate px-4 py-3">
+            <p>{error}</p>
+          </div>
+        )}
+        <Button variant="quiet" onClick={reject} disabled={!!busy} aria-label="Reject, do not save">
+          <X aria-hidden="true" /> {busy === "reject" ? "Rejecting…" : "Reject"}
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div data-part="confirm" className="grid gap-3" aria-busy={!!busy}>
@@ -175,13 +219,26 @@ export default function ConfirmCard({ proposal, shopId, onRerun, onUpdate, onFin
         <p className="text-muted">Nothing to save yet.</p>
       )}
 
-      {t && (
-        <dl className="grid grid-cols-3 gap-2">
-          {[
-            ["Total", t.totalKobo],
-            ["Paid", t.paidKobo],
-            ["Still owed", t.remainderKobo],
-          ].map(([label, kobo]) => (
+      {debts.map((d) => (
+        <p
+          key={`${d.customer}-${d.amountKobo}`}
+          data-part="debt-line"
+          className="flex min-h-11 items-center gap-3 rounded-2xl border border-amber bg-amber-soft px-4 py-3 font-extrabold text-amber-ink [overflow-wrap:anywhere] [&_svg]:size-6 [&_svg]:shrink-0"
+        >
+          <HandCoins aria-hidden="true" /> <span className="min-w-0">{d.text}</span>
+        </p>
+      ))}
+
+      {(partRows || t) && (
+        <dl data-part={partRows ? "part-paid" : "totals"} className="grid grid-cols-3 gap-2">
+          {(partRows
+            ? partRows.map((r) => [r.label, r.kobo])
+            : [
+                ["Total", t.totalKobo],
+                ["Paid", t.paidKobo],
+                ["Still owed", t.remainderKobo],
+              ]
+          ).map(([label, kobo]) => (
             <div key={label} className="min-w-0 rounded-2xl border border-line bg-card px-3 py-3 shadow-soft">
               <dt className="text-[0.8125rem] font-semibold text-muted">{label}</dt>
               {/* Sized to the box so ₦118,000 stays on one line at 360px; very
@@ -218,6 +275,7 @@ export default function ConfirmCard({ proposal, shopId, onRerun, onUpdate, onFin
           <label htmlFor="fix-text" className="font-bold">
             What should change?
           </label>
+          <p className="text-sm text-muted">You can change the amount, the name or the debt. Nothing is saved until you tap Save.</p>
           <textarea
             id="fix-text"
             rows={3}

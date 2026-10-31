@@ -72,7 +72,11 @@ export default function ManualEntry({ open, onClose, shopId, onSaved }) {
           ))}
         </div>
 
-        <Field id="mf-customer" label={values.kind === "payment" ? "Who paid you?" : values.kind === "expense" ? "Paid to (optional)" : "Customer (needed if not fully paid)"}>
+        <Field
+          id="mf-customer"
+          label={values.kind === "payment" ? "Who paid you? (optional)" : values.kind === "expense" ? "Paid to (optional)" : "Customer (optional)"}
+          hint={values.kind === "expense" ? undefined : "Leave it empty and it is named Customer 1, Customer 2 and so on. You can rename it later."}
+        >
           <input id="mf-customer" value={values.customer} onChange={set("customer")} autoComplete="off" aria-invalid={invalid("customer")} className={inputClass} />
         </Field>
 

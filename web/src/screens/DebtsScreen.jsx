@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { CalendarX2, Check, ChevronRight, Copy, MessageCircle, Search, Users } from "lucide-react";
+import { CalendarX2, Check, Copy, MessageCircle, Pencil, Search, Users } from "lucide-react";
+import { renameCustomer } from "../api.js";
+import { NAME_MAX, debtDateLine, renameError, validateRename } from "../debtView.js";
 import { DEBTS_SAVED as SAVED, loadDebts } from "../savedLoaders.js";
 import { ageText, dueText, formatDueDay, formatKobo, sameCustomer } from "../format.js";
 import { draftReminder, TONES, whatsappLink } from "../reminders.js";
-import { Avatar, Button, Card, EmptyState, ErrorState, Pill, RecordShortcut, ScreenHeader, SectionTitle, Sheet, SavedBanner, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
+import { Avatar, Button, Card, EmptyState, ErrorState, Field, Pill, RecordShortcut, ScreenHeader, SectionTitle, Sheet, SavedBanner, Skeleton, cx, figure, inputClass, rise, useLoad } from "../ui.jsx";
 
 // The pill a customer row shows: the next open promise, else Broken if a
 // promise was missed, else Kept if one was kept.
@@ -24,6 +26,7 @@ export default function DebtsScreen({ intent, onGo }) {
   const [query, setQuery] = useState("");
   const [brokenOnly, setBrokenOnly] = useState(intent === "broken");
   const [open, setOpen] = useState(null); // customer name
+  const [renaming, setRenaming] = useState(null); // label being renamed
 
   // The phone's back button closes the sheet.
   useEffect(() => {
@@ -95,25 +98,36 @@ export default function DebtsScreen({ intent, onGo }) {
             {rows.map((c) => {
               const s = status(promisesOf(c.customer));
               return (
-                <li key={c.customer}>
+                <li key={c.customer} className="flex min-w-0 items-center">
                   <button
                     data-part="debt-row"
                     onClick={() => openCustomer(c.customer)}
-                    aria-label={`${c.customer}, owes ${formatKobo(c.owedKobo)}, unpaid ${ageText(c.ageDays)}${s ? `, ${s.text}` : ""}. Open details`}
-                    className="flex min-h-[76px] w-full items-center gap-3 rounded-card px-[18px] py-3 text-left transition duration-150 hover:bg-page active:scale-[0.98]"
+                    aria-label={`${c.customer}, owes ${formatKobo(c.owedKobo)}, ${debtDateLine(c.ageDays).toLowerCase()}, unpaid ${ageText(c.ageDays)}${s ? `, ${s.text}` : ""}. Open details`}
+                    className="flex min-h-[76px] min-w-0 flex-1 items-center gap-3 rounded-card py-3 pr-1 pl-[18px] text-left transition duration-150 hover:bg-page active:scale-[0.98]"
                   >
                     <Avatar name={c.customer} />
                     <span className="grid min-w-0 flex-1">
                       <span data-part="debt-name" className="truncate font-bold">
                         {c.customer}
                       </span>
-                      <span className="text-sm text-muted">{c.ageDays > 0 ? `${ageText(c.ageDays)} unpaid` : "Since today"}</span>
+                      <span data-part="debt-date" className="text-sm text-muted [overflow-wrap:anywhere]">
+                        {debtDateLine(c.ageDays)}
+                        {c.ageDays > 0 && ` · ${ageText(c.ageDays)}`}
+                      </span>
                     </span>
                     <span className="grid justify-items-end gap-1">
                       <span className="text-lg font-extrabold whitespace-nowrap tabular-nums">{formatKobo(c.owedKobo)}</span>
                       {s && <Pill tone={s.tone}>{s.text}</Pill>}
                     </span>
-                    <ChevronRight aria-hidden="true" className="-mr-1.5 size-[18px] text-grey" />
+                  </button>
+                  <button
+                    type="button"
+                    data-part="debt-edit"
+                    onClick={() => setRenaming(c.customer)}
+                    aria-label={`Rename ${c.customer}`}
+                    className="mr-1.5 grid size-11 shrink-0 place-items-center rounded-full text-link transition-transform duration-150 active:scale-96 [&_svg]:size-5"
+                  >
+                    <Pencil aria-hidden="true" />
                   </button>
                 </li>
               );
@@ -135,6 +149,17 @@ export default function DebtsScreen({ intent, onGo }) {
       <ScreenHeader title="Who owes you" action={<RecordShortcut onClick={() => onGo("record", { hint: "payment" })}>Record a payment</RecordShortcut>} />
       {data && <SavedBanner saved={saved} />}
       {body}
+      <Sheet open={!!renaming} onClose={() => setRenaming(null)} title="Rename customer">
+        {renaming && (
+          <RenameForm
+            from={renaming}
+            onDone={() => {
+              setRenaming(null);
+              reload();
+            }}
+          />
+        )}
+      </Sheet>
       <Sheet open={!!row} onClose={closeSheet} title={r ? r.customer : ""}>
         {r && (
           <CustomerDetail
@@ -146,6 +171,48 @@ export default function DebtsScreen({ intent, onGo }) {
         )}
       </Sheet>
     </section>
+  );
+}
+
+// Corrects a customer's label, like "Customer 1" -> "Ada". The server changes it
+// everywhere by adding correction entries; nothing is deleted.
+function RenameForm({ from, onDone }) {
+  const [name, setName] = useState("");
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (busy) return;
+    const out = validateRename(from, name);
+    if (out.error) return setError(out.error);
+    setError(null);
+    setBusy(true);
+    try {
+      await renameCustomer(from, out.to);
+      onDone();
+    } catch (err) {
+      setError(renameError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form data-part="rename-form" onSubmit={submit} noValidate className="grid min-w-0 gap-4">
+      <p className="text-muted [overflow-wrap:anywhere]">Now called {from}. Type the new name.</p>
+      <Field id="rename-to" label="New name">
+        <input id="rename-to" value={name} onChange={(e) => setName(e.target.value)} autoFocus autoComplete="off" maxLength={NAME_MAX} className={inputClass} />
+      </Field>
+      {error && (
+        <p role="alert" data-part="rename-error" className="rounded-2xl bg-slate px-4 py-3 font-semibold [overflow-wrap:anywhere]">
+          {error}
+        </p>
+      )}
+      <Button type="submit" size="lg" disabled={busy}>
+        <Check aria-hidden="true" strokeWidth={2.6} /> {busy ? "Saving…" : "Save name"}
+      </Button>
+    </form>
   );
 }
 
