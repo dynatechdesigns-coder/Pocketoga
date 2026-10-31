@@ -11,12 +11,14 @@ import { ProposalStore } from "./proposals.mjs";
 import { PromiseStore } from "./promises.mjs";
 import { ProductStore } from "./products.mjs";
 import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
+import { IdempotencyStore } from "./idempotency.mjs";
 import { createMockModelClient, createModelClient } from "./model.mjs";
 import {
   propose,
   confirmProposal,
   fixProposal,
   proposeFromForm,
+  proposeManual,
   normalizeEntryType,
   ENTRY_TYPES,
 } from "./voice.mjs";
@@ -1046,6 +1048,143 @@ describe("form path (no model call)", () => {
     }
   });
 
+  it("proposeManual: structured sale has the same shape as a form proposal", () => {
+  const recentIso = new Date(Date.now() - 3600_000).toISOString();
+    const ctx = setup();
+    try {
+      const p = proposeManual(SHOP, {
+        kind: "sale", customer: "Ada", item: "rice", quantity: 2,
+        amount_naira: "3000.50", note: "hand entry",
+        occurred_at: recentIso,
+      }, formDeps(ctx));
+      assert.equal(p.source, "manual");
+      assert.equal(p.status, "pending");
+      assert.equal(p.occurred_at, recentIso);
+      assert.equal(p.entries[0].type, "sale");
+      assert.equal(p.entries[0].amountKobo, 300050);
+      assert.equal(p.entries[1].type, "payment");
+      assert.equal(p.entries[1].amountKobo, 300050); // paid defaults to the full amount
+      assert.equal(p.question, null);
+      const f = proposeFromForm(SHOP, { type: "sale", customer: "Ada", item: "rice", quantity: 1, unit: "bag", amountNaira: 5000, amountPaidNaira: 5000 }, formDeps(ctx));
+      assert.deepEqual(Object.keys(p).sort(), Object.keys(f).sort());
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("proposeManual: nothing reaches the ledger until confirm", () => {
+    const ctx = setup();
+    try {
+      const p = proposeManual(SHOP, { kind: "sale", customer: "Ada", item: "rice", amount_naira: 2000 }, formDeps(ctx));
+      assert.equal(ctx.ledger.list(SHOP).length, 0);
+      const c = confirm(ctx, p.id);
+      assert.equal(c.recordedIds.length, 2);
+      const rows = ctx.ledger.list(SHOP);
+      assert.equal(rows.length, 2);
+      assert.equal(rows.filter((r) => r.type === "sale").reduce((s, r) => s + r.amount_kobo, 0), 200000);
+      const e = proposeManual(SHOP, { kind: "expense", item: "transport", amount_naira: "500.25" }, formDeps(ctx));
+      assert.equal(e.entries.length, 1);
+      assert.equal(e.entries[0].type, "expense");
+      assert.equal(e.entries[0].amountKobo, 50025);
+      assert.equal(e.question, null);
+      const pay = proposeManual(SHOP, { kind: "payment", customer: "Ada", amount_naira: 1000 }, formDeps(ctx));
+      assert.equal(pay.entries[0].type, "payment");
+      assert.equal(pay.entries[0].amountKobo, 100000);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("proposeManual: partial paid leaves the rest owed and blocks confirm", () => {
+    const ctx = setup();
+    try {
+      const p = proposeManual(SHOP, { kind: "sale", customer: "Ada", item: "rice", amount_naira: 3000, paid_naira: 1000 }, formDeps(ctx));
+      assert.equal(p.entries[0].amountKobo, 300000);
+      assert.equal(p.entries[1].amountKobo, 100000);
+      assert.ok(p.question);
+      assert.throws(() => confirm(ctx, p.id), /cannot confirm/);
+      assert.equal(ctx.ledger.list(SHOP).length, 0);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("proposeManual: unknown customer is a soft assumption, still confirmable", () => {
+    const ctx = setup();
+    try {
+      const p = proposeManual(SHOP, { kind: "sale", customer: "Zed", item: "rice", amount_naira: 1500 }, formDeps(ctx));
+      assert.equal(p.question, null);
+      assert.ok(p.assumptions.some((a) => a.includes("New customer: Zed.")));
+      assert.equal(confirm(ctx, p.id).recordedIds.length, 2);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("proposeManual: plain-code rejections are 400s", () => {
+    const ctx = setup();
+    try {
+      const bad = [
+        [{ kind: "gift", amount_naira: 5 }, /kind must be one of/],
+        [{ kind: "sale", customer: "Ada", amount_naira: "12.345" }, /at most 2 decimals/],
+        [{ kind: "sale", customer: "Ada", amount_naira: 0 }, /greater than zero/],
+        [{ kind: "sale", customer: "Ada", amount_naira: -5 }, /must not be negative/],
+        [{ kind: "sale", customer: "Ada", amount_naira: 1000001 }, /too large/],
+        [{ kind: "sale", customer: "Ada", amount_naira: 3000, paid_naira: 3001 }, /cannot exceed/],
+        [{ kind: "sale", item: "rice", amount_naira: 3000, paid_naira: 1000 }, /customer is required/],
+        [{ kind: "payment", amount_naira: 1000 }, /customer is required/],
+        [{ kind: "sale", customer: "Ada", amount_naira: 3000, paid_naira: "1.234" }, /at most 2 decimals/],
+        [{ kind: "sale", customer: "Ada", amount_naira: 3000, quantity: 0 }, /positive integer/],
+        [{ kind: "payment", customer: "Ada", amount_naira: 1000, quantity: 2 }, /only applies to a sale/],
+        [{ kind: "sale", customer: "Ada", amount_naira: 3000, paid_naira: 3000, note: "x".repeat(201) }, /200 characters or less/],
+        [{ kind: "sale", customer: "  ", item: "rice", amount_naira: 3000, paid_naira: 1000 }, /must be text/],
+      ];
+      for (const [body, want] of bad) {
+        assert.throws(() => proposeManual(SHOP, body, formDeps(ctx)), (err) => {
+          assert.equal(err.status, 400);
+          assert.match(err.message, want);
+          return true;
+        }, JSON.stringify(body));
+      }
+      assert.equal(ctx.ledger.list(SHOP).length, 0);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("proposeManual: bad occurred_at falls back to now like the other routes", () => {
+    const ctx = setup();
+    try {
+      const before = Date.now();
+      const p = proposeManual(SHOP, { kind: "expense", item: "transport", amount_naira: 500, occurred_at: "not-a-date" }, formDeps(ctx));
+      assert.ok(Date.parse(p.occurred_at) >= before);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("POST /proposals/manual returns 201 and honors x-request-id replays", async () => {
+    const ctx = setup();
+    try {
+      ctx.deps.idempotency = new IdempotencyStore(ctx.db);
+      const body = { kind: "sale", customer: "Ada", item: "rice", quantity: 1, amount_naira: "2500.50" };
+      const first = await dispatch(ctx.deps, { method: "POST", url: "/proposals/manual", headers: { "x-shop-id": SHOP, "x-request-id": "manual-1" }, body });
+      assert.equal(first.status, 201);
+      assert.equal(first.json.proposal.source, "manual");
+      assert.equal(first.json.proposal.entries[0].amountKobo, 250050);
+      const replay = await dispatch(ctx.deps, { method: "POST", url: "/proposals/manual", headers: { "x-shop-id": SHOP, "x-request-id": "manual-1" }, body });
+      assert.equal(replay.status, 200);
+      assert.equal(replay.json.proposal.id, first.json.proposal.id);
+      const fetched = await dispatch(ctx.deps, { method: "GET", url: `/proposals/${first.json.proposal.id}`, headers: { "x-shop-id": SHOP } });
+      assert.equal(fetched.status, 200);
+      assert.deepEqual(Object.keys(fetched.json.proposal).sort(), Object.keys(first.json.proposal).sort());
+      const bad = await dispatch(ctx.deps, { method: "POST", url: "/proposals/manual", headers: { "x-shop-id": SHOP }, body: { kind: "sale", amount_naira: "1.234" } });
+      assert.equal(bad.status, 400);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
   it("POST /propose-form returns 201 with the same proposal object", async () => {
     const ctx = setup();
     try {
@@ -1068,6 +1207,38 @@ describe("form path (no model call)", () => {
 });
 
 describe("source labels", () => {
+  it("a pre-manual database is rebuilt with its rows and accepts manual", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec(`CREATE TABLE proposals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        shop_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending','confirmed','rejected','expired')),
+        entries_json TEXT NOT NULL,
+        heard TEXT NOT NULL,
+        question TEXT,
+        created_at TEXT NOT NULL,
+        occurred_at TEXT,
+        recorded_ids TEXT,
+        name_checked TEXT,
+        source TEXT CHECK (source IS NULL OR source IN ('voice','text','form'))
+      );`);
+      db.prepare("INSERT INTO proposals (shop_id, status, entries_json, heard, created_at, occurred_at, source) VALUES (?, 'pending', ?, 'old', ?, ?, 'form')")
+        .run(SHOP, JSON.stringify({ version: 1, entries: [], totals: null, flags: [], notes: [] }), "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
+      const store = new ProposalStore(db);
+      assert.equal(store.listByShop(SHOP).length, 1);
+      const row = store.create({
+        shopId: SHOP,
+        envelope: { version: 1, entries: [], totals: null, flags: [], notes: [] },
+        heard: "hand", source: "manual",
+      });
+      assert.equal(row.source, "manual");
+      assert.equal(store.listByShop(SHOP).length, 2);
+    } finally {
+      db.close();
+    }
+  });
+
   it("text, audio and form proposals are labelled; old rows read null", async () => {
     const ctx = setup();
     try {

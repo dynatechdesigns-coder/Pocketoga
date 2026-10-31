@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS proposals (
   occurred_at TEXT,
   recorded_ids TEXT,
   name_checked TEXT,
-  source TEXT CHECK (source IS NULL OR source IN ('voice','text','form'))
+  source TEXT CHECK (source IS NULL OR source IN ('voice','text','form','manual'))
 );
 CREATE INDEX IF NOT EXISTS idx_proposals_shop ON proposals(shop_id);
 `;
@@ -41,7 +41,32 @@ export class ProposalStore {
     // Databases created before the source label get it now; old rows keep
     // NULL (unknown path, ledger-identical either way).
     if (!columns.includes("source")) {
-      this.db.exec("ALTER TABLE proposals ADD COLUMN source TEXT CHECK (source IS NULL OR source IN ('voice','text','form'))");
+      this.db.exec("ALTER TABLE proposals ADD COLUMN source TEXT CHECK (source IS NULL OR source IN ('voice','text','form','manual'))");
+    }
+    // Databases created before manual proposals widen the source check.
+    // SQLite cannot alter a CHECK, so the table is rebuilt with its rows.
+    const tableSql = this.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'proposals'").get()?.sql ?? "";
+    if (tableSql.includes("CHECK") && !tableSql.includes("'manual'")) {
+      this.db.exec(`
+        CREATE TABLE proposals_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          shop_id TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('pending','confirmed','rejected','expired')),
+          entries_json TEXT NOT NULL,
+          heard TEXT NOT NULL,
+          question TEXT,
+          created_at TEXT NOT NULL,
+          occurred_at TEXT,
+          recorded_ids TEXT,
+          name_checked TEXT,
+          source TEXT CHECK (source IS NULL OR source IN ('voice','text','form','manual'))
+        );
+        INSERT INTO proposals_new (id, shop_id, status, entries_json, heard, question, created_at, occurred_at, recorded_ids, name_checked, source)
+          SELECT id, shop_id, status, entries_json, heard, question, created_at, occurred_at, recorded_ids, name_checked, source FROM proposals;
+        DROP TABLE proposals;
+        ALTER TABLE proposals_new RENAME TO proposals;
+        CREATE INDEX IF NOT EXISTS idx_proposals_shop ON proposals(shop_id);
+      `);
     }
     // Databases created before the offline queue get it now; old rows read
     // back occurred_at as their created_at (see toProposal in voice.mjs).
@@ -51,8 +76,8 @@ export class ProposalStore {
   }
 
   // envelope: { version, entries, totals, flags, notes } (plain-code checks).
-  // source names the entry path (voice, text, form); photo checks predate
-  // it and pass nothing.
+  // source names the entry path (voice, text, form, manual); photo checks
+  // predate it and pass nothing.
   create({ shopId, status = "pending", envelope, heard, question = null, createdAt = null, occurredAt = null, recordedIds = null, nameChecked = null, source = null }) {
     if (!shopId || typeof shopId !== "string") throw new Error("shopId is required");
     const stamp = createdAt ?? new Date().toISOString();

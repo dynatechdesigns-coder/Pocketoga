@@ -24,7 +24,7 @@ import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
 import { PhotoCheckStore } from "./photos.mjs";
 import { IdempotencyStore, MAX_REQUEST_ID_LENGTH } from "./idempotency.mjs";
 import { createModelClient } from "./model.mjs";
-import { propose, confirmProposal, fixProposal, rejectProposal, getProposal, proposeCorrection, proposeFromForm, toProposal } from "./voice.mjs";
+import { propose, confirmProposal, fixProposal, rejectProposal, getProposal, proposeCorrection, proposeFromForm, proposeManual, toProposal } from "./voice.mjs";
 import { proposePhotoCheck } from "./photos.mjs";
 import {
   verifyWhatsAppSignature,
@@ -473,6 +473,18 @@ export async function handleVoiceRequest(req, res, deps) {
     const occurredAt = readOccurredAt(body);
     return idempotentPropose(req, res, deps, shopId, () =>
       proposeFromForm(shopId, fields, { ...deps, occurredAt }));
+  }
+
+  // Typed-by-hand entries (offline queue): same checks, card and confirm
+  // flow as the other propose routes, with no model call. The x-request-id
+  // contract matches every other propose route: same shop + id replays the
+  // stored proposal, never proposes twice.
+  if (req.method === "POST" && parts.length === 2 && parts[0] === "proposals" && parts[1] === "manual") {
+    const body = await readBody(req);
+    const fields = body && typeof body === "object" ? body : {};
+    const occurredAt = readOccurredAt(body);
+    return idempotentPropose(req, res, deps, shopId, () =>
+      proposeManual(shopId, fields, { ...deps, occurredAt }));
   }
 
   // Photo pipeline (Alert Guard first): classifies the photo, extracts its

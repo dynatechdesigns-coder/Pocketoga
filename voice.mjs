@@ -3,7 +3,7 @@
 // ledger. Uses fake data in tests; never touches real trader data.
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
-import { parseNaira, formatKobo, extractNairaAmounts } from "./money.mjs";
+import { parseNaira, formatKobo, extractNairaAmounts, decimalNairaToKobo } from "./money.mjs";
 import { escapeMd, customerOwedKobo, MISMATCH_PREFIX, BAD_AUDIO_JSON, TEXT_FAILED, MODEL_RETRY_FAILED, AUDIO_EMPTY_RETRY } from "./messages.mjs";
 import { resolvePromiseDate } from "./promises.mjs";
 import { fetchSecondReading, compareReadings, SECOND_OPINION_TIMEOUT_MS, SECOND_OPINION_LATE_MS, SECOND_CHECK_UNAVAILABLE, SECOND_CHECK_CREDIT, NORMALISED_AMOUNT } from "./secondopinion.mjs";
@@ -151,6 +151,29 @@ function checkLeg(naira, phrase, label, flags, notes, required = false, assumpti
   return { naira, kobo, phrase: cleanPhrase };
 }
 
+// Validates a typed kobo figure directly: same phrase cross-check as
+// checkLeg, no whole-naira requirement. naira stays null for fractional
+// amounts; downstream code already tolerates that (see the each-math and
+// quantity guards, and the correction path).
+function checkLegKobo(kobo, phrase, label, flags, notes, assumptions) {
+  const cleanPhrase = cleanText(phrase);
+  const naira = kobo % 100 === 0 ? kobo / 100 : null;
+  if (cleanPhrase) {
+    try {
+      const parsed = parseNaira(cleanPhrase);
+      if (parsed.kobo !== kobo && assumptions) {
+        const line = `Taken as ${formatKobo(kobo)} from "${cleanPhrase}". Tap Fix if it was ${formatKobo(parsed.kobo)}.`;
+        if (!assumptions.includes(line)) assumptions.push(line);
+      }
+    } catch {
+      notes.push(`${label}: could not verify amount phrase "${cleanPhrase}"`);
+    }
+  } else {
+    notes.push(`${label}: no amount phrase to cross-check`);
+  }
+  return { naira, kobo, phrase: cleanPhrase };
+}
+
 function checkEntry(rawEntry, index, shopId, flags, notes, heard, assumptions, hint = null) {
   const label = `entry ${index + 1}`;
   const e = rawEntry && typeof rawEntry === "object" ? rawEntry : {};
@@ -169,7 +192,14 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard, assumptions, h
       return null;
     }
   }
-  const { naira, kobo, phrase } = checkLeg(e.amountNaira, e.amountPhrase, label, flags, notes, true, assumptions);
+  // Typed entries carry integer kobo directly (decimals allowed); the model
+  // and form paths always go through whole-naira checkLeg, unchanged.
+  const presetKobo =
+    (e.amountNaira === null || e.amountNaira === undefined) && Number.isInteger(e.amountKobo) && e.amountKobo >= 0 ? e.amountKobo : null;
+  const { naira, kobo, phrase } =
+    presetKobo === null
+      ? checkLeg(e.amountNaira, e.amountPhrase, label, flags, notes, true, assumptions)
+      : checkLegKobo(presetKobo, e.amountPhrase, label, flags, notes, assumptions);
 
   let basis = e.priceBasis;
   if (!PRICE_BASES.includes(basis)) {
@@ -1538,12 +1568,32 @@ export function proposeFromForm(shopId, fields, { proposals, ledger = null, prod
   ]
     .filter((x) => x !== null && x !== undefined && x !== "")
     .join(" ");
+  return storeCheckedProposal(shopId, {
+    entries,
+    heard: cleanText(note) ?? heardAuto,
+    occurredAt: occurredAt ?? f.occurred_at,
+    source: "form",
+  }, { proposals, ledger, products, now, timings });
+}
+
+// --- Manual path -----------------------------------------------------------
+//
+// Typed-by-hand entries (offline queue): same checks, effects, card and
+// confirm flow as the form path, with no model call, via the shared tail
+// below. Amounts may carry kobo (at most 2 decimals); kind is sale, payment
+// or expense; paid defaults to the full amount on a sale. Nothing here
+// touches the ledger — confirmation does that, through the same path.
+export const MAX_MANUAL_KOBO = 100_000_000; // ₦1M per entry. The AI path has no numeric cap (its magnitude question catches typos), so this cap is new for typed entries.
+
+// Shared tail for structured proposals (form, manual): same checks, same
+// stored shape, same confirm flow. Only the source label differs.
+function storeCheckedProposal(shopId, { entries, heard, occurredAt, source }, { proposals, ledger, products, now, timings }) {
   const ledgerRows = ledger && typeof ledger.list === "function" ? ledger.list(shopId) : null;
   const catalog = products && typeof products.listByShop === "function" ? products.listByShop(shopId) : null;
   const tChecks = Date.now();
-  const happenedAt = resolveOccurredAt(occurredAt ?? f.occurred_at, now) ?? new Date(now).toISOString();
+  const happenedAt = resolveOccurredAt(occurredAt, now) ?? new Date(now).toISOString();
   const { heard: checkedHeard, question, questionedNames, ...envelope } = checkModelOutput(
-    { heard: cleanText(note) ?? heardAuto, entries, totals: null, promise: null, question: null },
+    { heard, entries, totals: null, promise: null, question: null },
     shopId,
     { existingCustomers: customersOf(ledgerRows), now, ledgerRows, catalog }
   );
@@ -1552,14 +1602,100 @@ export function proposeFromForm(shopId, fields, { proposals, ledger = null, prod
   envelope.hintNote = null;
   const row = proposals.create({
     shopId,
-    envelope,
-    heard: checkedHeard,
-    question,
-    occurredAt: happenedAt,
+    envelope, heard: checkedHeard, question, occurredAt: happenedAt,
     nameChecked: questionedNames.length > 0 ? questionedNames : null,
-    source: "form",
+    source,
   });
   return toProposal(row);
+}
+
+export function proposeManual(shopId, body, { proposals, ledger = null, products = null, now = Date.now(), timings = null, occurredAt = null } = {}) {
+  if (!proposals) throw new Error("proposeManual needs { proposals }");
+  if (!shopId || typeof shopId !== "string") throw voiceError(400, "shopId is required");
+  const f = body && typeof body === "object" ? body : null;
+  if (!f) throw voiceError(400, "manual fields are required");
+  if (f.kind !== "sale" && f.kind !== "payment" && f.kind !== "expense") {
+    throw voiceError(400, `kind must be one of sale, payment or expense (got "${String(f.kind)}")`);
+  }
+  if (f.amount_naira === undefined || f.amount_naira === null) throw voiceError(400, "amount_naira is required");
+  let amountKobo;
+  try {
+    amountKobo = decimalNairaToKobo(f.amount_naira);
+  } catch (err) {
+    throw voiceError(400, err.message);
+  }
+  if (amountKobo <= 0) throw voiceError(400, "amount_naira must be greater than zero");
+  if (amountKobo > MAX_MANUAL_KOBO) throw voiceError(400, `amount_naira is too large (max ${formatKobo(MAX_MANUAL_KOBO)})`);
+  const quantity = f.quantity ?? null;
+  if (quantity !== null && (!Number.isInteger(quantity) || quantity <= 0)) throw voiceError(400, "quantity must be a positive integer");
+  if (quantity !== null && f.kind !== "sale") throw voiceError(400, "quantity only applies to a sale");
+  if (f.customer !== undefined && f.customer !== null && (typeof f.customer !== "string" || !f.customer.trim())) {
+    throw voiceError(400, "customer must be text");
+  }
+  const cleanCustomer = typeof f.customer === "string" ? f.customer.trim() || null : null;
+  if (cleanCustomer !== null && cleanCustomer.length > 100) throw voiceError(400, "customer must be under 100 characters");
+  if (f.item !== undefined && f.item !== null && (typeof f.item !== "string" || !f.item.trim())) {
+    throw voiceError(400, "item must be text");
+  }
+  const cleanItem = typeof f.item === "string" ? f.item.trim() || null : null;
+  if (cleanItem !== null && cleanItem.length > 100) throw voiceError(400, "item must be under 100 characters");
+  if (f.note !== undefined && f.note !== null && typeof f.note !== "string") throw voiceError(400, "note must be text");
+  if (typeof f.note === "string" && f.note.trim().length > 200) throw voiceError(400, "note must be 200 characters or less");
+  let paidKobo = null;
+  if (f.kind === "sale") {
+    if (f.paid_naira === undefined || f.paid_naira === null) {
+      paidKobo = amountKobo;
+    } else {
+      try {
+        paidKobo = decimalNairaToKobo(f.paid_naira);
+      } catch (err) {
+        throw voiceError(400, err.message);
+      }
+    }
+    if (paidKobo > amountKobo) throw voiceError(400, "paid_naira cannot exceed amount_naira");
+  } else if (f.paid_naira !== undefined && f.paid_naira !== null) {
+    throw voiceError(400, "paid_naira only applies to a sale");
+  }
+  if (f.kind === "payment" && !cleanCustomer) throw voiceError(400, "customer is required for a payment");
+  if (f.kind === "sale" && paidKobo < amountKobo && !cleanCustomer) {
+    throw voiceError(400, "customer is required when money is owed");
+  }
+  const amountPhrase = String(f.amount_naira).trim();
+  const paidPhrase = f.kind === "sale" ? String(f.paid_naira ?? f.amount_naira).trim() : null;
+  const main = {
+    type: f.kind,
+    customer: cleanCustomer,
+    item: cleanItem,
+    quantity,
+    unit: null,
+    amountNaira: amountKobo % 100 === 0 ? amountKobo / 100 : null,
+    amountKobo,
+    amountPhrase,
+    priceBasis: "total",
+  };
+  const entries = [main];
+  if (f.kind === "sale") {
+    entries.push({
+      type: "payment",
+      customer: cleanCustomer,
+      item: null,
+      quantity: null,
+      unit: null,
+      amountNaira: paidKobo % 100 === 0 ? paidKobo / 100 : null,
+      amountKobo: paidKobo,
+      amountPhrase: paidPhrase,
+      priceBasis: "total",
+    });
+  }
+  const heardAuto = ["Manual:", TYPE_WORDS[f.kind], cleanCustomer, cleanItem, quantity !== null ? String(quantity) : null, formatKobo(amountKobo)]
+    .filter((x) => x !== null && x !== undefined && x !== "")
+    .join(" ");
+  return storeCheckedProposal(shopId, {
+    entries,
+    heard: cleanText(f.note) ?? heardAuto,
+    occurredAt: occurredAt ?? f.occurred_at,
+    source: "manual",
+  }, { proposals, ledger, products, now, timings });
 }
 
 // --- Correct-last-entry flow -------------------------------------------------

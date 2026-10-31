@@ -192,6 +192,20 @@ export function nairaToKobo(n) {
   return n * 100;
 }
 
+// Typed decimal naira (a string or number with at most 2 decimals) to
+// integer kobo, with string maths only — never floats. Whole-naira numbers
+// go through nairaToKobo unchanged.
+export function decimalNairaToKobo(value) {
+  if (typeof value === "number" && Number.isInteger(value)) return nairaToKobo(value);
+  const s = typeof value === "number" ? String(value) : typeof value === "string" ? value.trim() : "";
+  if (/^-/.test(s)) throw new Error(`amount must not be negative, got: ${JSON.stringify(value)}`);
+  const m = /^(\d+)(?:\.(\d{1,2}))?$/.exec(s);
+  if (!m) throw new Error(`amount must be a number with at most 2 decimals, got: ${JSON.stringify(value)}`);
+  const kobo = Number(m[1]) * 100 + Number((m[2] ?? "").padEnd(2, "0"));
+  if (!Number.isSafeInteger(kobo)) throw new Error(`amount is too large: ${JSON.stringify(value)}`);
+  return kobo;
+}
+
 // "₦15,000" / "₦0.50" for clarifying questions.
 export function formatKobo(kobo) {
   const sign = kobo < 0 ? "-" : "";

@@ -224,6 +224,29 @@ describe("offline queue: x-request-id idempotency", () => {
     }
   });
 
+  it("manual proposals replay under the same id and confirm once", async () => {
+    const deps = setup(async () => PART_PAYMENT);
+    try {
+      const body = { kind: "sale", customer: "Ada", item: "rice", quantity: 1, amount_naira: "2500.50" };
+      const first = await post(deps, "/proposals/manual", SHOP_A, body, { "x-request-id": "manual-1" });
+      assert.equal(first.status, 201);
+      assert.equal(first.json.proposal.source, "manual");
+      const replay = await post(deps, "/proposals/manual", SHOP_A, body, { "x-request-id": "manual-1" });
+      assert.equal(replay.status, 200);
+      assert.equal(replay.json.proposal.id, first.json.proposal.id);
+      assert.equal(deps.proposals.listByShop(SHOP_A).length, 1);
+      const id = first.json.proposal.id;
+      const confirmed = await post(deps, `/confirm/${id}`, SHOP_A, {});
+      assert.equal(confirmed.json.alreadyConfirmed, false);
+      const again = await post(deps, `/confirm/${id}`, SHOP_A, {});
+      assert.equal(again.json.alreadyConfirmed, true);
+      assert.equal(deps.ledger.list(SHOP_A).length, 2);
+      assert.equal(deps.proposals.listByShop(SHOP_A).length, 1);
+    } finally {
+      teardown(deps);
+    }
+  });
+
   it("form and photo routes replay under the same id", async () => {
     const deps = setup(async () => PART_PAYMENT);
     try {

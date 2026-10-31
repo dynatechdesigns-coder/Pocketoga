@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseNaira, nairaToKobo, formatKobo, extractNairaAmounts } from "./money.mjs";
+import { parseNaira, nairaToKobo, decimalNairaToKobo, formatKobo, extractNairaAmounts } from "./money.mjs";
 
 describe("parseNaira (deterministic money parser)", () => {
   it("parses the required cases", () => {
@@ -44,6 +44,26 @@ describe("parseNaira (deterministic money parser)", () => {
     assert.throws(() => nairaToKobo(15.5), /whole naira/);
     assert.throws(() => nairaToKobo(-1), /negative/);
     assert.throws(() => nairaToKobo("15"), /whole naira/);
+  });
+
+  it("decimalNairaToKobo converts decimal strings and numbers without floats", () => {
+    assert.equal(decimalNairaToKobo(15), 1500);
+    assert.equal(decimalNairaToKobo("2500"), 250000);
+    assert.equal(decimalNairaToKobo("2500.5"), 250050);
+    assert.equal(decimalNairaToKobo("2500.50"), 250050);
+    assert.equal(decimalNairaToKobo("  99.99  "), 9999);
+    assert.equal(decimalNairaToKobo(2500.5), 250050);
+    assert.equal(decimalNairaToKobo("0.07"), 7);
+    assert.equal(decimalNairaToKobo(0), 0);
+    assert.throws(() => decimalNairaToKobo("2500.555"), /at most 2 decimals/);
+    assert.throws(() => decimalNairaToKobo("abc"), /at most 2 decimals/);
+    assert.throws(() => decimalNairaToKobo(""), /at most 2 decimals/);
+    assert.throws(() => decimalNairaToKobo(null), /at most 2 decimals/);
+    assert.throws(() => decimalNairaToKobo("1e3"), /at most 2 decimals/);
+    assert.throws(() => decimalNairaToKobo(-5), /negative/);
+    assert.throws(() => decimalNairaToKobo("-5.25"), /negative/);
+    assert.throws(() => decimalNairaToKobo(NaN), /at most 2 decimals/);
+    assert.throws(() => decimalNairaToKobo("99999999999999999"), /too large/);
   });
 
   it("extractNairaAmounts finds digits and number words", () => {
