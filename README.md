@@ -19,3 +19,10 @@ One Docker web service on the Render free plan serves the API, the WhatsApp webh
 Storage: the free plan has temporary storage — the database resets on restart or redeploy, so the demo shop reseeds itself on every boot that finds it empty, and a 10-minute SQLite backup (`VACUUM INTO`, last 7 kept in `DATA_DIR/backups`) restores automatically when the main file is gone. Real shops work normally while the instance is alive. A paid deployment would mount a persistent disk at `DATA_DIR` so the ledger and backups survive restarts.
 
 Demo judges use the web app; WhatsApp runs on a Meta test number, so the WhatsApp flow is shown in the demo video, not live.
+
+## Credits
+- AI models: Meta Model API (muse-spark-1.3 text, muse-spark-1.2 audio); open-weight second opinion muse-spark-open-1026 served on Baseten.
+- Landing page images: generated with Muse Image.
+- Icons: Lucide (lucide-react), ISC licence.
+- Font: Plus Jakarta Sans, SIL Open Font License, loaded from Google Fonts.
+- Demo audio and all sample data: recorded or written by the author. No outside datasets.
