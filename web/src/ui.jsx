@@ -5,10 +5,10 @@
 // together) so Tailwind can find them.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { CloudOff, Hourglass, Moon, Sun, X } from "lucide-react";
+import { Hourglass, Moon, Sun, X } from "lucide-react";
 import { friendlyError, getShopId, isNotBuilt } from "./api.js";
 import { loadWithSaved } from "./loadWithSaved.js";
-import { oldestSaved, retryDelayMs, savedLabel } from "./savedLabel.js";
+import { lastUpdated, lastUpdatedSpoken, oldestSaved, retryDelayMs } from "./savedLabel.js";
 import { onDataChanged } from "./refresh.js";
 import { isDark, setTheme } from "./theme.js";
 export { setTheme };
@@ -77,15 +77,17 @@ export function useLoad(loader, { cache } = {}) {
   return { ...state, reload };
 }
 
-// The label at the top of a screen that is showing saved data. `saved` is a
-// useLoad `saved` value, or several (the oldest time wins). Nothing when none.
+// The quiet one-line note at the top of a screen that is showing saved data:
+// "Last updated 05:32". `saved` is a useLoad `saved` value, or several (the
+// oldest time wins). Nothing when none. Screen readers also hear that it is
+// saved data and that the app is offline.
 export function SavedBanner({ saved }) {
   const at = oldestSaved(...[].concat(saved));
   if (!at) return null;
   return (
-    <p data-part="saved-banner" role="status" className="mb-4 flex items-start gap-2.5 rounded-2xl border border-amber bg-amber-soft px-4 py-3 text-[0.9375rem] font-bold text-amber-ink">
-      <CloudOff aria-hidden="true" className="mt-0.5 size-5 shrink-0" />
-      <span className="min-w-0 [overflow-wrap:anywhere]">{savedLabel(at)}</span>
+    <p data-part="saved-banner" role="status" className="mb-3 text-sm text-muted [overflow-wrap:anywhere]">
+      <span className="sr-only">{lastUpdatedSpoken(at)}</span>
+      <span aria-hidden="true">{lastUpdated(at)}</span>
     </p>
   );
 }

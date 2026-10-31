@@ -105,8 +105,10 @@ export function createQueue({ store, send, onResult, isOnline = () => globalThis
       const tries = item.tries + 1;
       const network = isNetworkError(err) || err?.name === "AbortError";
       // A reply from the server is never hidden: a 4xx stops the item at once
-      // with the server's message; a 5xx or a lost connection is tried again.
-      const serverRefused = err instanceof ApiError && err.status >= 400 && err.status < 500;
+      // with the server's message; a 5xx, a 429 (too many requests), a 409 for
+      // a repeat still being processed, or a lost connection is tried again.
+      const serverRefused =
+        err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 429 && !(err.status === 409 && /being processed/i.test(err.message));
       if (serverRefused || tries >= MAX_TRIES) {
         const message = network ? `Could not reach PocketOga after ${MAX_TRIES} tries.` : friendlyError(err);
         await save({ ...item, tries, status: "needs-you", error: message, nextAt: 0 });

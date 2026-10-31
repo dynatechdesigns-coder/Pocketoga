@@ -2,14 +2,21 @@
 // before asking the server again. Plain JavaScript so the tests can use it.
 import { lagosDay, timeLabel } from "./format.js";
 
-// "Saved data from 05:10. You are offline."; with the date when it was not
-// saved today: "Saved data from 28 Oct, 05:10. You are offline."
-export function savedLabel(savedAt, now = Date.now()) {
+// The quiet note under the header while saved data is showing:
+// "Last updated 05:32"; "Last updated yesterday 18:10"; "Last updated 28 Oct 18:10".
+// It does not repeat that the app is offline (the pill says so).
+export function lastUpdated(savedAt, now = Date.now()) {
   const time = timeLabel(savedAt);
-  if (lagosDay(savedAt) === lagosDay(new Date(now).toISOString())) return `Saved data from ${time}. You are offline.`;
+  const day = lagosDay(savedAt);
+  if (day === lagosDay(new Date(now).toISOString())) return `Last updated ${time}`;
+  if (day === lagosDay(new Date(now - 86_400_000).toISOString())) return `Last updated yesterday ${time}`;
   const date = new Date(savedAt).toLocaleDateString("en-GB", { timeZone: "Africa/Lagos", day: "numeric", month: "short" });
-  return `Saved data from ${date}, ${time}. You are offline.`;
+  return `Last updated ${date} ${time}`;
 }
+
+// What a screen reader hears for the same note: that this is saved data and
+// that the app is offline, which the quiet text leaves out.
+export const lastUpdatedSpoken = (savedAt, now) => `Saved data. You are offline. ${lastUpdated(savedAt, now)}.`;
 
 // The oldest of several saved times (a screen made of two loads is as old as
 // its older half), or null when none of it is saved data.

@@ -22,6 +22,8 @@ export default function ConfirmCard({ proposal, shopId, onRerun, onUpdate, onFin
   // Only a spoken or typed note can be re-read from corrected text.
   const canEditHeard = !!onRerun && (proposal.source === "voice" || proposal.source === "text") && !proposal.correctionOf && !proposal.photoCheck;
 
+  // A hand-entered record has no heard text for Fix to work from.
+  const isManual = proposal.source === "manual";
   const problems = problemsOf(proposal);
   const canSave = isSaveable(proposal);
   const hint = hintLine(proposal);
@@ -76,7 +78,7 @@ export default function ConfirmCard({ proposal, shopId, onRerun, onUpdate, onFin
               <li key={i}>{q}</li>
             ))}
           </ul>
-          <p className="text-sm">Tap Fix and tell PocketOga the right answer.</p>
+          <p className="text-sm">{isManual ? "Tap Reject and enter it again with the right details." : "Tap Fix and tell PocketOga the right answer."}</p>
         </div>
       )}
 
@@ -250,10 +252,17 @@ export default function ConfirmCard({ proposal, shopId, onRerun, onUpdate, onFin
               {problems.length > 0 ? "Save is locked until the check above is answered." : "Nothing to save."}
             </p>
           )}
+          {isManual && (
+            <p data-part="manual-note" className="text-center text-sm text-muted">
+              You typed this in. If it is wrong, tap Reject and enter it again.
+            </p>
+          )}
           <div className="flex gap-2 *:flex-1">
-            <Button variant="amber" onClick={() => setFixing(true)} disabled={!!busy}>
-              <Pencil aria-hidden="true" /> Fix
-            </Button>
+            {!isManual && (
+              <Button variant="amber" onClick={() => setFixing(true)} disabled={!!busy}>
+                <Pencil aria-hidden="true" /> Fix
+              </Button>
+            )}
             <Button variant="quiet" onClick={reject} disabled={!!busy} aria-label="Reject, do not save">
               <X aria-hidden="true" /> {busy === "reject" ? "Rejecting…" : "Reject"}
             </Button>

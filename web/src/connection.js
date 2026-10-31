@@ -34,6 +34,10 @@ export function pillText(s, waiting = 0) {
   return waiting > 0 ? `Offline · ${waiting} waiting` : "Offline";
 }
 
+// Grey while the app is simply offline; amber only when a queued item needs
+// the trader ("needs-you").
+export const pillTone = (items = []) => (items.some((i) => i.status === "needs-you") ? "warn" : "neutral");
+
 export const connection = createConnection();
 
 // Wires the browser events to the shared store (once).

@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, CloudOff, Mic, ScanSearch, Type, X } from "lucide-react";
+import { AlertTriangle, CloudOff, Mic, PenLine, ScanSearch, Type, X } from "lucide-react";
 import { getShopQueue } from "./shopQueue.js";
 import { timeLabel } from "./format.js";
 import { queuedRow } from "./queuedRow.js";
 import { Card, IconCircle } from "./ui.jsx";
 
-const KINDS = { text: ["Typed note", Type], audio: ["Voice note", Mic], photo: ["Alert photo", ScanSearch] };
+const KINDS = { text: ["Typed note", Type], audio: ["Voice note", Mic], photo: ["Alert photo", ScanSearch], manual: ["Entered by hand", PenLine] };
 
 // The queue's items for a shop, live. Empty when IndexedDB is unavailable.
 export function useQueueItems(shopId) {

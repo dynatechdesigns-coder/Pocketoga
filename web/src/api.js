@@ -12,6 +12,7 @@ const API_BASE = (import.meta.env?.VITE_API_BASE ?? "/api").replace(/\/$/, "");
 export const DEMO_SHOP_ID = "demo";
 
 import { connection } from "./connection.js";
+import { buildManualRequest } from "./manualFormat.js";
 import { notifyDataChanged } from "./refresh.js";
 
 let shopId = null;
@@ -140,6 +141,14 @@ export async function proposeText(text, hint, signal, meta) {
 // POST /propose { audioBase64, audioFormat, hint? } -> { proposal }. Format: wav|mp3.
 export async function proposeAudio(audioBase64, audioFormat = "wav", hint, signal, meta) {
   return (await request("POST", "/propose", withSpoken(withHint({ audioBase64, audioFormat }, hint), meta), signal, metaHeaders(meta))).proposal;
+}
+
+// POST /proposals/manual (format in manualFormat.js) -> { proposal }. A record
+// entered by hand while offline, sent from the queue with its own request id
+// and the time it was entered (occurred_at). The trader still checks and saves.
+export async function proposeManual(entry, signal, meta) {
+  const req = buildManualRequest(entry, meta);
+  return (await request("POST", req.path, req.body, signal, req.headers)).proposal;
 }
 
 // POST /propose-form <fields from recordForm.js> -> 201 { proposal }. No model

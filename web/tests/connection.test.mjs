@@ -70,6 +70,28 @@ describe("state", () => {
   });
 });
 
+describe("pill tone", () => {
+  const { pillTone } = C;
+  test("grey while simply offline, with or without queued items", () => {
+    assert.equal(pillTone([]), "neutral");
+    assert.equal(pillTone(), "neutral");
+    assert.equal(pillTone([{ status: "waiting" }, { status: "waiting" }]), "neutral");
+  });
+
+  test("amber only when a queued item is in the Needs you state", () => {
+    assert.equal(pillTone([{ status: "waiting" }, { status: "needs-you" }]), "warn");
+  });
+
+  test("the pill source keeps role=status, an icon, and no amber unless warned", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../src/OfflinePill.jsx", import.meta.url), "utf8");
+    assert.match(src, /role="status"/);
+    assert.match(src, /CloudOff/);
+    assert.match(src, /neutral: "border-line bg-slate text-ink"/);
+    assert.match(src, /warn: "border-amber bg-amber-soft text-amber-ink"/);
+  });
+});
+
 describe("text", () => {
   test("queued items show 'Offline · N waiting' only while offline", () => {
     const off = createConnection({ isOnline: () => false }).get();

@@ -1,8 +1,11 @@
-import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, CloudOff, Keyboard, Mic, RotateCcw, ScanSearch, Send, Square, X } from "lucide-react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { ArrowLeft, Check, CloudOff, PenLine, Keyboard, Mic, RotateCcw, ScanSearch, Send, Square, X } from "lucide-react";
 import { getProposal, proposeAudio, proposeText } from "../api.js";
 import { OFFLINE_MESSAGE, SAVED_MESSAGE, newMeta } from "../offlineQueue.js";
 import { READY_EVENT, getShopQueue, popReady } from "../shopQueue.js";
+import { connection } from "../connection.js";
+import { MANUAL_SAVED_MESSAGE, showManualEntry } from "../manualEntry.js";
+import ManualEntry from "../ManualEntry.jsx";
 import { MESSAGES, STAGES, VOICE_STAGES, VOICE_STAGE_DELAYS_MS, VOICE_TIMEOUT_MS, canRetry, isEmptyRecording, toWaitError, waitForProposal } from "../recordWait.js";
 import { CANCELLED_MESSAGE, CANCELLED_MS, createRunTracker, micAction } from "../cancelRun.js";
 import { TIME_UP_MESSAGE, VOICE_HINT, createRecordTimer } from "../recordLimits.js";
@@ -64,6 +67,8 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
   const runs = useRef(null);
   if (!runs.current) runs.current = createRunTracker();
   const [queuedNote, setQueuedNote] = useState(null); // "Saved. It will send when you are back online."
+  const [manualOpen, setManualOpen] = useState(false); // the by-hand form, offered only while offline
+  const conn = useSyncExternalStore(connection.subscribe, connection.get);
   const proposalRef = useRef(null);
   const readyBusy = useRef(false);
   const cancelTimer = useRef(null);
@@ -516,6 +521,12 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
         </Card>
       )}
 
+      {showManualEntry(conn) && !busy && !recording && (
+        <Button data-part="manual-entry" variant="amber" className="mb-4" onClick={() => setManualOpen(true)}>
+          <PenLine aria-hidden="true" /> No signal? Enter it by hand
+        </Button>
+      )}
+
       <Card as="form" onSubmit={sendText} {...rise(1, "grid gap-3")}>
         <label htmlFor="note-text" className="font-bold">
           Or type it
@@ -538,6 +549,17 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
       <Button data-part="check-alert" variant="quiet" className="mt-4" onClick={() => onGo("alert")}>
         <ScanSearch aria-hidden="true" /> Check alert
       </Button>
+
+      {/* Stays open if the signal comes back; the button above is what goes. */}
+      <ManualEntry
+        open={manualOpen}
+        onClose={() => setManualOpen(false)}
+        shopId={shop.id}
+        onSaved={() => {
+          setManualOpen(false);
+          setQueuedNote(MANUAL_SAVED_MESSAGE);
+        }}
+      />
 
       <RecordForm
         key={hint ?? "none"}

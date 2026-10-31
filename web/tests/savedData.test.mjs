@@ -9,7 +9,7 @@ const { ApiError, GET_TIMEOUT_MS, getDebts, setShop } = await import("../src/api
 const { connection } = await import("../src/connection.js");
 const { createSavedData, withoutPhones } = await import("../src/savedData.js");
 const { loadWithSaved } = await import("../src/loadWithSaved.js");
-const { oldestSaved, retryDelayMs, savedLabel } = await import("../src/savedLabel.js");
+const { lastUpdated, lastUpdatedSpoken, oldestSaved, retryDelayMs } = await import("../src/savedLabel.js");
 
 // --- fakes ---------------------------------------------------------------------
 
@@ -159,12 +159,26 @@ describe("deleting on sign-out or switching shops", () => {
 describe("label", () => {
   const now = Date.parse("2026-10-31T10:30:00Z"); // 11:30 in Lagos
 
-  test("saved today: time only", () => {
-    assert.equal(savedLabel("2026-10-31T04:10:00Z", now), "Saved data from 05:10. You are offline.");
+  test("saved today: a quiet 'Last updated' with the time, and no 'offline'", () => {
+    assert.equal(lastUpdated("2026-10-31T04:10:00Z", now), "Last updated 05:10");
+    assert.doesNotMatch(lastUpdated("2026-10-31T04:10:00Z", now), /offline/i);
   });
 
-  test("saved on another day: date and time", () => {
-    assert.equal(savedLabel("2026-10-28T04:10:00Z", now), "Saved data from 28 Oct, 05:10. You are offline.");
+  test("saved yesterday: says yesterday; older: the date", () => {
+    assert.equal(lastUpdated("2026-10-30T17:10:00Z", now), "Last updated yesterday 18:10");
+    assert.equal(lastUpdated("2026-10-28T04:10:00Z", now), "Last updated 28 Oct 05:10");
+  });
+
+  test("screen readers still hear that it is saved data and that the app is offline", () => {
+    assert.equal(lastUpdatedSpoken("2026-10-31T04:10:00Z", now), "Saved data. You are offline. Last updated 05:10.");
+  });
+
+  test("the banner is a muted one-liner: no box, no icon; spoken text for readers", () => {
+    const ui = readFileSync(new URL("../src/ui.jsx", import.meta.url), "utf8");
+    const banner = ui.slice(ui.indexOf("export function SavedBanner"), ui.indexOf("// Fade and rise"));
+    assert.match(banner, /text-sm text-muted/);
+    assert.match(banner, /sr-only/);
+    assert.doesNotMatch(banner, /border|bg-amber|rounded|Icon|CloudOff/);
   });
 
   test("a screen made of two loads shows the older time; none means no label", () => {
