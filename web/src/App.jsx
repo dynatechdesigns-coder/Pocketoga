@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BarChart3, ScanSearch, Check, ChevronRight, Ellipsis, MessageSquare, Mic, Package, Receipt, ScrollText, Settings, ShoppingBag, Users, UserRound, Wallet } from "lucide-react";
+import { BarChart3, ScanSearch, Check, ChevronRight, Ellipsis, Mic, Package, Receipt, ScrollText, Settings, ShoppingBag, Users, UserRound, Wallet } from "lucide-react";
 import { getShopId, requestsRunning, setShop } from "./api.js";
 import DevBanner from "./DevBanner.jsx";
 import InstallRow, { InstallSteps } from "./InstallRow.jsx";
@@ -23,7 +23,6 @@ import ExpensesScreen from "./screens/ExpensesScreen.jsx";
 import CustomersScreen from "./screens/CustomersScreen.jsx";
 import AlertCheckScreen from "./screens/AlertCheckScreen.jsx";
 import SettingsScreen from "./screens/SettingsScreen.jsx";
-import FeedbackScreen from "./screens/FeedbackScreen.jsx";
 
 // The dock: five equal slots, the raised mic in the middle one, so it is
 // centred on the dock at any width.
@@ -41,7 +40,6 @@ const MORE = [
   { key: "customers", label: "Customers", icon: UserRound, hint: "Phone numbers and balances" },
   { key: "ledger", label: "Ledger", icon: ScrollText, hint: "All records, and fixes" },
   { key: "settings", label: "Settings", icon: Settings, hint: "Theme and shop" },
-  { key: "feedback", label: "Send feedback", icon: MessageSquare, hint: "Suggestions, problems and reviews" },
 ];
 const MORE_KEYS = MORE.map((m) => m.key);
 
@@ -59,7 +57,7 @@ const SLOT = "flex min-h-[72px] flex-col items-center justify-end gap-1 pb-2 tex
 
 // The signed-in app for one open shop ({ id, name, demo }); Root decides when
 // it shows and what leaving the shop does.
-export default function App({ shop, onExit }) {
+export default function App({ shop, onExit, onLogin }) {
   const [tab, setTab] = useState("money");
   // What the next screen should do on arrival: "chase" (open the top debtor),
   // "broken" (debtors with a broken promise), { text } (pre-fill Record),
@@ -177,8 +175,7 @@ export default function App({ shop, onExit }) {
         {tab === "customers" && <CustomersScreen />}
         {tab === "ledger" && <LedgerScreen shop={shop} intent={intent} onGo={go} />}
         {tab === "alert" && <AlertCheckScreen shop={shop} />}
-        {tab === "settings" && <SettingsScreen shop={shop} onExit={onExit} />}
-        {tab === "feedback" && <FeedbackScreen onGo={go} />}
+        {tab === "settings" && <SettingsScreen shop={shop} intent={intent} onExit={onExit} onLogin={onLogin} />}
       </main>
 
       {saved && (

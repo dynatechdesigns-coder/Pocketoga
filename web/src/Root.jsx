@@ -49,6 +49,17 @@ export default function Root() {
     window.scrollTo(0, 0);
   }
 
+  // From the demo: leave it and open the login screen (no landing page between).
+  function exitToLogin() {
+    if (shop) savedData.clearShop(shop.id);
+    saveShop(null);
+    setShop(null);
+    setNotice("");
+    history.pushState(null, "", "/login");
+    setOnLogin(true);
+    window.scrollTo(0, 0);
+  }
+
   useEffect(() => {
     const onPop = () => setOnLogin(location.pathname === "/login");
     // The server turned the token away: back to the login, with a reason.
@@ -84,7 +95,7 @@ export default function Root() {
   }
   return (
     <Suspense fallback={<div role="status" aria-label="Loading" className="min-h-dvh" />}>
-      <App shop={shop} onExit={exit} />
+      <App shop={shop} onExit={exit} onLogin={exitToLogin} />
     </Suspense>
   );
 }

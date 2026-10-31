@@ -27,7 +27,7 @@ export default function MoneyScreen({ shop, onGo }) {
       {/* The last thing on Home: a quiet link, in the page flow (the main area's
           bottom padding already clears the dock, the mic and the home bar). */}
       <p className="mt-8 pb-2 text-center">
-        <button type="button" data-part="feedback-link" onClick={() => onGo("feedback")} className="min-h-12 rounded-full px-4 text-sm font-medium text-muted underline">
+        <button type="button" data-part="feedback-link" onClick={() => onGo("settings", "feedback")} className="min-h-12 rounded-full px-4 text-sm font-medium text-muted underline">
           Send feedback
         </button>
       </p>

@@ -2,7 +2,7 @@
 // limits, the state after errors (what was typed is kept), offline, the two
 // entry points and the screen's fixed wording. Fake data only.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, test } from "node:test";
 
 const F = await import("../src/feedback.js");
@@ -214,7 +214,7 @@ describe("sending", () => {
   });
 
   test("it never touches the offline queue", () => {
-    for (const file of ["src/feedback.js", "src/feedbackFormat.js", "src/screens/FeedbackScreen.jsx"]) {
+    for (const file of ["src/feedback.js", "src/feedbackFormat.js", "src/FeedbackSection.jsx"]) {
       assert.doesNotMatch(read(file), /offlineQueue|shopQueue|enqueue|getShopQueue/, file);
     }
   });
@@ -263,37 +263,39 @@ describe("entry points", () => {
     assert.match(link[1], /text-center/);
     assert.match(link[2], /text-muted/);
     assert.match(link[2], /underline/);
-    assert.doesNotMatch(link[1] + link[2], /fixed|absolute|sticky|bg-(primary|hero|cta)|border-\[1\.5px\]/); // not floating, not a button
-    assert.match(money, /onClick=\{\(\) => onGo\("feedback"\)\}/);
-    // after the cards: the link comes after the body and sits before the section closes
+    assert.doesNotMatch(link[1] + link[2], /fixed|absolute|sticky|bg-(primary|hero|cta)|border-\[1\.5px\]/);
     assert.ok(money.indexOf("<MoneyBody report") < money.indexOf('data-part="feedback-link"'));
     assert.match(money, /data-part="feedback-link"[^]*?<\/section>/);
   });
 
+  test("Home: the link opens Settings and asks it to scroll to Feedback", () => {
+    assert.match(read("src/screens/MoneyScreen.jsx"), /onClick=\{\(\) => onGo\("settings", "feedback"\)\}/);
+    const settings = read("src/screens/SettingsScreen.jsx");
+    assert.match(settings, /intent !== "feedback"/);
+    assert.match(settings, /scrollIntoView/);
+    assert.match(read("src/App.jsx"), /<SettingsScreen shop=\{shop\} intent=\{intent\}/);
+  });
+
   test("Home: the page's own bottom padding (dock, mic, safe area) still applies, nothing is fixed", () => {
-    const app = read("src/App.jsx");
-    assert.match(app, /pb-\[calc\(152px\+max\(env\(safe-area-inset-bottom\),16px\)\)\]/);
+    assert.match(read("src/App.jsx"), /pb-\[calc\(152px\+max\(env\(safe-area-inset-bottom\),16px\)\)\]/);
   });
 
-  test("More: a 'Send feedback' row opens the same screen", () => {
+  test("there is no separate Send feedback screen or More row any more", () => {
     const app = read("src/App.jsx");
-    assert.match(app, /\{ key: "feedback", label: "Send feedback"/);
-    assert.match(app, /tab === "feedback" && <FeedbackScreen onGo=\{go\} \/>/);
-    // both entry points go to the same tab key
-    assert.match(read("src/screens/MoneyScreen.jsx"), /onGo\("feedback"\)/);
+    assert.doesNotMatch(app, /FeedbackScreen|Send feedback|key: "feedback"|tab === "feedback"/);
+    assert.equal(existsSync(new URL("../src/screens/FeedbackScreen.jsx", import.meta.url)), false);
   });
 
-  test("the app is not blocked if the screen breaks: it has an error boundary and nothing else imports it", () => {
-    const screen = read("src/screens/FeedbackScreen.jsx");
-    assert.match(screen, /getDerivedStateFromError/);
-    assert.match(screen, /Feedback is not working right now/);
-    assert.match(screen, /export default function FeedbackScreen/);
-    for (const f of ["src/App.jsx", "src/screens/MoneyScreen.jsx"]) assert.doesNotMatch(read(f).replace(/.*FeedbackScreen.*\n/g, ""), /feedback\.js/);
+  test("a broken Feedback section does not break Settings: it has its own error boundary", () => {
+    const section = read("src/FeedbackSection.jsx");
+    assert.match(section, /getDerivedStateFromError/);
+    assert.match(section, /<FeedbackBoundary>\s*<FeedbackForm \/>\s*<\/FeedbackBoundary>/);
+    assert.match(section, /The rest of Settings is fine/);
   });
 });
 
 describe("the screen", () => {
-  const screen = read("src/screens/FeedbackScreen.jsx");
+  const screen = read("src/FeedbackSection.jsx");
 
   test("always shows the privacy line, word for word", () => {
     assert.equal(F.PRIVACY_NOTE, "Please don't include phone numbers or real customer names. Voice is turned into text and the recording is deleted.");

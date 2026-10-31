@@ -1,21 +1,38 @@
-import { LogOut, ShieldCheck } from "lucide-react";
-import { Avatar, Button, Card, IconCircle, PeriodTabs, ScreenHeader, SectionTitle, setTheme, useDark } from "../ui.jsx";
+import { useEffect, useRef, useState } from "react";
+import { KeyRound, LogOut } from "lucide-react";
+import FeedbackSection from "../FeedbackSection.jsx";
+import InstallRow, { InstallSteps } from "../InstallRow.jsx";
+import { shopInfo } from "../settings.js";
+import { Avatar, Button, Card, IconCircle, PeriodTabs, Pill, ScreenHeader, SectionTitle, setTheme, useDark } from "../ui.jsx";
 
 const THEMES = [
   { key: "light", label: "Light" },
   { key: "dark", label: "Dark" },
 ];
 
-// Theme (light unless the trader picks dark, remembered on this device), the
-// shop, and leaving the shop. (Installing the app is in the More menu.)
-export default function SettingsScreen({ shop, onExit }) {
+// Top to bottom: Theme, Your shop (demo or real), Install PocketOga (where it
+// is possible), Feedback, then the leave button (Sign out for a real shop). `intent` "feedback"
+// scrolls to the Feedback section (the quiet link at the bottom of Home).
+// `onLogin` opens the login screen from the sample shop.
+export default function SettingsScreen({ shop, intent, onExit, onLogin }) {
   const dark = useDark();
+  const info = shopInfo(shop);
+  const [installSteps, setInstallSteps] = useState(false); // iPhone and iPad: how to add it to the home screen
+  const feedbackRef = useRef(null);
+
+  useEffect(() => {
+    if (intent !== "feedback") return;
+    const section = feedbackRef.current;
+    if (!section) return;
+    section.scrollIntoView({ block: "start" });
+    section.querySelector("#feedback-title")?.focus({ preventScroll: true });
+  }, [intent]);
 
   return (
-    <section className="grid gap-4">
+    <section data-part="settings" className="grid gap-4">
       <ScreenHeader title="Settings" />
 
-      <Card as="article" className="grid gap-3">
+      <Card as="article" data-part="settings-theme" className="grid gap-3">
         <SectionTitle as="h2" className="mt-0">
           Theme
         </SectionTitle>
@@ -23,23 +40,49 @@ export default function SettingsScreen({ shop, onExit }) {
         <PeriodTabs periods={THEMES} value={dark ? "dark" : "light"} onChange={setTheme} label="Theme" />
       </Card>
 
-      <Card as="article" className="flex items-center gap-4">
-        <Avatar name={shop.name} size="lg" />
-        <div>
-          <SectionTitle as="h2" className="mt-0">
-            {shop.name}
+      <section data-part="settings-shop" data-kind={info.kind} aria-labelledby="your-shop-title" className="grid gap-4">
+        <Card as="article" className="grid gap-3">
+          <SectionTitle as="h2" id="your-shop-title" className="mt-0">
+            Your shop
           </SectionTitle>
-          <p className="text-sm text-muted">{shop.demo ? "Demo shop · fake data only" : `Shop ID: ${shop.id}`}</p>
-        </div>
-      </Card>
+          <div className="flex items-center gap-4">
+            <Avatar name={info.name} size="lg" />
+            <div className="grid min-w-0 gap-1">
+              <p className="text-lg font-extrabold [overflow-wrap:anywhere]">{info.name}</p>
+              <span>
+                <Pill tone={info.kind === "demo" ? "amber" : "teal"}>{info.badge}</Pill>
+              </span>
+            </div>
+          </div>
+          <p className="text-sm text-muted">{info.line}</p>
+        </Card>
 
-      <Card as="article" className="flex items-center gap-4">
-        <IconCircle icon={ShieldCheck} tone="lavender" />
-        <p className="text-muted">PocketOga only suggests. Nothing is saved until you tap Save, and saved records are never edited: fixes are added as corrections.</p>
-      </Card>
+        {info.openReal && (
+          <Card as="article" data-part="open-real-shop" className="grid gap-3">
+            <div className="flex items-center gap-3">
+              <IconCircle icon={KeyRound} tone="lavender" size="sm" />
+              <SectionTitle as="h3" className="mt-0">
+                {info.openReal.title}
+              </SectionTitle>
+            </div>
+            <p className="text-muted">{info.openReal.line}</p>
+            <Button data-part="login-to-shop" onClick={onLogin}>
+              {info.openReal.button}
+            </Button>
+          </Card>
+        )}
+      </section>
 
-      <Button variant="quiet" onClick={onExit}>
-        <LogOut aria-hidden="true" /> {shop.demo ? "Leave the demo" : "Log out"}
+      {/* Only where installing is possible; empty (and gap-free) otherwise. */}
+      <ul data-part="settings-install" className="grid empty:hidden">
+        <InstallRow onClose={() => {}} onSteps={() => setInstallSteps(true)} />
+      </ul>
+      <InstallSteps open={installSteps} onClose={() => setInstallSteps(false)} />
+
+      <FeedbackSection sectionRef={feedbackRef} />
+
+      <Button data-part="leave" variant={info.leave.variant} className="mt-2" onClick={onExit}>
+        <LogOut aria-hidden="true" /> {info.leave.label}
       </Button>
     </section>
   );

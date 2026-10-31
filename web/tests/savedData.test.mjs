@@ -148,9 +148,9 @@ describe("deleting on sign-out or switching shops", () => {
     assert.deepEqual([...ls.map.keys()].filter((k) => k.includes("shop-a")), []);
   });
 
-  test("Root clears the shop on sign-out, on a session end and when another shop opens", () => {
+  test("Root clears the shop on sign-out, on a session end, when another shop opens and when the demo goes to the login", () => {
     const root = readFileSync(new URL("../src/Root.jsx", import.meta.url), "utf8");
-    assert.equal((root.match(/savedData\.clearShop/g) ?? []).length, 3);
+    assert.equal((root.match(/savedData\.clearShop/g) ?? []).length, 4);
   });
 });
 

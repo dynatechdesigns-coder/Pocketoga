@@ -44,9 +44,10 @@ const PILL_TONES = {
   white: "bg-white text-ink shadow-lift",
 };
 
-export function Pill({ tone = "sunset", icon: Icon, className, children }) {
+export function Pill({ tone = "sunset", icon: Icon, className, children, ...rest }) {
   return (
     <span
+      {...rest}
       className={cx(
         "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-extrabold [&_svg]:size-4 [&_svg]:shrink-0",
         PILL_TONES[tone],
