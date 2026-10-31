@@ -23,7 +23,7 @@ import { SecondOpinionStore } from "./secondopinion.mjs";
 import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
 import { PhotoCheckStore } from "./photos.mjs";
 import { IdempotencyStore, MAX_REQUEST_ID_LENGTH } from "./idempotency.mjs";
-import { FeedbackStore, validateFeedbackBody, feedbackError, notifyFeedbackWebhook } from "./feedback.mjs";
+import { FeedbackStore, validateFeedbackBody, feedbackError, notifyFeedbackWebhook, classifyFeedbackType } from "./feedback.mjs";
 import { createModelClient } from "./model.mjs";
 import { propose, confirmProposal, fixProposal, rejectProposal, getProposal, proposeCorrection, proposeFromForm, proposeManual, toProposal } from "./voice.mjs";
 import { proposePhotoCheck } from "./photos.mjs";
@@ -479,18 +479,19 @@ export async function handleVoiceRequest(req, res, deps) {
   }
 
   // Trader feedback about the app itself (never ledger data): a typed note or
-  // a voice note up to 45 seconds, exactly one of the two. Typed answers
-  // 201 { ok: true }; audio is transcribed with the same model call as a
-  // voice note and answers 201 { ok: true, text }. Validation is 400 with a
-  // plain message; past 5 per hour per IP or per shop is 429. Invalid bodies
-  // never consume quota; only stored feedback counts. The stored row is also
-  // forwarded to the owner inbox (FEEDBACK_WEBHOOK_URL, best-effort).
+  // a voice note up to 45 seconds, exactly one of the two, with an optional
+  // type that is kept as-is when supplied. Typed answers 201 { ok: true };
+  // audio is transcribed with the same model call as a voice note and
+  // answers 201 { ok: true, text }. Validation is 400 with a plain message;
+  // past 5 per hour per IP or per shop is 429, claimed atomically before the
+  // reply. Everything after the reply — type detection, storing, owner
+  // inbox — never blocks the trader: the reply is already on its way.
   if (req.method === "POST" && parts.length === 1 && parts[0] === "feedback") {
     if (!deps.feedback) throw Object.assign(new Error("feedback store is required"), { status: 500 });
     const body = await readBody(req);
     const fields = validateFeedbackBody(body);
     const ip = clientIp(req);
-    if (deps.feedback.limited(ip, shopId, Date.now())) {
+    if (!deps.feedback.claim(ip, shopId, Date.now())) {
       throw feedbackError(429, "too many feedback messages — try again in an hour");
     }
     let text = fields.text;
@@ -512,15 +513,36 @@ export async function handleVoiceRequest(req, res, deps) {
         throw feedbackError(400, "could not hear anything in that voice note — please try again");
       }
     }
-    deps.feedback.record({ shopId, ip, type: fields.type, rating: fields.rating, text });
-    // Owner inbox, best-effort: a missing config or failed delivery still
-    // answers 201 below, and the notifier logs only its fixed failure line.
+    // The reply goes out before detection, storing and forwarding: a slow
+    // model or inbox never delays it. Quota was already claimed above, so
+    // detection runs at most once per accepted message and 429s run none.
+    if (fields.audio) send(res, 201, { ok: true, text });
+    else send(res, 201, { ok: true });
+    let finalType = fields.type;
+    let typeSource = "given";
+    if (!finalType) {
+      finalType = await classifyFeedbackType(text, deps.model);
+      typeSource = "auto";
+    }
+    try {
+      deps.feedback.recordRow({ shopId, ip, type: finalType, typeSource, rating: fields.rating, text });
+    } catch {
+      try {
+        logLine("feedback store failed");
+      } catch {
+        // Logging must never break a reply that already went out.
+      }
+    }
+    // Owner inbox, best-effort, only after classification finishes: a
+    // missing config or failed delivery keeps the 201 above, and the
+    // notifier logs only its fixed failure line (never the message).
     try {
       const env = deps.env ?? process.env;
       await notifyFeedbackWebhook({
         url: env.FEEDBACK_WEBHOOK_URL,
         secret: env.FEEDBACK_WEBHOOK_SECRET,
-        type: fields.type,
+        type: finalType,
+        typeSource,
         rating: fields.rating,
         message: text,
         source: fields.audio ? "voice" : "text",
@@ -529,8 +551,7 @@ export async function handleVoiceRequest(req, res, deps) {
     } catch {
       // notifyFeedbackWebhook never throws; this guards the wiring itself.
     }
-    if (fields.audio) return send(res, 201, { ok: true, text });
-    return send(res, 201, { ok: true });
+    return;
   }
 
   if (req.method === "POST" && parts.length === 1 && parts[0] === "propose") {
