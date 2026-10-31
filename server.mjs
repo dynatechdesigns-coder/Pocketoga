@@ -145,20 +145,32 @@ export function createStaticHandler(rootDir) {
   }
   const root = resolve(rootDir);
   const cache = new Map();
+  // Entry points must revalidate every time so updates — and the service
+  // worker, which the browser only refreshes from its own cached copy —
+  // are never stuck behind a stale cache.
+  const cacheControlFor = (rel, isFallback) =>
+    isFallback || rel === "index.html" || rel === "sw.js"
+      ? "no-cache"
+      : rel.startsWith("assets/")
+        ? "public, max-age=31536000, immutable"
+        : "public, max-age=86400";
   const load = (rel) => {
     if (cache.has(rel)) return cache.get(rel);
     let file;
+    let mtimeMs = 0;
     try {
       const abs = resolve(root, rel);
       if (abs !== root && !abs.startsWith(root + sep)) return null;
-      if (!statSync(abs).isFile()) return null;
+      const st = statSync(abs);
+      if (!st.isFile()) return null;
+      mtimeMs = st.mtimeMs;
       file = readFileSync(abs);
     } catch {
       return null;
     }
     const type = STATIC_TYPES[extname(rel).toLowerCase()] ?? "application/octet-stream";
     const gzipable = /^(text\/|application\/(json|javascript|manifest\+json))/.test(type) && file.length < 2 * 1024 * 1024;
-    const entry = { file, type, gz: gzipable ? gzipSync(file) : null };
+    const entry = { file, type, gz: gzipable ? gzipSync(file) : null, etag: `"${file.length.toString(36)}-${Math.floor(mtimeMs).toString(36)}"` };
     cache.set(rel, entry);
     return entry;
   };
@@ -177,15 +189,23 @@ export function createStaticHandler(rootDir) {
     const headers = {
       "Content-Type": entry.type,
       "Content-Length": body.length,
-      "Cache-Control": isFallback || rel === "index.html" ? "no-store" : rel.startsWith("assets/") ? "public, max-age=31536000, immutable" : "public, max-age=86400",
+      ETag: entry.etag,
+      "Cache-Control": cacheControlFor(rel, isFallback),
     };
     let out = body;
     const acceptsGzip = (req.headers["accept-encoding"] ?? "").includes("gzip");
-    if (acceptsGzip && entry.gz && req.method !== "HEAD") {
+    if (acceptsGzip && entry.gz) {
       out = entry.gz;
       headers["Content-Encoding"] = "gzip";
       headers["Content-Length"] = out.length;
       headers.Vary = "Accept-Encoding";
+    }
+    // Cheap revalidation: the ETag above lets the browser revalidate with
+    // If-None-Match instead of downloading again.
+    if (req.headers["if-none-match"] === entry.etag) {
+      res.writeHead(304, { ETag: entry.etag, "Cache-Control": headers["Cache-Control"] });
+      res.end();
+      return true;
     }
     res.writeHead(200, headers);
     if (req.method !== "HEAD") res.end(out);

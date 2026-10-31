@@ -216,7 +216,7 @@ describe("deploy static app (temp folder)", () => {
       let res = await get(deps, "/");
       assert.equal(res.statusCode, 200);
       assert.ok(res.text.includes("app"));
-      assert.equal(res.headers["Cache-Control"], "no-store");
+      assert.equal(res.headers["Cache-Control"], "no-cache");
       res = await get(deps, "/assets/app-abc123.js");
       assert.equal(res.statusCode, 200);
       assert.equal(res.headers["Cache-Control"], "public, max-age=31536000, immutable");
@@ -325,6 +325,91 @@ describe("deploy static app (temp folder)", () => {
       res = await run("GET", "/ledger", none);
       assert.equal(res.status, 400);
       assert.deepEqual(JSON.parse(res.text), { error: "x-shop-id header is required" });
+    } finally {
+      deps.db.close();
+    }
+  });
+
+  it("caches entry points with no-cache+ETag, hashed assets immutable, rest daily", async () => {
+    const root = join(scratch, "dist-cache");
+    mkdirSync(join(root, "assets"), { recursive: true });
+    writeFileSync(join(root, "index.html"), "<html>app</html>");
+    writeFileSync(join(root, "sw.js"), "self.addEventListener('fetch',()=>{})");
+    writeFileSync(join(root, "assets", "app-xyz789.js"), "console.log(1)");
+    writeFileSync(join(root, "manifest.webmanifest"), '{"name":"x"}');
+    writeFileSync(join(root, "icon.png"), Buffer.from([1, 2, 3]));
+    const deps = buildDeps(FAKE_ENV);
+    try {
+      deps.static = createStaticHandler(root);
+      const server = createVoiceServer(deps);
+      const run = (method, url, headers = {}) =>
+        new Promise((done) => {
+          const req = new EventEmitter();
+          req.method = method;
+          req.url = url;
+          req.headers = headers;
+          req.destroy = () => {};
+          let text = "";
+          const res = new EventEmitter();
+          res.statusCode = 0;
+          res.responseHeaders = {};
+          res.headersSent = false;
+          res.writeHead = (status, h) => {
+            res.statusCode = status;
+            Object.assign(res.responseHeaders, h);
+            res.headersSent = true;
+          };
+          res.end = (chunk) => {
+            if (chunk) text += chunk;
+            done({ status: res.statusCode, headers: res.responseHeaders, text });
+          };
+          server.emit("request", req, res);
+        });
+      const none = {};
+      // Entry points revalidate every time, with an ETag for cheap 304s.
+      for (const url of ["/", "/index.html", "/sw.js"]) {
+        const res = await run("GET", url, none);
+        assert.equal(res.status, 200, url);
+        assert.equal(res.headers["Cache-Control"], "no-cache", url);
+        assert.ok(res.headers.ETag, url);
+      }
+      const sw = await run("GET", "/sw.js", none);
+      assert.equal(sw.headers["Content-Type"], "text/javascript; charset=utf-8");
+      // Hashed build files are immutable for a year.
+      const js = await run("GET", "/assets/app-xyz789.js", none);
+      assert.equal(js.headers["Cache-Control"], "public, max-age=31536000, immutable");
+      assert.ok(js.headers.ETag);
+      // Manifest and icons keep the daily cache and their content types.
+      const mf = await run("GET", "/manifest.webmanifest", none);
+      assert.equal(mf.headers["Cache-Control"], "public, max-age=86400");
+      assert.equal(mf.headers["Content-Type"], "application/manifest+json");
+      const icon = await run("GET", "/icon.png", none);
+      assert.equal(icon.headers["Cache-Control"], "public, max-age=86400");
+      assert.equal(icon.headers["Content-Type"], "image/png");
+      // HEAD answers with the same headers as GET and no body.
+      const gz = { "accept-encoding": "gzip" };
+      const getGz = await run("GET", "/assets/app-xyz789.js", gz);
+      assert.equal(getGz.headers["Content-Encoding"], "gzip");
+      const headGz = await run("HEAD", "/assets/app-xyz789.js", gz);
+      assert.equal(headGz.status, 200);
+      assert.deepEqual(headGz.headers, getGz.headers);
+      assert.equal(headGz.text, "");
+      const headRoot = await run("HEAD", "/", none);
+      assert.equal(headRoot.status, 200);
+      assert.equal(headRoot.headers["Cache-Control"], "no-cache");
+      assert.ok(headRoot.headers.ETag);
+      assert.equal(headRoot.text, "");
+      // Matching ETag revalidates with an empty 304.
+      const cond = await run("GET", "/sw.js", { "if-none-match": sw.headers.ETag });
+      assert.equal(cond.status, 304);
+      assert.equal(cond.text, "");
+      // API routes and /health carry no caching headers and behave as before.
+      const api = await run("GET", "/ledger", none);
+      assert.equal(api.status, 400);
+      assert.ok(!("Cache-Control" in api.headers) && !("ETag" in api.headers));
+      const health = await run("GET", "/health", none);
+      assert.equal(health.status, 200);
+      assert.ok(!("Cache-Control" in health.headers) && !("ETag" in health.headers));
     } finally {
       deps.db.close();
     }
