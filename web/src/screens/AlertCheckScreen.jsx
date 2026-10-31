@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Camera, CheckCircle2, CloudOff, ImageOff, ShieldAlert, X } from "lucide-react";
+import { AlertTriangle, Camera, CheckCircle2, CloudOff, ImageOff, ImagePlus, ShieldAlert, X } from "lucide-react";
 import { getProposal, getUnconfirmed, proposePhoto, rejectProposal } from "../api.js";
 import { FILE_MESSAGES, ALERT_STAGES, ALERT_STAGE_DELAYS_MS, ALERT_TIMEOUT_MS, FIXED_LINE, checkAgeDays, describeCheck, markSeenSafely, prepareAlertPhoto, saveAlert } from "../alertCheck.js";
 import { OFFLINE_MESSAGE, SAVED_MESSAGE, newMeta } from "../offlineQueue.js";
@@ -22,7 +22,8 @@ export default function AlertCheckScreen({ shop }) {
   const [done, setDone] = useState(null); // { kind, message }
   const photoRef = useRef(null); // prepared photo, kept only for Try again
   const abortRef = useRef(null);
-  const fileRef = useRef(null);
+  const fileRef = useRef(null); // the camera input
+  const galleryRef = useRef(null);
   const headingRef = useRef(null);
   const list = useLoad(getUnconfirmed);
   const [queuedNote, setQueuedNote] = useState(null);
@@ -207,7 +208,9 @@ export default function AlertCheckScreen({ shop }) {
     <section>
       <ScreenHeader title="Check alert" sub="Before you hand over goods" />
 
-      <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" onChange={onPick} className="sr-only" tabIndex={-1} aria-hidden="true" />
+      {/* Two ways in, one flow: both inputs call onPick, which checks type and size. */}
+      <input ref={fileRef} data-part="photo-camera" type="file" accept="image/*" capture="environment" onChange={onPick} className="sr-only" tabIndex={-1} aria-hidden="true" />
+      <input ref={galleryRef} data-part="photo-gallery" type="file" accept="image/*" onChange={onPick} className="sr-only" tabIndex={-1} aria-hidden="true" />
 
       {phase === "waiting" && (
         <Card data-part="alert-waiting" className="mb-4 grid justify-items-center gap-4 py-6 text-center" role="status">
@@ -224,9 +227,14 @@ export default function AlertCheckScreen({ shop }) {
 
       {phase === "idle" && (
         <Card {...rise(0, "mb-4 grid gap-3")}>
-          <Button size="lg" data-part="pick-photo" onClick={() => fileRef.current?.click()}>
-            <Camera aria-hidden="true" /> Take photo or upload
-          </Button>
+          <div data-part="photo-buttons" className="grid min-w-0 grid-cols-2 gap-3 max-[479px]:grid-cols-1">
+            <Button size="lg" data-part="take-photo" className="min-w-0 text-center" onClick={() => fileRef.current?.click()}>
+              <Camera aria-hidden="true" /> Take a photo
+            </Button>
+            <Button size="lg" variant="secondary" data-part="pick-photo" className="min-w-0 text-center" onClick={() => galleryRef.current?.click()}>
+              <ImagePlus aria-hidden="true" /> Choose from gallery
+            </Button>
+          </div>
           <p className="text-center text-sm text-muted">A bank SMS or a transfer screenshot. JPEG, PNG or WebP. The photo is not kept.</p>
         </Card>
       )}

@@ -5,6 +5,7 @@ import { PERIODS, formatKobo, plural } from "../format.js";
 import { reportText, shareText } from "../share.js";
 import { Button, Card, EmptyState, ErrorState, IconCircle, NotAvailable, PeriodTabs, ScreenHeader, SavedBanner, SectionTitle, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
 import ProfitChart from "../ProfitChart.jsx";
+import MonthlyDownload from "../MonthlyDownload.jsx";
 
 // How many leak categories need the trader's attention (Money shows the count).
 export const attentionCount = (report) =>
@@ -49,6 +50,8 @@ export default function ReportScreen({ shop, onGo }) {
         ) : (
           <ReportBody report={leaks.data} shop={shop} onGo={onGo} />
         )}
+
+        <MonthlyDownload />
       </div>
     </section>
   );

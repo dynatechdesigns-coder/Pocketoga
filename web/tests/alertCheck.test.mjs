@@ -278,3 +278,29 @@ describe("unconfirmed list", () => {
     assert.equal(A.checkAgeDays("2026-10-28T09:00:00Z", now), 2);
   });
 });
+
+describe("two ways to add the photo", () => {
+  const screen = readFileSync(new URL("../src/screens/AlertCheckScreen.jsx", import.meta.url), "utf8");
+  const tag = (part) => screen.match(new RegExp(`<input [^>]*data-part="${part}"[^>]*>`))[0];
+
+  test("camera input: accept image/*, capture environment; gallery input: accept image/*, no capture", () => {
+    assert.match(tag("photo-camera"), /type="file"/);
+    assert.match(tag("photo-camera"), /accept="image\/\*"/);
+    assert.match(tag("photo-camera"), /capture="environment"/);
+    assert.match(tag("photo-gallery"), /type="file"/);
+    assert.match(tag("photo-gallery"), /accept="image\/\*"/);
+    assert.doesNotMatch(tag("photo-gallery"), /capture/);
+  });
+
+  test("both inputs use the same onPick, so the type and size checks and the flow are shared", () => {
+    assert.match(tag("photo-camera"), /onChange=\{onPick\}/);
+    assert.match(tag("photo-gallery"), /onChange=\{onPick\}/);
+  });
+
+  test("buttons 'Take a photo' and 'Choose from gallery': side by side, stacked on narrow phones, 44px or more", () => {
+    assert.match(screen, /Take a photo/);
+    assert.match(screen, /Choose from gallery/);
+    assert.match(screen, /data-part="photo-buttons" className="grid min-w-0 grid-cols-2 gap-3 max-\[479px\]:grid-cols-1"/);
+    assert.match(screen, /data-part="take-photo" className="min-w-0 /);
+  });
+});

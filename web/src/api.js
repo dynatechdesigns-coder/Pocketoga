@@ -13,6 +13,7 @@ export const DEMO_SHOP_ID = "demo";
 
 import { connection } from "./connection.js";
 import { buildManualRequest } from "./manualFormat.js";
+import { csvPath } from "./monthlyCsv.js";
 import { notifyDataChanged } from "./refresh.js";
 
 let shopId = null;
@@ -97,6 +98,27 @@ async function send(method, path, body, signal, extraHeaders) {
     throw new ApiError(res.status, data.error ?? `server error ${res.status}`);
   }
   return data;
+}
+
+// GET /reports/monthly.csv?month=YYYY-MM -> the CSV as a Blob (see monthlyCsv.js).
+// Same sign-in as every other request. `no-store`: the browser keeps no copy,
+// and the service worker never touches /api.
+export async function getMonthlyCsv(month) {
+  if (!shopId) throw new ApiError(400, "No shop is open.");
+  let res;
+  try {
+    res = await fetch(API_BASE + csvPath(month), { method: "GET", headers: authHeaders(), cache: "no-store" });
+  } catch {
+    connection.reportFailed();
+    throw new ApiError(0, "network");
+  }
+  connection.reportReached();
+  if (!res.ok) {
+    if (res.status === 401 && shopId !== DEMO_SHOP_ID) window.dispatchEvent(new Event(SESSION_ENDED));
+    const data = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, data.error ?? `server error ${res.status}`);
+  }
+  return res.blob();
 }
 
 // --- Login ---------------------------------------------------------------------
