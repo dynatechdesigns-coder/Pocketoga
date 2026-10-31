@@ -189,7 +189,7 @@ describe("voice loop (mock model, no API calls)", () => {
     }
   });
 
-  it("asks instead of guessing when details are missing", async () => {
+  it("an unnamed sale gets the next automatic label instead of a question", async () => {
     const ctx = setup(async () => ({
       heard: "fake",
       entries: [{ type: "sale", customer: null, item: null, quantity: null, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" }],
@@ -198,9 +198,13 @@ describe("voice loop (mock model, no API calls)", () => {
     }));
     try {
       const p = await propose(SHOP_A, "fake note", ctx.deps);
-      assert.deepEqual(p.flags, ["Who bought it?"]);
-      assert.equal(p.question, "Who bought it?");
-      assert.throws(() => confirmProposal(p.id, SHOP_A, ctx.deps), /cannot confirm/);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+      assert.equal(p.entries[0].customer, "Customer 1");
+      assert.deepEqual(p.debts, [{ customer: "Customer 1", amountKobo: 500000, direction: "customer_owes" }]);
+      const out = confirmProposal(p.id, SHOP_A, ctx.deps);
+      assert.equal(out.recordedIds.length, 1);
+      assert.equal(ctx.ledger.list(SHOP_A)[0].customer, "Customer 1");
     } finally {
       teardown(ctx);
     }

@@ -3,7 +3,8 @@
 // ledger. Uses fake data in tests; never touches real trader data.
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
-import { parseNaira, formatKobo, extractNairaAmounts, decimalNairaToKobo } from "./money.mjs";
+import { parseNaira, formatKobo, extractNairaAmounts, decimalNairaToKobo, SHORTHAND_THRESHOLD_NAIRA } from "./money.mjs";
+import { nextAutoCustomerLabel } from "./customers.mjs";
 import { escapeMd, customerOwedKobo, MISMATCH_PREFIX, BAD_AUDIO_JSON, TEXT_FAILED, MODEL_RETRY_FAILED, AUDIO_EMPTY_RETRY } from "./messages.mjs";
 import { resolvePromiseDate } from "./promises.mjs";
 import { fetchSecondReading, compareReadings, SECOND_OPINION_TIMEOUT_MS, SECOND_OPINION_LATE_MS, SECOND_CHECK_UNAVAILABLE, SECOND_CHECK_CREDIT, NORMALISED_AMOUNT } from "./secondopinion.mjs";
@@ -105,6 +106,8 @@ export function toProposal(row) {
     hint: env.hint ?? null,
     hintNote: env.hintNote ?? null,
     assumptions: env.assumptions ?? [],
+    debts: env.debts ?? [],
+    partPaid: env.partPaid ?? null,
   };
 }
 
@@ -207,6 +210,12 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard, assumptions, h
   }
 
   let customer = cleanText(e.customer);
+  // Spoken descriptions of the person ("the woman in blue") are never a
+  // customer: the trader knows who they mean, so the entry stays unnamed
+  // and gets an automatic label below. Never stored, never asked about.
+  if (customer && isGenericCustomerDescription(customer)) {
+    customer = null;
+  }
   if (!customer) {
     if (type === "restock") {
       customer = shopId; // stock moves into the shop itself
@@ -214,11 +223,10 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard, assumptions, h
     } else if (type === "expense") {
       customer = shopId; // the shop itself paid
       notes.push(`${label}: no payee given, recorded for the shop`);
-    } else {
-      // Blocking: the ledger needs a customer. Collected into the one
-      // question below (missing amounts first, then missing customers).
-      flags.push(`${label}: missing customer name`);
     }
+    // Sale and payment entries keep a null customer here: the trader is
+    // never asked for a name, and the shop's next automatic label
+    // ("Customer 1", "Customer 2", ...) is assigned below, once per entry.
   }
 
   let item = null;
@@ -348,7 +356,20 @@ function checkEntry(rawEntry, index, shopId, flags, notes, heard, assumptions, h
     amountPhrase: phrase,
     eachNaira,
     eachKobo,
+    // Two-amount shorthand choice, set by the plain-code check below when a
+    // bare one- or two-digit amount is ambiguous: [literalKobo, shorthandKobo].
+    amountOptions: null,
   };
+}
+
+// A spoken description of a person is not a name ("the woman in blue",
+// "that guy with the cap", "woman in red"). Only the amount, the item and
+// the entry type matter, so these never become a customer.
+const GENERIC_PERSON_RE = /^(the|a|that|this)\s+(woman|man|girl|boy|lady|guy|person|people|customer|trader)\b/i;
+const BARE_PERSON_RE = /^(woman|man|girl|boy|lady|guy|person|customer)\s+in\s+/i;
+function isGenericCustomerDescription(name) {
+  const s = String(name ?? "").trim().replace(/\s+/g, " ");
+  return GENERIC_PERSON_RE.test(s) || BARE_PERSON_RE.test(s);
 }
 
 function checkTotals(rawTotals, flags, notes, assumptions = null) {
@@ -928,12 +949,34 @@ function checkHeardMagnitude(heard, entries, flags) {
     if (Number.isInteger(e.quantity) && e.quantity > 1) values.push(e.amountKobo / e.quantity);
     const ok = nums.some((n) => values.some((v) => n >= v / 2 && n <= v * 2));
     if (ok) continue;
+    // A resolved shorthand reading (heard "63", saved ₦6,300 with a phrase
+    // naming the full amount) is the trader's explicit pick — or the model's
+    // own committed full figure — never a magnitude error.
+    if (isResolvedShorthand(e, nums)) continue;
     const closest = nums.slice().sort((a, b) => Math.abs(Math.log(a / e.amountKobo)) - Math.abs(Math.log(b / e.amountKobo)))[0];
     const heardNaira = closest / 100;
     const heardShown = Number.isInteger(heardNaira) ? heardNaira.toLocaleString("en-US") : String(heardNaira);
     const what = e.item ? `${e.item} reads ` : "the entry reads ";
     flags.push(`Heard ${heardShown} but ${what}${formatKobo(e.amountKobo)}. Which is right?`);
   }
+}
+
+// True when the entry is exactly 100x a heard number and its own phrase
+// names that full amount (each-basis phrases name the per-item share). A
+// bare one- or two-digit phrase never counts: that is still the ambiguous
+// shorthand case, which the two-amount choice above handles instead.
+function isResolvedShorthand(e, nums) {
+  const phrase = typeof e.amountPhrase === "string" ? e.amountPhrase.trim() : "";
+  if (!phrase || BARE_SMALL_AMOUNT_RE.test(phrase)) return false;
+  let parsed;
+  try {
+    parsed = parseNaira(phrase).kobo;
+  } catch {
+    return false;
+  }
+  const qty = e.priceBasis === "each" && Number.isInteger(e.quantity) && e.quantity > 1 ? e.quantity : 1;
+  if (parsed * qty !== e.amountKobo) return false;
+  return nums.some((n) => n * 100 === e.amountKobo);
 }
 
 function knownUnitPriceKobo(item, unit, type, catalog) {
@@ -1018,31 +1061,172 @@ function combinedAmountQuestion(missing) {
   return `How much was ${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}?`;
 }
 
-function describeMissingCustomer(e) {
-  if (e.type === "payment" && Number.isInteger(e.amountKobo)) {
-    return { verb: "paid", what: formatKobo(e.amountKobo) };
+// Automatic labels for unnamed sale/payment entries. A named customer never
+// uses up a number. Legs of one event share a label: null-customer sales and
+// payments pair up in order (the manual/form part-paid pair, or one sale plus
+// its payment in a note), so the debt math sees one person; every unpaired
+// entry takes the shop's next "Customer N". Runs after dedupe so one model
+// stutter cannot take two numbers.
+function assignAutoCustomerLabels(entries, shopId, { db = null, ledgerRows = null, assumptions = null } = {}) {
+  const needy = entries.filter((e) => (e.type === "sale" || e.type === "payment") && !e.customer);
+  if (needy.length === 0) return;
+  const taken = new Set();
+  for (const r of ledgerRows ?? []) {
+    if (typeof r?.customer === "string" && r.customer.trim()) taken.add(r.customer.trim());
   }
-  if (e.item) return { verb: "bought", what: `the ${e.item}` };
-  return { verb: "bought", what: "it" };
+  for (const e of entries) {
+    if (typeof e.customer === "string" && e.customer.trim()) taken.add(e.customer.trim());
+  }
+  const nextLabel = () => {
+    let label;
+    if (db) {
+      label = nextAutoCustomerLabel(db, shopId, taken);
+    } else {
+      let n = 1;
+      while (taken.has(`Customer ${n}`)) n++;
+      label = `Customer ${n}`;
+    }
+    taken.add(label);
+    return label;
+  };
+  const sales = needy.filter((e) => e.type === "sale");
+  const payments = needy.filter((e) => e.type === "payment");
+  const paired = new Set();
+  const pairs = Math.min(sales.length, payments.length);
+  for (let k = 0; k < pairs; k++) {
+    const label = nextLabel();
+    sales[k].customer = label;
+    payments[k].customer = label;
+    paired.add(sales[k]);
+    paired.add(payments[k]);
+    const line = `No name given; saved as ${label}.`;
+    if (assumptions && !assumptions.includes(line)) assumptions.push(line);
+  }
+  for (const e of needy) {
+    if (paired.has(e)) continue;
+    const label = nextLabel();
+    e.customer = label;
+    const line = `No name given; saved as ${label}.`;
+    if (assumptions && !assumptions.includes(line)) assumptions.push(line);
+  }
 }
 
-function combinedCustomerQuestion(missing) {
-  const clauses = missing.map((e, i) => {
-    const d = describeMissingCustomer(e);
-    const who = i === 0 ? "Who" : "who";
-    return `${who} ${d.verb} ${d.what}`;
-  });
-  if (clauses.length === 1) return `${clauses[0]}?`;
-  if (clauses.length === 2) return `${clauses[0]} and ${clauses[1]}?`;
-  return `${clauses.slice(0, -1).join(", ")} and ${clauses[clauses.length - 1]}?`;
+// Shorthand amounts ("63" meaning 6,300): never converted silently. A bare
+// one- or two-digit amount under SHORTHAND_THRESHOLD_NAIRA on a sale or
+// debt of goods offers both readings — the literal amount and number x 100 —
+// and the trader picks one. Nothing is saved before that: each ambiguous
+// entry gains amountOptions [literalKobo, shorthandKobo] plus one blocking
+// question. Currency words and full numbers ("sixty-three naira", "6,300")
+// never trigger, and neither does anything at or above the threshold.
+const BARE_SMALL_AMOUNT_RE = /^\d{1,2}$/;
+function checkShorthandAmounts(entries, flags) {
+  const picks = [];
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    if (e.type !== "sale" && e.type !== "payment") continue;
+    // A choice the trader has not picked yet stays blocking: the question
+    // is re-asked until the Fix resolves it.
+    if (Array.isArray(e.amountOptions) && e.amountOptions.length === 2) {
+      const [a, b] = e.amountOptions;
+      const again = `Was that ${formatKobo(a)} or ${formatKobo(b)}? Reply 1 for ${formatKobo(a)}, 2 for ${formatKobo(b)}.`;
+      flags.push(again);
+      picks.push({ literalKobo: a, shorthandKobo: b, question: again });
+      continue;
+    }
+    if (!Number.isInteger(e.amountNaira) || !Number.isInteger(e.amountKobo)) continue;
+    if (e.amountNaira <= 0 || e.amountNaira >= SHORTHAND_THRESHOLD_NAIRA) continue;
+    const phrase = typeof e.amountPhrase === "string" ? e.amountPhrase.trim() : "";
+    if (!BARE_SMALL_AMOUNT_RE.test(phrase)) continue;
+    if (Number(phrase) !== e.amountNaira) continue;
+    e.amountOptions = [e.amountKobo, e.amountKobo * 100];
+    const question =
+      `Was that ${formatKobo(e.amountKobo)} or ${formatKobo(e.amountKobo * 100)}? Reply 1 for ${formatKobo(e.amountKobo)}, 2 for ${formatKobo(e.amountKobo * 100)}.`;
+    flags.push(question);
+    picks.push({ literalKobo: e.amountKobo, shorthandKobo: e.amountKobo * 100, question });
+  }
+  return picks;
+}
+
+// Explicit debt fields for the confirm card and the web app: who (the
+// label), the amount owed, and the direction. Computed by plain code from
+// the note's own entries. A sale minus its on-note payments is what the
+// customer owes; a named supplier's restock minus payments is what the
+// trader owes. Payment-only notes settle old debt and carry no debt line.
+function computeDebts(entries, shopId) {
+  const byCustomer = new Map();
+  for (const e of entries) {
+    if (!e.customer || e.customer === shopId) continue;
+    if (e.type !== "sale" && e.type !== "payment" && e.type !== "restock") continue;
+    if (!Number.isInteger(e.amountKobo)) continue;
+    let g = byCustomer.get(e.customer);
+    if (!g) {
+      g = { sales: 0, payments: 0, restocks: 0, hasSale: false, hasRestock: false };
+      byCustomer.set(e.customer, g);
+    }
+    if (e.type === "sale") {
+      g.sales += e.amountKobo;
+      g.hasSale = true;
+    } else if (e.type === "payment") {
+      g.payments += e.amountKobo;
+    } else {
+      g.restocks += e.amountKobo;
+      g.hasRestock = true;
+    }
+  }
+  const debts = [];
+  for (const [customer, g] of byCustomer) {
+    if (g.hasSale) {
+      const net = g.sales - g.payments;
+      if (net > 0) debts.push({ customer, amountKobo: net, direction: "customer_owes" });
+    } else if (g.hasRestock) {
+      const net = g.restocks - g.payments;
+      if (net > 0) debts.push({ customer, amountKobo: net, direction: "trader_owes" });
+      else if (net < 0) debts.push({ customer, amountKobo: -net, direction: "customer_owes" });
+    }
+  }
+  return debts;
+}
+
+// Part-paid sales carry the sale total, the amount paid and the debt left.
+// Plain code checks paid + debt = total: an on-note overpay (paid above the
+// total) blocks as a check proposal instead of one that can be saved.
+function checkPartPaid(entries, flags) {
+  const groups = new Map();
+  for (const e of entries) {
+    if (!e.customer) continue;
+    if (e.type !== "sale" && e.type !== "payment") continue;
+    if (!Number.isInteger(e.amountKobo)) return null;
+    let g = groups.get(e.customer);
+    if (!g) {
+      g = { sales: 0, paid: 0, hasSale: false, hasPayment: false };
+      groups.set(e.customer, g);
+    }
+    if (e.type === "sale") {
+      g.sales += e.amountKobo;
+      g.hasSale = true;
+    } else {
+      g.paid += e.amountKobo;
+      g.hasPayment = true;
+    }
+  }
+  const both = [...groups].filter(([, g]) => g.hasSale && g.hasPayment);
+  if (both.length !== 1) return null;
+  const [customer, g] = both[0];
+  if (g.paid > g.sales) {
+    flags.push(`${MISMATCH_PREFIX}: paid ${formatKobo(g.paid)} is more than the total ${formatKobo(g.sales)}`);
+    return null;
+  }
+  if (g.paid >= g.sales) return null;
+  return { customer, totalKobo: g.sales, paidKobo: g.paid, owedKobo: g.sales - g.paid };
 }
 
 // Runs every check on raw model output. BLOCKING problems (flags) lock Save
 // and ask at most two one-line questions; everything else becomes a soft
 // assumption line on the card with Save enabled. Blocks when an amount is
-// genuinely missing (combined across entries), a customer is missing (the
-// ledger needs one), the note's own numbers contradict each other (total,
-// paid and stated remainder do not add up), the note says each but the
+// genuinely missing (combined across entries), an amount is ambiguously
+// small shorthand ("63" vs 6,300 — the trader picks), the note's own numbers
+// contradict each other (total, paid and stated remainder do not add up,
+// or paid above the total), the note says each but the
 // amount was read as a total, a payment exceeds what is owed, a heard amount reads at the wrong magnitude, two customers
 // are equally close, or there is nothing to record. The model's own question
 // echoes back as a flag only when code found nothing to ask — code decides.
@@ -1063,7 +1247,7 @@ const MODEL_QUESTION_PREFIX = "needs clarification: ";
 export function checkModelOutput(
   raw,
   shopId,
-  { existingCustomers = [], checkedNames = [], now = Date.now(), ledgerRows = null, catalog = null, hint = null } = {}
+  { existingCustomers = [], checkedNames = [], now = Date.now(), ledgerRows = null, catalog = null, hint = null, db = null, allocateLabels = true } = {}
 ) {
   const flags = [];
   const notes = [];
@@ -1083,6 +1267,9 @@ export function checkModelOutput(
   checkSimilarProducts(entries, catalog, assumptions, checkedNames);
   resolveUnclearBasis(entries, catalog, assumptions);
   entries = dedupeEntries(entries, assumptions);
+  if (allocateLabels) {
+    assignAutoCustomerLabels(entries, shopId, { db, ledgerRows, assumptions });
+  }
   const promise = checkPromise(raw?.promise, notes, now);
   if (promise && promise.customer) {
     // The promise customer resolves exactly like entry customers, so the
@@ -1095,6 +1282,9 @@ export function checkModelOutput(
   checkPaymentBalance(entries, ledgerRows, flags, assumptions);
   checkUsualPrice(entries, catalog, assumptions);
   checkHeardMagnitude(heard, entries, flags);
+  const shorthandPicks = checkShorthandAmounts(entries, flags);
+  const partPaid = checkPartPaid(entries, flags);
+  const debts = computeDebts(entries, shopId);
   // One question at most, by priority. Missing amounts combine across
   // entries; anything not asked this round recomputes after the next Fix.
   let question = null;
@@ -1110,29 +1300,24 @@ export function checkModelOutput(
     const missingAmounts = entries.filter((e) => !Number.isInteger(e.amountKobo));
     if (missingAmounts.length > 0) {
       single(combinedAmountQuestion(missingAmounts));
+    } else if (shorthandPicks.length > 0) {
+      single(shorthandPicks[0].question);
     } else {
-      const missingCustomers = entries.filter(
-        (e) => (e.type === "sale" || e.type === "payment") && !e.customer
-      );
-      if (missingCustomers.length > 0) {
-        single(combinedCustomerQuestion(missingCustomers));
+      const mismatch = flags.find((f) => String(f).startsWith(MISMATCH_PREFIX));
+      const over = flags.find((f) => /was paid\. Which is right\?$/.test(f));
+      const nameQ = flags.find((f) => /Send the right name, or say new customer\.$/.test(f));
+      if (mismatch) {
+        single(mismatch);
+      } else if (over) {
+        single(over);
+      } else if (nameQ) {
+        single(nameQ);
       } else {
-        const mismatch = flags.find((f) => String(f).startsWith(MISMATCH_PREFIX));
-        const over = flags.find((f) => /was paid\. Which is right\?$/.test(f));
-        const nameQ = flags.find((f) => /Send the right name, or say new customer\.$/.test(f));
-        if (mismatch) {
-          single(mismatch);
-        } else if (over) {
-          single(over);
-        } else if (nameQ) {
-          single(nameQ);
-        } else {
-          // Leftover code flags that ask nothing (the each-word flag): keep
-          // the first non-each one as the question, if any. The each-word
-          // flag stands on its own and blocks without asking.
-          const first = flags.find((f) => !EACH_FLAG_RE.test(String(f)));
-          if (first) single(first);
-        }
+        // Leftover code flags that ask nothing (the each-word flag): keep
+        // the first non-each one as the question, if any. The each-word
+        // flag stands on its own and blocks without asking.
+        const first = flags.find((f) => !EACH_FLAG_RE.test(String(f)));
+        if (first) single(first);
       }
     }
     // The model's own question echoes back only when code asked nothing: it
@@ -1159,7 +1344,7 @@ export function checkModelOutput(
     }
   }
   const effects = computeEffects(entries, { rows: ledgerRows, catalog });
-  return { version: 1, entries, totals, flags, notes, heard, question, questionedNames, promise, effects, assumptions };
+  return { version: 1, entries, totals, flags, notes, heard, question, questionedNames, promise, effects, assumptions, debts, partPaid };
 }
 
 // --- Input handling --------------------------------------------------------
@@ -1322,12 +1507,14 @@ export async function propose(
     }
   }
   const tChecks = Date.now();
+  const labelDb = ledger?.db ?? proposals?.db ?? null;
   let { heard, question, questionedNames, ...envelope } = checkModelOutput(raw, shopId, {
     existingCustomers: customersOf(ledgerRows),
     now,
     ledgerRows,
     catalog,
     hint: cleanHint,
+    db: labelDb,
   });
   if (timings) timings.checksMs = Date.now() - tChecks;
   if (norm.kind === "audio" && envelope.entries.length === 0) {
@@ -1345,6 +1532,7 @@ export async function propose(
           ledgerRows,
           catalog,
           hint: cleanHint,
+          db: labelDb,
         }));
       }
     } catch {
@@ -1595,7 +1783,7 @@ function storeCheckedProposal(shopId, { entries, heard, occurredAt, source }, { 
   const { heard: checkedHeard, question, questionedNames, ...envelope } = checkModelOutput(
     { heard, entries, totals: null, promise: null, question: null },
     shopId,
-    { existingCustomers: customersOf(ledgerRows), now, ledgerRows, catalog }
+    { existingCustomers: customersOf(ledgerRows), now, ledgerRows, catalog, db: ledger?.db ?? proposals?.db ?? null }
   );
   if (timings) timings.checksMs = Date.now() - tChecks;
   envelope.hint = null;
@@ -1656,10 +1844,8 @@ export function proposeManual(shopId, body, { proposals, ledger = null, products
   } else if (f.paid_naira !== undefined && f.paid_naira !== null) {
     throw voiceError(400, "paid_naira only applies to a sale");
   }
-  if (f.kind === "payment" && !cleanCustomer) throw voiceError(400, "customer is required for a payment");
-  if (f.kind === "sale" && paidKobo < amountKobo && !cleanCustomer) {
-    throw voiceError(400, "customer is required when money is owed");
-  }
+  // A missing customer is fine on every kind: the proposal assigns the
+  // shop's next automatic label ("Customer 1", ...) and the trader confirms.
   const amountPhrase = String(f.amount_naira).trim();
   const paidPhrase = f.kind === "sale" ? String(f.paid_naira ?? f.amount_naira).trim() : null;
   const main = {
@@ -1826,7 +2012,7 @@ export async function proposeCorrectionFromText(shopId, entryId, text, { proposa
   if (!text || typeof text !== "string" || !text.trim()) throw voiceError(400, "correction text is required");
   const target = resolveCorrectionTarget(ledger, shopId, entryId);
   const raw = await model.complete({ text: text.trim() });
-  const checked = checkModelOutput(raw, shopId, { existingCustomers: shopCustomers(ledger, shopId) });
+  const checked = checkModelOutput(raw, shopId, { existingCustomers: shopCustomers(ledger, shopId), allocateLabels: false });
   if (checked.entries.length === 0) {
     throw voiceError(400, "I no hear any entry to correct — abeg talk am again.");
   }
@@ -1999,6 +2185,113 @@ export function confirmProposal(proposalId, shopId, { proposals, ledger, promise
   return { proposal: toProposal(updated), recordedIds, alreadyConfirmed: false };
 }
 
+// Picks the trader's shorthand reading from a Fix: "1"/"2" (or first/second,
+// or either stated amount) resolves the first entry with pending amountOptions.
+// Anything else returns null so the correction goes through the model path.
+export function resolveShorthandFix(prior, correctionText) {
+  const pending = (prior?.entries ?? [])
+    .map((e, i) => (Array.isArray(e?.amountOptions) && e.amountOptions.length === 2 ? i : -1))
+    .filter((i) => i >= 0);
+  if (pending.length === 0) return null;
+  const t = String(correctionText ?? "").trim().toLowerCase().replace(/,/g, "");
+  if (t === "1" || t === "one" || t === "first") {
+    const i = pending[0];
+    return { entryIndex: i, kobo: prior.entries[i].amountOptions[0] };
+  }
+  if (t === "2" || t === "two" || t === "second") {
+    const i = pending[0];
+    return { entryIndex: i, kobo: prior.entries[i].amountOptions[1] };
+  }
+  let kobo = null;
+  try {
+    kobo = parseNaira(String(correctionText ?? "").trim()).kobo;
+  } catch {
+    return null;
+  }
+  for (const i of pending) {
+    const options = prior.entries[i].amountOptions;
+    if (options[0] === kobo || options[1] === kobo) return { entryIndex: i, kobo };
+  }
+  return null;
+}
+
+// Applies one chosen amount to its entry and re-runs every check. Integer
+// kobo only; an each-basis entry keeps its basis when the chosen total
+// splits evenly, otherwise it records as a total. The resolved phrase names
+// the currency ("63 naira") so the choice does not ask again.
+function resolvedAmountPhrase(naira) {
+  const s = String(naira);
+  return /^\d{1,2}$/.test(s) && naira < SHORTHAND_THRESHOLD_NAIRA ? `${s} naira` : s;
+}
+function applyShorthandChoice(entry, kobo) {
+  const qty = Number.isInteger(entry.quantity) && entry.quantity > 0 ? entry.quantity : null;
+  if (entry.priceBasis === "each" && qty && qty > 1 && kobo % qty === 0 && kobo / qty % 100 === 0) {
+    const per = kobo / qty / 100;
+    return { ...entry, amountNaira: per, amountKobo: per, amountPhrase: resolvedAmountPhrase(per), amountOptions: null };
+  }
+  return {
+    ...entry,
+    priceBasis: entry.priceBasis === "each" && qty && qty > 1 ? "total" : entry.priceBasis,
+    amountNaira: kobo / 100,
+    amountKobo: kobo,
+    amountPhrase: resolvedAmountPhrase(kobo / 100),
+    eachNaira: null,
+    eachKobo: null,
+    amountOptions: null,
+  };
+}
+
+// Code-only Fix for a shorthand choice: swaps the chosen amount into its
+// entry, clears the choice, re-checks everything and stores the proposal.
+// The trader confirms as usual; nothing is saved here.
+export function applyShorthandFix(proposalId, shopId, pick, { proposals, ledger = null, products = null, now = Date.now() } = {}) {
+  const row = getOwnedRow(proposals, proposalId, shopId);
+  if (row.status === "confirmed") {
+    throw voiceError(409, `proposal ${row.id} is already confirmed; send a new note to correct it`);
+  }
+  const prior = toProposal(row);
+  const revised = prior.entries.map((e, i) => (i === pick.entryIndex ? applyShorthandChoice(e, pick.kobo) : e));
+  const ledgerRows = ledger && typeof ledger.list === "function" ? ledger.list(shopId) : null;
+  const catalog = products && typeof products.listByShop === "function" ? products.listByShop(shopId) : null;
+  const checked = checkModelOutput(
+    { heard: prior.heard, entries: revised, totals: prior.totals, promise: prior.promise ?? null, question: null },
+    shopId,
+    {
+      existingCustomers: customersOf(ledgerRows),
+      checkedNames: Array.isArray(prior.name_checked) ? prior.name_checked : [],
+      now,
+      ledgerRows,
+      catalog,
+      hint: prior.hint ?? null,
+      db: ledger?.db ?? proposals?.db ?? null,
+    }
+  );
+  const updated = proposals.update(row.id, {
+    status: "pending",
+    envelope: {
+      version: 1,
+      entries: checked.entries,
+      totals: checked.totals,
+      flags: checked.flags,
+      notes: checked.notes,
+      promise: checked.promise,
+      debts: checked.debts,
+      partPaid: checked.partPaid,
+      effects: checked.effects,
+      hint: checked.hint,
+      hintNote: checked.hintNote,
+      assumptions: checked.assumptions,
+      correctionOf: prior.correctionOf ?? null,
+      correctionReason: prior.correctionReason ?? null,
+    },
+    heard: checked.heard,
+    question: checked.question,
+    createdAt: new Date().toISOString(),
+    recordedIds: null,
+  });
+  return toProposal(updated);
+}
+
 // Re-proposes using the previous proposal plus the trader's correction.
 // Renews the proposal clock. Never touches confirmed proposals.
 export async function fixProposal(proposalId, shopId, correctionText, { proposals, model, ledger = null, products = null, now = Date.now(), timings = null }) {
@@ -2015,6 +2308,14 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
   }
   const prior = toProposal(row);
   const priorSummary = { heard: prior.heard, entries: prior.entries, totals: prior.totals, question: prior.question };
+  // A pending two-amount shorthand choice resolves in code, with no model
+  // call: "1"/"2" (or either amount) picks the reading, and the checks run
+  // again over the revised entries. Editing amounts, labels or debts still
+  // goes through the model path below.
+  const shorthandPick = resolveShorthandFix(prior, correctionText);
+  if (shorthandPick) {
+    return applyShorthandFix(proposalId, shopId, shorthandPick, { proposals, ledger, products, now });
+  }
   let raw;
   const tClassify = Date.now();
   try {
@@ -2035,6 +2336,8 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
       flags: [msg],
       notes: prior.notes,
       promise: prior.promise ?? null,
+      debts: prior.debts ?? [],
+      partPaid: prior.partPaid ?? null,
       effects: prior.effects ?? [],
       hint: prior.hint ?? null,
       hintNote: prior.hintNote ?? null,
@@ -2082,6 +2385,7 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
     ledgerRows,
     catalog,
     hint: prior.hint ?? null,
+    db: ledger?.db ?? proposals?.db ?? null,
   });
   if (timings) timings.checksMs = Date.now() - tChecks;
   const merged = [...new Set([...priorChecked, ...extraChecked, ...checked.questionedNames])];
@@ -2097,6 +2401,8 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
       flags: checked.flags,
       notes: prior.correctionOf == null ? checked.notes : [`corrects entry ${prior.correctionOf}`, ...checked.notes],
       promise: checked.promise,
+      debts: checked.debts,
+      partPaid: checked.partPaid,
       effects: checked.effects,
       hint,
       hintNote: hintMismatchNote(hint, checked.entries),

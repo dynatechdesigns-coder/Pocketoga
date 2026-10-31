@@ -17,7 +17,7 @@ import { PromiseStore, refreshPromises } from "./promises.mjs";
 import { customerDebts, chaseForShop, allocatedSales } from "./debts.mjs";
 import { moneyLeakReport } from "./leak.mjs";
 import { ProductStore, withStock, toProductJson } from "./products.mjs";
-import { CustomerStore, describeCustomers, normalizePhone } from "./customers.mjs";
+import { CustomerStore, describeCustomers, normalizePhone, nextAutoCustomerLabel, normCustomerName } from "./customers.mjs";
 import { PROFIT_PERIODS, profitForPeriod, expensesForPeriod } from "./profit.mjs";
 import { SecondOpinionStore } from "./secondopinion.mjs";
 import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
@@ -820,12 +820,23 @@ export async function handleVoiceRequest(req, res, deps) {
 
   // Create or update by normalized name. A phone needs consent: true and
   // is normalized to digits with a country code; without a phone no
-  // consent is needed. Phones never touch the ledger.
+  // consent is needed. Phones never touch the ledger. A missing name gets
+  // the shop's next automatic label ("Customer 1", "Customer 2", ...).
   if (req.method === "POST" && parts.length === 1 && parts[0] === "customers") {
     const body = await readBody(req);
     const fields = body && typeof body === "object" ? body : {};
-    const name = typeof fields.name === "string" ? fields.name.trim().replace(/\s+/g, " ") : "";
-    if (!name) return send(res, 400, { error: "customer name is required" });
+    // A missing name gets the shop's next automatic label ("Customer 1",
+    // "Customer 2", ...); a present-but-blank name is still a 400.
+    if (fields.name !== undefined && fields.name !== null && (typeof fields.name !== "string" || !fields.name.trim())) {
+      return send(res, 400, { error: "customer name is required" });
+    }
+    let name = typeof fields.name === "string" ? fields.name.trim().replace(/\s+/g, " ") : "";
+    if (!name) {
+      const taken = deps.ledger.list(shopId).map((r) => r.customer);
+      const labelDb = deps.db ?? deps.ledger?.db ?? deps.proposals?.db ?? null;
+      if (!labelDb) return send(res, 500, { error: "customer labels are unavailable" });
+      name = nextAutoCustomerLabel(labelDb, shopId, taken);
+    }
     const hasPhone = fields.phone !== undefined && fields.phone !== null;
     if (hasPhone && fields.consent !== true) {
       return send(res, 400, { error: "consent: true is required to store a phone number" });
@@ -852,6 +863,60 @@ export async function handleVoiceRequest(req, res, deps) {
     const cleared = deps.customers.clearPhone(id);
     const customer = describeCustomers([cleared], deps.ledger.list(shopId), shopId).find((c) => c.id === cleared.id);
     return send(res, 200, { customer });
+  }
+
+  // Rename a customer label within the caller's own shop: a correction, not
+  // a rewrite of history. Every ledger row carrying the old name gets a
+  // correction row with the new name (balances follow the new name); the
+  // directory entry is renamed in place. 404 when this shop has no such
+  // customer, so another shop's labels are unreachable.
+  if (req.method === "POST" && parts.length === 2 && parts[0] === "customers" && parts[1] === "rename") {
+    const body = await readBody(req);
+    const fields = body && typeof body === "object" ? body : {};
+    const from = typeof fields.from === "string" ? fields.from.trim().replace(/\s+/g, " ") : "";
+    const to = typeof fields.to === "string" ? fields.to.trim().replace(/\s+/g, " ") : "";
+    if (!from) return send(res, 400, { error: "from is required" });
+    if (!to) return send(res, 400, { error: "to is required" });
+    if (to.length > 100) return send(res, 400, { error: "customer must be under 100 characters" });
+    if (normCustomerName(from) === normCustomerName(to)) {
+      return send(res, 400, { error: "the new name is the same as the current name" });
+    }
+    const shopRows = deps.ledger.list(shopId);
+    const rows = shopRows.filter((r) => r.customer === from);
+    const directory = deps.customers ? deps.customers.listByShop(shopId) : [];
+    const dirRow = directory.find((c) => normCustomerName(c.name) === normCustomerName(from)) ?? null;
+    if (rows.length === 0 && !dirRow) return send(res, 404, { error: "customer not found" });
+    const clashDir = directory.find((c) => normCustomerName(c.name) === normCustomerName(to) && (!dirRow || c.id !== dirRow.id));
+    const clashLedger = shopRows.some((r) => normCustomerName(r.customer) === normCustomerName(to));
+    if (clashDir || clashLedger) return send(res, 409, { error: "the new name is already used in this shop" });
+    const reason = typeof fields.reason === "string" && fields.reason.trim() ? fields.reason.trim() : `rename ${from} to ${to}`;
+    let renamed = null;
+    if (dirRow) {
+      try {
+        renamed = deps.customers.rename({ shopId, from: dirRow.name, to });
+      } catch (err) {
+        return send(res, err.status ?? 400, { error: err.message });
+      }
+    }
+    deps.ledger.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const r of rows) {
+        const entry = deps.ledger.appendCorrection(r.id, { amountKobo: r.amount_kobo, customer: to });
+        deps.ledger.recordCorrectionReason(entry.id, reason);
+      }
+      deps.ledger.db.exec("COMMIT");
+    } catch (err) {
+      try {
+        deps.ledger.db.exec("ROLLBACK");
+      } catch {
+        // Already rolled back.
+      }
+      throw err;
+    }
+    const customer = renamed
+      ? describeCustomers([renamed], deps.ledger.list(shopId), shopId).find((c) => c.id === renamed.id)
+      : null;
+    return send(res, 200, { renamed: rows.length, customer });
   }
 
   // Profit for a period, this shop only. Read-only; all maths in profit.mjs.

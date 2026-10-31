@@ -1035,14 +1035,16 @@ describe("form path (no model call)", () => {
     }
   });
 
-  it("missing content asks a question instead of a 400", () => {
+  it("missing content gets an automatic label instead of a question", () => {
     const ctx = setup();
     try {
       const p = proposeFromForm(SHOP, { type: "sale", item: "rice", quantity: 2, unit: "bag", amountNaira: 30000 }, formDeps(ctx));
-      assert.deepEqual(p.flags, ["Who bought the rice?"]);
-      assert.equal(p.question, "Who bought the rice?");
-      assert.throws(() => confirm(ctx, p.id), /cannot confirm/);
-      assert.equal(ctx.ledger.list(SHOP).length, 0);
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+      assert.equal(p.entries[0].customer, "Customer 1");
+      confirm(ctx, p.id);
+      assert.equal(ctx.ledger.list(SHOP).length, 1);
+      assert.equal(ctx.ledger.list(SHOP)[0].customer, "Customer 1");
     } finally {
       teardown(ctx);
     }
@@ -1131,8 +1133,6 @@ describe("form path (no model call)", () => {
         [{ kind: "sale", customer: "Ada", amount_naira: -5 }, /must not be negative/],
         [{ kind: "sale", customer: "Ada", amount_naira: 1000001 }, /too large/],
         [{ kind: "sale", customer: "Ada", amount_naira: 3000, paid_naira: 3001 }, /cannot exceed/],
-        [{ kind: "sale", item: "rice", amount_naira: 3000, paid_naira: 1000 }, /customer is required/],
-        [{ kind: "payment", amount_naira: 1000 }, /customer is required/],
         [{ kind: "sale", customer: "Ada", amount_naira: 3000, paid_naira: "1.234" }, /at most 2 decimals/],
         [{ kind: "sale", customer: "Ada", amount_naira: 3000, quantity: 0 }, /positive integer/],
         [{ kind: "payment", customer: "Ada", amount_naira: 1000, quantity: 2 }, /only applies to a sale/],

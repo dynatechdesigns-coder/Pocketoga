@@ -22,6 +22,7 @@ import { formatModelLog, failureReason, logLine } from "./log.mjs";
 import { formatKobo } from "./money.mjs";
 import { resolvePromiseDate } from "./promises.mjs";
 import { checkModelOutput } from "./voice.mjs";
+import { isAutoCustomerLabel } from "./customers.mjs";
 
 export const BASETEN_BASE_URL = "https://inference.baseten.co/v1";
 export const SECOND_OPINION_TIMEOUT_MS = 4000;
@@ -42,7 +43,7 @@ export const SECOND_CHECK_CREDIT = "Checked by Muse Spark Open via Baseten.";
 // Minimal extraction prompt for the second reading: only the fields the
 // code comparison needs, no totals, no question, no explanation. Compact
 // JSON keeps output small and fast.
-export const SECOND_OPINION_SYSTEM_PROMPT = `You are a bookkeeping checker. Reply JSON only, no explanation: {"entries":[{"type":"sale|payment|purchase|expense","customer":"name or null","item":"rice or null","unit":"bag or null","quantity":2 or null,"amountNaira":15000 or null,"priceBasis":"each|total|unclear"}],"promise":{"customer":"name","datePhrase":"Friday","amountNaira":20000} or null}. k means thousand. A debt line ("Ada dey owe me 5k") is one sale with item null. Never invent names or amounts.`;
+export const SECOND_OPINION_SYSTEM_PROMPT = `You are a bookkeeping checker. Reply JSON only, no explanation: {"entries":[{"type":"sale|payment|purchase|expense","customer":"name or null","item":"rice or null","unit":"bag or null","quantity":2 or null,"amountNaira":15000 or null,"priceBasis":"each|total|unclear"}],"promise":{"customer":"name","datePhrase":"Friday","amountNaira":20000} or null}. k means thousand. A debt line ("Ada dey owe me 5k") is one sale with item null. A missing customer name is null, never a question; a spoken description of a person ("the woman in blue") is null too. Never invent names or amounts.`;
 
 // Accuracy stats, one row per proposal. The note text is never stored here.
 export const SECOND_OPINION_SCHEMA = `
@@ -275,7 +276,7 @@ export function compareReadings(primaryEntries, primaryPromise, secondRaw, { sho
   // The second reading runs the same customer matching as the primary, so
   // the comparison is on recorded values ("Chinedu" both sides) rather than
   // raw hearings ("Mama Chinedu" vs "Chinedu").
-  const second = checkModelOutput(secondRaw, shopId, { existingCustomers, now });
+  const second = checkModelOutput(secondRaw, shopId, { existingCustomers, now, allocateLabels: false });
   const fields = [];
   let line = null;
   let shownField = null;
@@ -286,8 +287,12 @@ export function compareReadings(primaryEntries, primaryPromise, secondRaw, { sho
       shownField = field;
     }
   };
-  const a = primaryEntries ?? [];
-  const b = second.entries ?? [];
+  // Automatic labels ("Customer 1", ...) are code-assigned, not heard: they
+  // never count as a disagreement between the two readings.
+  const scrubAuto = (list) =>
+    (list ?? []).map((e) => (isAutoCustomerLabel(e?.customer) ? { ...e, customer: null } : e));
+  const a = scrubAuto(primaryEntries);
+  const b = scrubAuto(second.entries);
   if (a.length !== b.length) {
     note(
       "entries",

@@ -57,6 +57,8 @@ Rules:
 - quantity is a positive integer count of items, or null when the note has none.
 - unit is the container or count word in singular form, separate from item: "2 bags of rice" is item "rice", unit "bag", quantity 2. Null when the note names none.
 - Match every customer name against the shop's known customers first (exact spellings ride along); only a truly new name is a new customer. Never invent names, items, or amounts. If anything essential is missing or unclear, put it in question and leave the field null.
+- A missing customer name is never a question: leave customer null and the shop labels the entry itself. Never ask who the customer is, and never ask what they look like.
+- A spoken description of a person ("the woman in blue", "that guy with the cap") is not a name: leave customer null. Only the amount, the item and the entry type matter.
 - No bookkeeping content means "entries": [] with a question.`;
 
 const FIX_SUFFIX =

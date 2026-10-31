@@ -283,7 +283,6 @@ describe("customers routes", () => {
         { name: "Bola", phone: "08031234567", consent: false },
         { name: "Bola", phone: "12", consent: true },
         { name: "", phone: "08031234567", consent: true },
-        { phone: "08031234567", consent: true },
       ]) {
         const bad = await dispatch(ctx.deps, { method: "POST", url: "/customers", headers: { "x-shop-id": SHOP_A }, body });
         assert.equal(bad.status, 400, JSON.stringify(body));

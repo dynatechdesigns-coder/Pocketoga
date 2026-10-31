@@ -211,6 +211,23 @@ function owesLines(proposal, existing, shopId, suffix) {
 
 // --- Proposal cards ------------------------------------------------------------
 
+// Explicit debt lines from the code-computed debt fields: who (the label),
+// how much, and which direction. The web app reads proposal.debts for the
+// same line ("Debt: Customer 1 owes ₦20,000").
+export function debtLines(proposal) {
+  const debts = Array.isArray(proposal?.debts) ? proposal.debts : [];
+  const lines = [];
+  for (const d of debts) {
+    if (!d || typeof d.customer !== "string" || !Number.isInteger(d.amountKobo) || d.amountKobo <= 0) continue;
+    if (d.direction === "trader_owes") {
+      lines.push(`${EMOJI.balance} Debt: you owe ${escapeMd(d.customer)} *${formatKobo(d.amountKobo)}*`);
+    } else {
+      lines.push(`${EMOJI.balance} Debt: ${escapeMd(d.customer)} owes *${formatKobo(d.amountKobo)}*`);
+    }
+  }
+  return lines;
+}
+
 function totalsLines(totals) {
   if (!totals) return [];
   const legs = [];
@@ -398,6 +415,7 @@ function renderCleanCard(proposal, { existing = [], shopId = null, products = []
     correctionLine(proposal),
     cardHeader(proposal, shopId),
     entries,
+    debtLines(proposal).join("\n"),
     effectLines(proposal).join("\n"),
     hintLine(proposal),
     assumedBlock(proposal),

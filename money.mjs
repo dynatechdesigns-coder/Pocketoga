@@ -183,6 +183,13 @@ export function extractNairaAmounts(text) {
   return [...new Set(out)];
 }
 
+// Shorthand spoken amounts ("63" meaning 6,300): one config place. A bare
+// one- or two-digit amount under this many naira on a sale or debt of goods
+// is ambiguous, so plain code offers both readings and the trader picks.
+// Never applies at or above this threshold, or when a currency word or full
+// number is spoken ("sixty-three naira", "6,300").
+export const SHORTHAND_THRESHOLD_NAIRA = 200;
+
 // Whole naira from the model to integer kobo. Rejects anything else.
 export function nairaToKobo(n) {
   if (typeof n !== "number" || !Number.isInteger(n)) {

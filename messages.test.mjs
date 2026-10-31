@@ -91,7 +91,7 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p, { existing: [], shopId: SHOP });
     assert.equal(
       card.text,
-      `🛒 *Ada*\n\n2 bags of rice × ₦15,000 = *₦30,000* → Sales\n\nPocketOga assumed:\nNew customer: Ada.\n\n⚖️ Ada owes *₦30,000* after saving\n\n_"Ada buy rice 2 bags, na 15k each."_`
+      `🛒 *Ada*\n\n2 bags of rice × ₦15,000 = *₦30,000* → Sales\n\n⚖️ Debt: Ada owes *₦30,000*\n\nPocketOga assumed:\nNew customer: Ada.\n\n⚖️ Ada owes *₦30,000* after saving\n\n_"Ada buy rice 2 bags, na 15k each."_`
     );
     assert.deepEqual(
       card.buttons.map((b) => b.reply.id),
@@ -117,7 +117,7 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p, { existing: HISTORY, shopId: SHOP });
     assert.equal(
       card.text,
-      `🛒 *Ada*\n\n2 bags of rice: *₦15,000* → Sales\n💵 Paid: *₦10,000* → Debts\n\nPocketOga assumed:\nNew customer: Ada.\n\n⚖️ Ada owes *₦20,000* after saving\n\n_"Ada buy rice 2 bags, na 15k. She pay 10k, remain 5k."_`
+      `🛒 *Ada*\n\n2 bags of rice: *₦15,000* → Sales\n💵 Paid: *₦10,000* → Debts\n\n⚖️ Debt: Ada owes *₦5,000*\n\nPocketOga assumed:\nNew customer: Ada.\n\n⚖️ Ada owes *₦20,000* after saving\n\n_"Ada buy rice 2 bags, na 15k. She pay 10k, remain 5k."_`
     );
   });
 
@@ -258,7 +258,7 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p, { existing: [], shopId: SHOP });
     assert.equal(
       card.text,
-      `🛒 *Ada*\n\n*Ada*: 1 bag of rice: *₦8,000* → Sales\n*Bola*: 💵 Paid: *₦3,000* → Debts\n\nPocketOga assumed:\nNew customer: Ada.\nNew customer: Bola.\n\n⚖️ Ada owes *₦8,000* after saving\n\n_"Ada buy rice 1 bag na 8k and Bola pay 3k for garri."_`
+      `🛒 *Ada*\n\n*Ada*: 1 bag of rice: *₦8,000* → Sales\n*Bola*: 💵 Paid: *₦3,000* → Debts\n\n⚖️ Debt: Ada owes *₦8,000*\n\nPocketOga assumed:\nNew customer: Ada.\nNew customer: Bola.\n\n⚖️ Ada owes *₦8,000* after saving\n\n_"Ada buy rice 1 bag na 8k and Bola pay 3k for garri."_`
     );
   });
 
@@ -272,7 +272,7 @@ describe("message goldens (fake data)", () => {
     const card = renderProposalCard(p, { existing: [], shopId: SHOP });
     assert.equal(
       card.text,
-      `🛒 *Mama ＊Nkechi＊ ＿Best＿*\n\n2 tins of beans: *₦4,000* → Sales\n\nPocketOga assumed:\nNew customer: Mama ＊Nkechi＊ ＿Best＿.\n\n⚖️ Mama ＊Nkechi＊ ＿Best＿ owes *₦4,000* after saving\n\n_"Mama star buy beans 2 tins, na 4k."_`
+      `🛒 *Mama ＊Nkechi＊ ＿Best＿*\n\n2 tins of beans: *₦4,000* → Sales\n\n⚖️ Debt: Mama ＊Nkechi＊ ＿Best＿ owes *₦4,000*\n\nPocketOga assumed:\nNew customer: Mama ＊Nkechi＊ ＿Best＿.\n\n⚖️ Mama ＊Nkechi＊ ＿Best＿ owes *₦4,000* after saving\n\n_"Mama star buy beans 2 tins, na 4k."_`
     );
     assert.ok(!card.text.includes("*Nkechi*"));
     assert.ok(!card.text.includes("_Best_"));
@@ -534,7 +534,7 @@ describe("entry effects and expenses (fake data)", () => {
     const card = renderProposalCard(p, { existing: [], shopId: SHOP });
     assert.equal(
       card.text,
-      `🛒 *Ada*\n\n2 bags of rice: *₦15,000* → Sales\n\nrice stock 10 → 8 bags\n\nPocketOga assumed:\nNew customer: Ada.\n\n⚖️ Ada owes *₦15,000* after saving\n\n_"sold rice"_`
+      `🛒 *Ada*\n\n2 bags of rice: *₦15,000* → Sales\n\n⚖️ Debt: Ada owes *₦15,000*\n\nrice stock 10 → 8 bags\n\nPocketOga assumed:\nNew customer: Ada.\n\n⚖️ Ada owes *₦15,000* after saving\n\n_"sold rice"_`
     );
   });
 

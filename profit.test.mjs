@@ -153,6 +153,7 @@ describe("expense entries", () => {
           amountPhrase: "5k",
           eachNaira: null,
           eachKobo: null,
+          amountOptions: null,
         },
       ]);
     } finally {

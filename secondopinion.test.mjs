@@ -42,8 +42,8 @@ const PRIMARY = {
 };
 
 const EXPECTED_ENTRIES = [
-  { type: "sale", customer: "Ada", item: "rice", quantity: 2, unit: "bag", priceBasis: "total", amountNaira: 30000, amountKobo: 3000000, amountPhrase: "30k", eachNaira: null, eachKobo: null },
-  { type: "payment", customer: "Ada", item: null, quantity: null, unit: null, priceBasis: "total", amountNaira: 10000, amountKobo: 1000000, amountPhrase: "10k", eachNaira: null, eachKobo: null },
+  { type: "sale", customer: "Ada", item: "rice", quantity: 2, unit: "bag", priceBasis: "total", amountNaira: 30000, amountKobo: 3000000, amountPhrase: "30k", eachNaira: null, eachKobo: null, amountOptions: null },
+  { type: "payment", customer: "Ada", item: null, quantity: null, unit: null, priceBasis: "total", amountNaira: 10000, amountKobo: 1000000, amountPhrase: "10k", eachNaira: null, eachKobo: null, amountOptions: null },
 ];
 
 function setup() {

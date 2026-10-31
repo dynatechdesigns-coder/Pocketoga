@@ -25,6 +25,47 @@ export function normCustomerName(name) {
   return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+// Automatic labels for unnamed customers ("Customer 1", "Customer 2", ...).
+// The counter is per shop, increases by one each time, and a label is never
+// reused: numbers already taken in the ledger are skipped, so a trader-typed
+// "Customer 1" can never collide with a later automatic label.
+export const AUTO_LABEL_SCHEMA = `
+CREATE TABLE IF NOT EXISTS auto_customer_counter (
+  shop_id TEXT PRIMARY KEY,
+  next_n INTEGER NOT NULL CHECK (typeof(next_n) = 'integer' AND next_n > 0)
+);
+`;
+
+const AUTO_LABEL_RE = /^customer (\d+)$/i;
+
+export function isAutoCustomerLabel(name) {
+  return typeof name === "string" && AUTO_LABEL_RE.test(name.trim().replace(/\s+/g, " "));
+}
+
+// Next automatic label for a shop. takenNames lets callers pass ledger names
+// so a colliding number is skipped without consuming it twice.
+export function nextAutoCustomerLabel(db, shopId, takenNames = null) {
+  if (!shopId || typeof shopId !== "string") throw new Error("shopId is required");
+  db.exec(AUTO_LABEL_SCHEMA);
+  const taken = new Set();
+  if (takenNames) {
+    for (const n of takenNames) {
+      const m = typeof n === "string" ? n.trim().replace(/\s+/g, " ").match(AUTO_LABEL_RE) : null;
+      if (m) taken.add(Number(m[1]));
+    }
+  }
+  const row = db.prepare("SELECT next_n FROM auto_customer_counter WHERE shop_id = ?").get(shopId);
+  let n = row ? row.next_n : 1;
+  while (taken.has(n)) n++;
+  const afterwards = n + 1;
+  if (row) {
+    db.prepare("UPDATE auto_customer_counter SET next_n = ? WHERE shop_id = ?").run(afterwards, shopId);
+  } else {
+    db.prepare("INSERT INTO auto_customer_counter (shop_id, next_n) VALUES (?, ?)").run(shopId, afterwards);
+  }
+  return `Customer ${n}`;
+}
+
 function cleanName(name) {
   const clean = String(name ?? "").trim().replace(/\s+/g, " ");
   if (!clean) throw new Error("customer name is required");
@@ -55,6 +96,34 @@ export class CustomerStore {
       this.ownsDb = false;
     }
     this.db.exec(CUSTOMER_SCHEMA);
+    this.db.exec(AUTO_LABEL_SCHEMA);
+  }
+
+  // Rename a directory entry within one shop (the ledger keeps its history;
+  // the caller appends corrections there). 404 when this shop has no such
+  // name; 409 when the new name is already taken in this shop.
+  rename({ shopId, from, to }) {
+    if (!shopId || typeof shopId !== "string") throw new Error("shopId is required");
+    const cleanFrom = String(from ?? "").trim().replace(/\s+/g, " ");
+    const cleanTo = String(to ?? "").trim().replace(/\s+/g, " ");
+    if (!cleanFrom) throw new Error("rename needs the current name");
+    if (!cleanTo) throw new Error("rename needs the new name");
+    if (cleanTo.length > 100) throw new Error("customer must be under 100 characters");
+    if (normCustomerName(cleanFrom) === normCustomerName(cleanTo)) {
+      throw new Error("the new name is the same as the current name");
+    }
+    const current = this.db
+      .prepare("SELECT * FROM customers WHERE shop_id = ? AND name_norm = ?")
+      .get(shopId, normCustomerName(cleanFrom));
+    if (!current) throw Object.assign(new Error(`customer "${cleanFrom}" not found`), { status: 404 });
+    const clash = this.db
+      .prepare("SELECT * FROM customers WHERE shop_id = ? AND name_norm = ?")
+      .get(shopId, normCustomerName(cleanTo));
+    if (clash) throw Object.assign(new Error(`customer "${cleanTo}" already exists`), { status: 409 });
+    this.db
+      .prepare("UPDATE customers SET name = ?, name_norm = ?, updated_at = ? WHERE id = ?")
+      .run(cleanTo, normCustomerName(cleanTo), new Date().toISOString(), current.id);
+    return this.get(current.id);
   }
 
   // Create or update by normalized name. A phone needs consent === true
