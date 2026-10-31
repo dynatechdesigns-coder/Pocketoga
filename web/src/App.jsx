@@ -47,7 +47,7 @@ const SCREEN_LABELS = {
 
 // Every slot has the same shape (24px icon row, then the label, pinned to
 // the bottom), so all labels and icons share one baseline.
-const SLOT = "flex h-[72px] flex-col items-center justify-end gap-1 pb-2 text-xs font-semibold";
+const SLOT = "flex min-h-[72px] flex-col items-center justify-end gap-1 pb-2 text-xs leading-4 font-semibold";
 
 // The signed-in app for one open shop ({ id, name, demo }); Root decides when
 // it shows and what leaving the shop does.
@@ -134,7 +134,7 @@ export default function App({ shop, onExit }) {
       {/* Bottom padding clears the dock (72px), the mic raised 28px above it,
           the desktop lift (12px) and the phone's home bar, so the last thing
           on every screen sits above them. */}
-      <main id="main" className="mx-auto max-w-[680px] px-5 pt-6 pb-[calc(128px+env(safe-area-inset-bottom))]">
+      <main id="main" className="mx-auto max-w-[680px] px-5 pt-6 pb-[calc(152px+max(env(safe-area-inset-bottom),16px))] md:pb-[160px]">
         {tab === "money" && <MoneyScreen shop={shop} onGo={go} />}
         {tab === "debts" && <DebtsScreen intent={intent} onGo={go} />}
         {tab === "record" && <RecordScreen shop={shop} intent={intent} origin={origin} onBack={() => go(origin.tab)} onSaved={savedAndBack} onGo={go} />}
@@ -152,7 +152,7 @@ export default function App({ shop, onExit }) {
         <div
           data-part="saved-note"
           role="status"
-          className="fixed inset-x-0 bottom-[calc(96px+env(safe-area-inset-bottom))] z-30 mx-auto flex w-[calc(100%-40px)] max-w-[560px] animate-rise items-center gap-3 rounded-card border border-teal bg-card px-4 py-2 shadow-lift md:bottom-[100px]"
+          className="fixed inset-x-0 bottom-[calc(104px+max(env(safe-area-inset-bottom),16px))] z-30 mx-auto flex w-[calc(100%-40px)] max-w-[560px] animate-rise items-center gap-3 rounded-card border border-teal bg-card px-4 py-2 shadow-lift md:bottom-[100px]"
         >
           <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-full bg-teal-soft text-teal-ink [&_svg]:size-4">
             <Check strokeWidth={3} />
@@ -174,7 +174,7 @@ export default function App({ shop, onExit }) {
       <nav
         data-part="dock"
         aria-label="Main"
-        className="fixed inset-x-0 bottom-0 z-20 mx-auto max-w-[600px] rounded-t-3xl border-t border-line bg-card/85 pb-[env(safe-area-inset-bottom)] shadow-bar backdrop-blur-xl md:bottom-3 md:rounded-3xl md:border"
+        className="fixed inset-x-0 bottom-0 z-20 mx-auto max-w-[600px] rounded-t-3xl border-t border-line bg-card/85 pb-[max(env(safe-area-inset-bottom),16px)] shadow-bar md:pb-0 backdrop-blur-xl md:bottom-3 md:rounded-3xl md:border"
       >
         <div className="grid grid-cols-5 px-2">
           {LEFT.map((t) => slot({ ...t, active: tab === t.key, onClick: () => go(t.key) }))}
