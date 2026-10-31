@@ -55,8 +55,8 @@ export const DEMO_RECORDED = [
 export const CARD_TEXT = [
   "🛒 *Ada*",
   "",
-  "2 bags of rice × ₦15,000 = *₦30,000*",
-  "💵 Paid: *₦10,000*",
+  "2 bags of rice × ₦15,000 = *₦30,000* → Sales",
+  "💵 Paid: *₦10,000* → Debts",
   "",
   "⚖️ Ada owes *₦20,000* after saving",
   "",

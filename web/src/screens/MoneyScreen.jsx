@@ -1,5 +1,6 @@
-import { ChevronRight, CircleCheck, Clock, HandCoins, Megaphone, Mic, PackagePlus, Share2, ShieldAlert, ShieldCheck, TriangleAlert, Users } from "lucide-react";
+import { ChevronRight, CircleCheck, Clock, HandCoins, Megaphone, Mic, PackagePlus, ScanSearch, Share2, ShieldAlert, ShieldCheck, Users } from "lucide-react";
 import { getLedger, getReport } from "../api.js";
+import { checkLabel } from "../cancelRun.js";
 import { formatKobo, plural } from "../format.js";
 import { reportText, shareText } from "../share.js";
 import { Button, Card, ErrorState, IconCircle, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
@@ -13,8 +14,8 @@ async function loadMoney() {
 }
 
 // Home, top to bottom: money in today (brand gradient), money owed (amber),
-// quick actions, the records check, and one row pointing at Reports when
-// something leaks. The leak cards themselves live on Reports.
+// quick actions (Check carries the count of things needing attention), and the
+// records check. The leak cards themselves live on Reports.
 export default function MoneyScreen({ shop, onGo }) {
   const { data: report, error, loading, reload } = useLoad(loadMoney);
 
@@ -43,6 +44,8 @@ function MoneyBody({ report, shop, onGo }) {
     { label: "Restock", icon: PackagePlus, action: () => onGo("record", { text: "I restock " }) },
     { label: "Chase", icon: Megaphone, action: () => onGo("debts", "chase") },
     { label: "Share", icon: Share2, action: () => shareText(reportText(shop.name, report)) },
+    // Opens Check alert; the badge is the same count the Reports leaks use.
+    { label: "Check", icon: ScanSearch, action: () => onGo("alert"), badge: attention },
   ];
 
   return (
@@ -111,16 +114,22 @@ function MoneyBody({ report, shop, onGo }) {
         </span>
       </Card>
 
-      <nav aria-label="Quick actions" {...rise(2, "grid grid-cols-3")}>
+      <nav aria-label="Quick actions" {...rise(2, "grid grid-cols-4")}>
         {quick.map((q) => (
           <button
             key={q.label}
             data-part="quick"
             onClick={q.action}
-            className="grid justify-items-center gap-1.5 text-[0.875rem] font-bold text-ink transition-transform duration-150 active:scale-96"
+            aria-label={q.badge !== undefined ? checkLabel(q.badge) : undefined}
+            className="grid min-h-12 justify-items-center gap-1.5 text-[0.875rem] font-bold whitespace-nowrap text-ink transition-transform duration-150 active:scale-96"
           >
-            <span className="grid size-14 place-items-center rounded-full border border-line bg-card text-link shadow-soft [&_svg]:size-6" aria-hidden="true">
+            <span className="relative grid size-14 place-items-center rounded-full border border-line bg-card text-link shadow-soft [&_svg]:size-6" aria-hidden="true">
               <q.icon strokeWidth={1.9} />
+              {q.badge > 0 && (
+                <span data-part="badge" className="absolute -top-1 -right-1 grid min-w-5 place-items-center rounded-full border-2 border-page bg-coral-ink px-1 text-[0.6875rem] leading-5 font-extrabold text-white">
+                  {q.badge}
+                </span>
+              )}
             </span>
             {q.label}
           </button>
@@ -129,17 +138,7 @@ function MoneyBody({ report, shop, onGo }) {
 
       {report.verify && <VerifiedChip verify={report.verify} onOpen={() => onGo("ledger")} />}
 
-      {attention > 0 ? (
-        <button
-          data-part="attention"
-          onClick={() => onGo("report")}
-          {...rise(4, "flex min-h-14 w-full items-center gap-3 rounded-2xl border border-line bg-card px-4 py-2 text-left shadow-soft transition-transform duration-150 active:scale-[0.98]")}
-        >
-          <IconCircle icon={TriangleAlert} tone="rose" size="sm" />
-          <span className="flex-1 font-bold">{attention === 1 ? "1 thing needs attention" : `${attention} things need attention`}</span>
-          <ChevronRight aria-hidden="true" className="size-5 text-grey" />
-        </button>
-      ) : (
+      {attention === 0 && (
         <p data-part="all-clear" {...rise(4, "flex min-h-14 items-center gap-3 px-1 font-semibold text-muted")}>
           <IconCircle icon={CircleCheck} tone="lavender" size="sm" />
           All clear: no broken promises, missing stock or sales below cost.

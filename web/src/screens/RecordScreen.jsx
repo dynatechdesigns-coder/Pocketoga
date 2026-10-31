@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, Keyboard, Mic, ScanSearch, Send, Square, X } from "lucide-react";
+import { ArrowLeft, Check, Keyboard, Mic, RotateCcw, ScanSearch, Send, Square, X } from "lucide-react";
 import { getProposal, proposeAudio, proposeText } from "../api.js";
 import { MESSAGES, STAGES, VOICE_STAGES, VOICE_STAGE_DELAYS_MS, VOICE_TIMEOUT_MS, canRetry, isEmptyRecording, toWaitError, waitForProposal } from "../recordWait.js";
+import { CANCELLED_MESSAGE, CANCELLED_MS, createRunTracker, micAction } from "../cancelRun.js";
 import { TIME_UP_MESSAGE, VOICE_HINT, createRecordTimer } from "../recordLimits.js";
 import { recordingToWavBase64 } from "../wav.js";
 import { plural } from "../format.js";
@@ -57,6 +58,10 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const [held, setHeld] = useState(null); // audio kept when the 45 s limit stopped it
+  const [cancelled, setCancelled] = useState(false); // the short "Cancelled" note
+  const runs = useRef(null);
+  if (!runs.current) runs.current = createRunTracker();
+  const cancelTimer = useRef(null);
   const recorderRef = useRef(null);
   const toggleRef = useRef(null);
   const textRef = useRef(null);
@@ -83,12 +88,61 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
   }, [intent]);
 
   // Stop the microphone if the trader leaves this screen mid-recording.
-  useEffect(() => () => recorderRef.current?.cleanup(), []);
+  useEffect(
+    () => () => {
+      recorderRef.current?.cleanup();
+      runs.current.cancel();
+      clearTimeout(cancelTimer.current);
+    },
+    []
+  );
+
+  // Cancelling never saves anything and never shows an error: it throws the
+  // audio away, aborts a request in flight, and goes back to idle.
+  function flashCancelled() {
+    setCancelled(true);
+    clearTimeout(cancelTimer.current);
+    cancelTimer.current = setTimeout(() => setCancelled(false), CANCELLED_MS);
+  }
+
+  function cancelRecording() {
+    const rec = recorderRef.current;
+    if (!rec) return;
+    rec.discarded = true;
+    if (rec.state === "recording") rec.stop();
+    else rec.cleanup();
+    recorderRef.current = null;
+    setRecording(false);
+    setSeconds(0);
+    setHeld(null);
+    flashCancelled();
+  }
+
+  function cancelProcessing() {
+    runs.current.cancel();
+    setBusy(null);
+    setError(null);
+    flashCancelled();
+  }
+
+
+
+  // Back to idle from a result or an error, ready to record again.
+  function recordAgain() {
+    setError(null);
+    setHeld(null);
+    setSeconds(0);
+    retryRef.current = null;
+  }
 
   // The centre mic in the tab bar toggles recording while on this screen.
   toggleRef.current = () => {
-    if (busy || sheetOpen || !canRecord) return;
-    recording ? stopRecording() : startRecording();
+    // While processing, a tap is Cancel and then a new recording at once.
+    for (const step of micAction({ busy, recording, sheetOpen, canRecord })) {
+      if (step === "cancel") cancelProcessing();
+      else if (step === "start") startRecording();
+      else stopRecording();
+    }
   };
   useEffect(() => {
     const onMic = () => toggleRef.current();
@@ -124,6 +178,7 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
   async function startRecording() {
     setError(null);
     setHeld(null);
+    setCancelled(false);
     retryRef.current = null;
     let stream;
     try {
@@ -150,6 +205,7 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
     rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
     rec.onstop = () => {
       rec.cleanup();
+      if (rec.discarded) return; // cancelled: nothing to send, nothing to say
       setRecording(false);
       const blob = new Blob(chunks, { type: rec.mimeType });
       if (Date.now() - started < 1000 || isEmptyRecording(blob)) {
@@ -177,34 +233,45 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
   // One place that waits for a proposal: shows the stages, then either the
   // confirm card or a plain message (with Try again when a retry can help).
   // Nothing here saves anything; only Save on the card does.
-  async function runProposal(call, { startAt = 0, onDone, wait } = {}) {
+  async function runProposal(call, { startAt = 0, onDone, wait, run = runs.current.begin() } = {}) {
     setError(null);
     setSheetOpen(false);
+    setCancelled(false);
     retryRef.current = () => runProposal(call, { startAt, onDone, wait });
     try {
-      const p = await waitForProposal(call, { onStage: setBusy, startAt, ...wait });
+      const p = await waitForProposal(call, { onStage: (t) => run.isCurrent() && setBusy(t), startAt, outer: run.signal, ...wait });
+      if (!run.isCurrent()) return; // cancelled while waiting: a late answer is ignored
       onDone?.();
       showProposal(p);
     } catch (err) {
+      if (!run.isCurrent()) return;
       const e = toWaitError(err);
       setError({ message: e.message, retry: canRetry(e) });
     } finally {
-      setBusy(null);
+      if (run.isCurrent()) {
+        runs.current.end(run);
+        setBusy(null);
+      }
     }
   }
 
   async function sendAudio(blob) {
     setBusy(STAGES[0]); // "Listening…" at once, before anything else
+    const run = runs.current.begin();
     let wav;
     try {
       wav = await recordingToWavBase64(blob);
     } catch {
+      if (!run.isCurrent()) return;
+      runs.current.end(run);
       setBusy(null);
       setError({ message: MESSAGES.unreadable });
       return;
     }
+    if (!run.isCurrent()) return;
     await runProposal((signal) => proposeAudio(wav, "wav", hint ?? undefined, signal), {
       startAt: 0,
+      run,
       wait: { stages: VOICE_STAGES, delays: VOICE_STAGE_DELAYS_MS, timeoutMs: VOICE_TIMEOUT_MS },
     });
   }
@@ -273,9 +340,13 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
               <div className="h-full w-2/5 rounded-full bg-accent motion-safe:animate-sweep" />
             </div>
             <p data-part="stage" className="text-lg">{busy}</p>
+            <Button data-part="cancel-processing" variant="quiet" className="w-auto min-w-40" onClick={cancelProcessing}>
+              <X aria-hidden="true" /> Cancel
+            </Button>
           </div>
         ) : canRecord ? (
           <>
+            <div className="relative">
             <button
               data-part="mic"
               data-recording={recording}
@@ -289,6 +360,18 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
               <span aria-hidden="true" className={cx("absolute inset-0 rounded-full bg-accent opacity-0", recording && "animate-ring [animation-delay:0.9s]")} />
               {recording ? <Square aria-hidden="true" fill="currentColor" className="relative size-10" /> : <Mic aria-hidden="true" strokeWidth={2} className="relative size-14" />}
             </button>
+            {recording && (
+              <button
+                type="button"
+                data-part="cancel-recording"
+                onClick={cancelRecording}
+                aria-label="Cancel recording and throw the audio away"
+                className="absolute top-1/2 -right-[68px] grid size-12 -translate-y-1/2 place-items-center rounded-full border-[1.5px] border-line bg-card text-ink shadow-soft transition-transform duration-150 active:scale-96 [&_svg]:size-6"
+              >
+                <X aria-hidden="true" strokeWidth={2.4} />
+              </button>
+            )}
+            </div>
             <p className="inline-flex items-center gap-2 text-lg font-bold tabular-nums" aria-live="polite">
               {recording ? (
                 <>
@@ -309,6 +392,12 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
           </>
         )}
       </div>
+
+      {cancelled && (
+        <p data-part="cancelled" role="status" className="mb-4 rounded-2xl bg-slate px-4 py-3 text-center font-bold">
+          {CANCELLED_MESSAGE}
+        </p>
+      )}
 
       {held && !busy && (
         <Card data-part="time-up" role="status" className="mb-4 grid gap-3">
@@ -337,6 +426,9 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
               Try again
             </Button>
           )}
+          <Button data-part="record-again" variant="quiet" onClick={recordAgain}>
+            <RotateCcw aria-hidden="true" /> Record again
+          </Button>
         </Card>
       )}
 
@@ -418,7 +510,7 @@ function Outcome({ outcome, onAgain, onLedger }) {
             : `${plural(outcome.count, "entry", "entries")} added to your ledger.`}
       </p>
       <Button size="lg" onClick={onAgain}>
-        Record another
+        Record again
       </Button>
       {saved && (
         <Button variant="quiet" onClick={onLedger}>
