@@ -182,6 +182,9 @@ async function runMode({ files, expected, model, seeded }) {
   let wrongSilent = 0;
   let failed = 0;
   const totals = { types: 0, amounts: 0, customers: 0, counts: 0, consistent: 0 };
+  let secondHad = 0;
+  let secondAgreed = 0;
+  let secondDisagreed = 0;
   for (const file of files) {
     const exp = expected[file];
     const runs = [];
@@ -200,6 +203,12 @@ async function runMode({ files, expected, model, seeded }) {
         const check = checkRun(proposal, exp);
         const correct = check.typesOk && check.amountsOk && check.customersOk && check.countOk;
         const flagged = isFlagged(proposal);
+        const second = ctx.secondOpinions.listByProposal(proposal.id)[0];
+        const agreed = second ? second.agreed : "no_second_opinion";
+        const hadSecond = agreed === "yes" || agreed === "no";
+        if (hadSecond) secondHad++;
+        if (agreed === "yes") secondAgreed++;
+        if (agreed === "no") secondDisagreed++;
         runs.push({ ok: true, key: canonical(proposal), entries: (proposal.entries ?? []).map(entrySummary).join("; ") || "(none)", check, correct, flagged });
       } catch (err) {
         runs.push({ ok: false, error: err.message ?? String(err) });
@@ -256,7 +265,7 @@ async function runMode({ files, expected, model, seeded }) {
     rows.push({ file, said: exp.said, ...note, consistency });
   }
   const totalRuns = files.length * RUNS;
-  return { rows, fullyCorrect, wrongFlagged, wrongSilent, failed, totals, totalRuns, noteCount: files.length };
+  return { rows, fullyCorrect, wrongFlagged, wrongSilent, failed, totals, totalRuns, noteCount: files.length, secondHad, secondAgreed, secondDisagreed };
 }
 
 function reportMode(mode, out) {
@@ -269,6 +278,10 @@ function reportMode(mode, out) {
     `${mode}: types ${out.totals.types}/${out.totalRuns}, amounts ${out.totals.amounts}/${out.totalRuns}, ` +
     `customers ${out.totals.customers}/${out.totalRuns}, counts ${out.totals.counts}/${out.totalRuns}; ` +
     `fully consistent notes ${out.totals.consistent}/${out.noteCount}`
+  );
+  console.log(
+    `${mode}: second opinion on ${out.secondHad}/${out.totalRuns} runs; ` +
+    `agreed ${out.secondAgreed}, disagreed ${out.secondDisagreed}`
   );
 }
 

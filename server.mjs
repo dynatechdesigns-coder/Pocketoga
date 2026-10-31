@@ -24,6 +24,7 @@ import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
 import { PhotoCheckStore } from "./photos.mjs";
 import { IdempotencyStore, MAX_REQUEST_ID_LENGTH } from "./idempotency.mjs";
 import { FeedbackStore, validateFeedbackBody, feedbackError, notifyFeedbackWebhook, classifyFeedbackType } from "./feedback.mjs";
+import { ModelCapStore, resolveDailyCaps, withModelCap, withFetchCap } from "./modelcaps.mjs";
 import { createModelClient } from "./model.mjs";
 import { propose, confirmProposal, fixProposal, rejectProposal, getProposal, proposeCorrection, proposeFromForm, proposeManual, toProposal } from "./voice.mjs";
 import { proposePhotoCheck } from "./photos.mjs";
@@ -478,6 +479,19 @@ export async function handleVoiceRequest(req, res, deps) {
     if (session.shopId !== shopId) return send(res, 403, { error: "this login is for another shop" });
   }
 
+  // Daily model-credit caps: every Meta/Baseten call below charges one call
+  // against this shop's budget and the service budget (Lagos day, stored in
+  // sqlite so restarts keep them). A spent budget throws 429 with the plain
+  // sentence before any network happens; without the store the route runs
+  // uncapped (hand-built test deps). Code-only paths never charge.
+  const chargeModelCall = () => {
+    if (deps.modelCaps && deps.dailyCaps) {
+      deps.modelCaps.charge(shopId, { caps: deps.dailyCaps, isDemo: shopId === DEMO_SHOP_ID });
+    }
+  };
+  const cappedModel = withModelCap(deps.model, chargeModelCall);
+  const cappedSecondOpinionFetch = withFetchCap(undefined, chargeModelCall);
+
   // Trader feedback about the app itself (never ledger data): a typed note or
   // a voice note up to 45 seconds, exactly one of the two, with an optional
   // type that is kept as-is when supplied. Typed answers 201 { ok: true };
@@ -498,7 +512,7 @@ export async function handleVoiceRequest(req, res, deps) {
     if (fields.audio) {
       let raw;
       try {
-        raw = await deps.model.complete({ audio: fields.audio });
+        raw = await cappedModel.complete({ audio: fields.audio });
       } catch (err) {
         if (err?.code === "MODEL_BAD_JSON" || err?.code === "MODEL_TRUNCATED") {
           throw feedbackError(400, "could not hear that voice note — please try again");
@@ -521,7 +535,7 @@ export async function handleVoiceRequest(req, res, deps) {
     let finalType = fields.type;
     let typeSource = "given";
     if (!finalType) {
-      finalType = await classifyFeedbackType(text, deps.model);
+      finalType = await classifyFeedbackType(text, cappedModel);
       typeSource = "auto";
     }
     try {
@@ -565,7 +579,7 @@ export async function handleVoiceRequest(req, res, deps) {
     const hint = body && typeof body === "object" ? body.hint : undefined;
     const occurredAt = readOccurredAt(body);
     return idempotentPropose(req, res, deps, shopId, () =>
-      propose(shopId, input, { ...deps, hint: hint ?? null, occurredAt }));
+      propose(shopId, input, { ...deps, model: cappedModel, secondOpinionFetch: cappedSecondOpinionFetch, hint: hint ?? null, occurredAt }));
   }
 
   // Structured form fields into a proposal, with no model call. Same checks,
@@ -603,7 +617,7 @@ export async function handleVoiceRequest(req, res, deps) {
       proposePhotoCheck(
         shopId,
         { photoBase64: fields.photoBase64, photoFormat: fields.photoFormat },
-        { proposals: deps.proposals, model: deps.model, ledger: deps.ledger, photoChecks: deps.photoChecks, occurredAt }
+        { proposals: deps.proposals, model: cappedModel, ledger: deps.ledger, photoChecks: deps.photoChecks, occurredAt }
       ));
   }
 
@@ -635,7 +649,7 @@ export async function handleVoiceRequest(req, res, deps) {
       return send(res, 200, { proposal: rejectProposal(id, shopId, deps) });
     }
     const body = await readBody(req);
-    const proposal = await fixProposal(id, shopId, body.correctionText ?? body.text, deps);
+    const proposal = await fixProposal(id, shopId, body.correctionText ?? body.text, { ...deps, model: cappedModel });
     return send(res, 200, { proposal });
   }
 
@@ -877,6 +891,8 @@ function withRequestLog(handler) {
     const t0 = Date.now();
     const path = String(req.url ?? "/").split("?")[0] || "/";
     const shop = req.headers ? req.headers["x-shop-id"] ?? null : null;
+    const rawRid = req.headers ? req.headers["x-request-id"] : null;
+    const rid = typeof rawRid === "string" && rawRid.trim() ? rawRid.trim() : null;
     let status = null;
     const origWriteHead = res.writeHead.bind(res);
     res.writeHead = (code, ...rest) => {
@@ -888,7 +904,7 @@ function withRequestLog(handler) {
       (err) => {
         if (!res.headersSent) send(res, err.status ?? 500, { error: err.message ?? "internal error" });
         logLine(
-          formatRequestLog({ method: req.method, path, status: status ?? err.status ?? 500, ms: Date.now() - t0, shop, error: err })
+          formatRequestLog({ method: req.method, path, status: status ?? err.status ?? 500, ms: Date.now() - t0, shop, rid, error: err })
         );
       }
     );
@@ -936,6 +952,8 @@ export function buildDeps(env = process.env) {
     feedback: new FeedbackStore(db),
     auths: new AuthStore(db),
     model: createModelClient({ apiKey: env.META_API_KEY ?? null }),
+    modelCaps: new ModelCapStore(db),
+    dailyCaps: resolveDailyCaps(env),
     env,
   };
 }

@@ -223,15 +223,77 @@ describe("feedback format (mock model)", () => {
     }
   });
 
-  it("needs exactly one of text or audio", async () => {
+  it("accepts the exact bodies the web sends today", async () => {
     const deps = setup();
     try {
-      const audio = { audioBase64: wav(1).toString("base64"), audioFormat: "wav" };
-      assertError(await post(deps, { type: "suggestion", text: "x", audio }), 400);
-      assertError(await post(deps, { type: "suggestion" }), 400);
-      assertError(await post(deps, {}), 400);
-      assertError(await post(deps, { type: "suggestion", text: null, audio: null }), 400);
-      assertError(await post(deps, { type: "suggestion", text: "", audio }), 400);
+      // Typed: optional rating and trimmed text, no audio key at all.
+      let res = await post(deps, { rating: 4, text: "It is slow" });
+      assert.equal(res.status, 201);
+      assert.deepEqual(res.json, { ok: true });
+      assert.equal(deps.feedback.listByShop(res.pair.shop)[0].text, "It is slow");
+      res = await post(deps, { text: "Good" });
+      assert.equal(res.status, 201);
+      // Voice: the voice route's audio fields and never text.
+      const voice = { audioBase64: wav(1).toString("base64"), audioFormat: "wav" };
+      for (const body of [{ ...voice }, { text: "", ...voice }, { text: null, ...voice }]) {
+        res = await post(deps, body);
+        assert.equal(res.status, 201, JSON.stringify(Object.keys(body)));
+        assert.deepEqual(res.json, { ok: true, text: TRANSCRIPT });
+      }
+    } finally {
+      deps.db.close();
+    }
+  });
+
+  it("a voice message wins over typed text and only the transcript is stored", async () => {
+    const lines = [];
+    setLogSink((line) => lines.push(String(line)));
+    const deps = setup();
+    try {
+      const b64 = wav(2).toString("base64");
+      const res = await post(deps, { text: "typed words are ignored", audioBase64: b64, audioFormat: "wav" });
+      assert.equal(res.status, 201);
+      assert.deepEqual(res.json, { ok: true, text: TRANSCRIPT });
+      const [row] = deps.feedback.listByShop(res.pair.shop);
+      assert.equal(row.text, TRANSCRIPT);
+      const combined = lines.join("\n");
+      assert.ok(!combined.includes(b64.slice(0, 64)));
+      assert.ok(!combined.includes("typed words are ignored"));
+      assert.ok(!combined.includes(TRANSCRIPT));
+    } finally {
+      deps.db.close();
+      setLogSink();
+    }
+  });
+
+  it("blank text alone answers 400 with the plain message", async () => {
+    const deps = setup();
+    try {
+      for (const body of [{ text: "" }, { text: "   " }, {}, { text: null }, { audioBase64: "  ", audioFormat: "wav" }]) {
+        const res = await post(deps, body);
+        assert.equal(res.status, 400);
+        assert.deepEqual(res.json, { error: "Please write or record your message." });
+      }
+    } finally {
+      deps.db.close();
+    }
+  });
+
+  it("plain validation messages a trader understands", async () => {
+    const deps = setup();
+    try {
+      let res = await post(deps, { text: "x".repeat(FEEDBACK_TEXT_MAX + 1) });
+      assert.equal(res.status, 400);
+      assert.deepEqual(res.json, { error: "Your message is too long. Please keep it under 1000 characters." });
+      res = await post(deps, { rating: 6, text: "x" });
+      assert.equal(res.status, 400);
+      assert.deepEqual(res.json, { error: "Please choose a rating from 1 to 5 or leave it empty." });
+      res = await post(deps, {
+        audioBase64: wav(FEEDBACK_AUDIO_MAX_SECONDS + 1).toString("base64"),
+        audioFormat: "wav",
+      });
+      assert.equal(res.status, 400);
+      assert.deepEqual(res.json, { error: "Your recording is too long. Please keep it under 45 seconds." });
     } finally {
       deps.db.close();
     }

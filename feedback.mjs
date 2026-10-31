@@ -230,70 +230,63 @@ function mp3Seconds(buf) {
 }
 
 // Validates a POST /feedback body in plain code. Returns the cleaned
-// { type, rating, text, audio } where exactly one of text/audio is set —
-// text is the trimmed string, audio is { data, format } ready for the model.
-// "type" is optional: a supplied value must be one of the three and is kept
-// as-is, otherwise it is detected after the reply. Throws
-// feedbackError(400, "<plain message>") on anything else.
+// { type, rating, text, audio }. Audio arrives either nested
+// ({ audio: { audioBase64, audioFormat } }) or flat like the voice-note
+// route and the web client ({ audioBase64, audioFormat } top-level).
+// Missing, null, empty and whitespace-only text all count as absent, and so
+// does empty or missing audio. A voice message wins over typed text; with
+// neither there is nothing to send. "type" is optional: a supplied value
+// must be one of the three and is kept as-is, otherwise it is detected
+// after the reply. Every 400 carries plain words a trader understands.
 export function validateFeedbackBody(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
-    throw feedbackError(400, "feedback needs exactly one of text or audio");
+    throw feedbackError(400, "Please write or record your message.");
   }
   let type = null;
   if (body.type !== undefined && body.type !== null) {
     if (!FEEDBACK_TYPES.includes(body.type)) {
-      throw feedbackError(400, 'type must be "suggestion", "problem" or "review"');
+      throw feedbackError(400, "Please pick suggestion, problem or review for the type, or leave it empty.");
     }
     type = body.type;
   }
   let rating = null;
   if (body.rating !== undefined && body.rating !== null) {
     if (!Number.isInteger(body.rating) || body.rating < 1 || body.rating > 5) {
-      throw feedbackError(400, "rating must be an integer from 1 to 5");
+      throw feedbackError(400, "Please choose a rating from 1 to 5 or leave it empty.");
     }
     rating = body.rating;
   }
-  const hasText = body.text !== undefined && body.text !== null;
-  const hasAudio = body.audio !== undefined && body.audio !== null;
-  if (hasText === hasAudio) {
-    throw feedbackError(400, "send exactly one of text or audio");
-  }
-  let text = null;
-  let audio = null;
-  if (hasText) {
-    if (typeof body.text !== "string") throw feedbackError(400, "text must be 1 to 1000 characters");
-    text = body.text.trim();
-    if (!text || text.length > FEEDBACK_TEXT_MAX) {
-      throw feedbackError(400, "text must be 1 to 1000 characters");
-    }
-  } else {
-    const raw = body.audio;
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      throw feedbackError(400, 'audioFormat "wav" or "mp3" is required with audioBase64');
-    }
-    const format = typeof raw.audioFormat === "string" ? raw.audioFormat.toLowerCase() : "";
+  const nested = body.audio && typeof body.audio === "object" && !Array.isArray(body.audio) ? body.audio : null;
+  const audioBase64 = nested?.audioBase64 ?? body.audioBase64;
+  const audioFormat = nested?.audioFormat ?? body.audioFormat;
+  if (typeof audioBase64 === "string" && audioBase64.trim()) {
+    const format = typeof audioFormat === "string" ? audioFormat.toLowerCase() : "";
     if (!AUDIO_FORMATS.includes(format)) {
-      throw feedbackError(400, 'audioFormat "wav" or "mp3" is required with audioBase64');
+      throw feedbackError(400, "We could not open that recording. Please try again.");
     }
-    if (typeof raw.audioBase64 !== "string" || !raw.audioBase64.trim()) {
-      throw feedbackError(400, "audioBase64 must be a non-empty base64 string");
-    }
-    const compact = raw.audioBase64.replace(/\s+/g, "");
+    const compact = audioBase64.replace(/\s+/g, "");
     if (compact.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(compact)) {
-      throw feedbackError(400, "audioBase64 is not valid base64 audio");
+      throw feedbackError(400, "We could not open that recording. Please try again.");
     }
     const data = Buffer.from(compact, "base64");
-    if (data.length === 0) throw feedbackError(400, "audioBase64 is not valid base64 audio");
+    if (data.length === 0) throw feedbackError(400, "We could not open that recording. Please try again.");
     const seconds = audioSeconds(data, format);
     if (seconds === null) {
-      throw feedbackError(400, "could not read that audio file (use wav or mp3)");
+      throw feedbackError(400, "We could not open that recording. Please try again.");
     }
     if (seconds > FEEDBACK_AUDIO_MAX_SECONDS) {
-      throw feedbackError(400, `audio must be ${FEEDBACK_AUDIO_MAX_SECONDS} seconds or shorter`);
+      throw feedbackError(400, `Your recording is too long. Please keep it under ${FEEDBACK_AUDIO_MAX_SECONDS} seconds.`);
     }
-    audio = { data: data.toString("base64"), format };
+    return { type, rating, text: null, audio: { data: data.toString("base64"), format } };
   }
-  return { type, rating, text, audio };
+  if (typeof body.text !== "string" || !body.text.trim()) {
+    throw feedbackError(400, "Please write or record your message.");
+  }
+  const text = body.text.trim();
+  if (text.length > FEEDBACK_TEXT_MAX) {
+    throw feedbackError(400, `Your message is too long. Please keep it under ${FEEDBACK_TEXT_MAX} characters.`);
+  }
+  return { type, rating, text, audio: null };
 }
 
 // --- Post-reply type detection ------------------------------------------------

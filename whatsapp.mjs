@@ -12,7 +12,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { propose, confirmProposal, fixProposal, rejectProposal, proposeCorrectionFromText } from "./voice.mjs";
 import { PhotoCheckStore, proposePhotoCheck } from "./photos.mjs";
-import { AuthStore } from "./auth.mjs";
+import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
+import { withModelCap, withFetchCap, isModelCapError } from "./modelcaps.mjs";
 import { customerDebts, chaseForShop, lagosDay } from "./debts.mjs";
 import { PromiseStore, refreshPromises, keptRate } from "./promises.mjs";
 import { moneyLeakReport } from "./leak.mjs";
@@ -235,6 +236,8 @@ export function buildWhatsAppContext(deps, env = deps.env ?? process.env) {
     summary: getSummaryStore(deps),
     auths: getAuthStore(deps),
     model: deps.model,
+    modelCaps: deps.modelCaps ?? null,
+    dailyCaps: deps.dailyCaps ?? null,
     nowMs: deps.nowMs ?? Date.now(),
     config,
     fetchFn: deps.fetch ?? fetch,
@@ -799,6 +802,10 @@ async function handleCorrection(ctx, sender, shopId, fixProposalId, message) {
         return;
       }
     } catch (err) {
+      if (isModelCapError(err)) {
+        await sendText(ctx, sender, err.message);
+        return;
+      }
       if (err && err.code === "MODEL_BAD_JSON") {
         await sendText(ctx, sender, BAD_AUDIO_JSON);
         return;
@@ -838,6 +845,16 @@ async function handleIncomingMessage(message, ctx) {
     return;
   }
   const shopId = ctx.store.getOrCreateShop(sender);
+  // Daily model-credit caps, same sentence as the HTTP routes: every
+  // Meta/Baseten call in this message's flow charges the shop's budget
+  // first, and a spent budget sends the plain sentence instead of
+  // calling out. Code-only debt commands below never charge.
+  const chargeModelCall = () => {
+    if (ctx.modelCaps && ctx.dailyCaps) {
+      ctx.modelCaps.charge(shopId, { caps: ctx.dailyCaps, isDemo: shopId === DEMO_SHOP_ID });
+    }
+  };
+  ctx = { ...ctx, model: withModelCap(ctx.model, chargeModelCall), secondOpinionFetch: withFetchCap(undefined, chargeModelCall) };
   if (ctx.summary) {
     ctx.summary.touchInbound(shopId, sender, ctx.nowMs);
     const pending = ctx.summary.takePending(shopId, sender);
@@ -886,6 +903,7 @@ async function handleIncomingMessage(message, ctx) {
         ledger: ctx.ledger,
         products: ctx.products,
         secondOpinions: ctx.secondOpinions,
+        secondOpinionFetch: ctx.secondOpinionFetch,
         timings,
       });
       await sendCard(ctx, sender, proposal, shopId, { timings });
@@ -904,7 +922,7 @@ async function handleIncomingMessage(message, ctx) {
           // The audio is in hand and the slow part (transcription +
           // classification) starts now: say so before it, not after.
           await sendText(ctx, sender, VOICE_ACK, { timings });
-          return propose(shopId, { audioPath: wavPath }, { proposals: ctx.proposals, model: ctx.model, ledger: ctx.ledger, products: ctx.products, secondOpinions: ctx.secondOpinions, timings });
+          return propose(shopId, { audioPath: wavPath }, { proposals: ctx.proposals, model: ctx.model, ledger: ctx.ledger, products: ctx.products, secondOpinions: ctx.secondOpinions, secondOpinionFetch: ctx.secondOpinionFetch, timings });
         }, timings);
       } catch (err) {
         ctx.log(`audio download failed: ${err?.message ?? err}`);

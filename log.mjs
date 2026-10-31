@@ -38,12 +38,14 @@ export function failureReason({ status = null, err = null } = {}) {
 }
 
 // One finished HTTP request: method, path without query string, status,
-// duration, masked shop, and for failures a short scrubbed error fragment.
+// duration, masked shop, the client request id when one rode along, and
+// for failures a short scrubbed error fragment.
 // Only the fields above ever reach a line: bodies, headers, keys and note
 // text are never read here, so they cannot leak through it.
-export function formatRequestLog({ method, path, status, ms, shop = null, error = null }) {
+export function formatRequestLog({ method, path, status, ms, shop = null, rid = null, error = null }) {
   const cleanPath = String(path ?? "/").split("?")[0] || "/";
   let line = `${method} ${cleanPath} ${status} ${ms}ms shop=${maskShopId(shop)}`;
+  if (rid) line += ` rid=${scrub(String(rid).slice(0, 64))}`;
   if (error) {
     let frag = scrub(error.code ?? error.message ?? error).slice(0, 120);
     // Some code-written messages name the shop ("shop X has no entries"):
