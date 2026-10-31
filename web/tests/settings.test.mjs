@@ -13,45 +13,85 @@ const demo = { id: "demo", name: "Demo Provisions", demo: true };
 const real = { id: "wa-abc123", name: "Mama Bisi Store", token: "t", expiresAt: "2999-01-01T00:00:00Z" };
 
 describe("order", () => {
-  test("Theme, Your shop (with the leave button inside), Install, then Send feedback last", () => {
-    assert.deepEqual(SETTINGS_ORDER, ["theme", "shop", "install", "feedback"]);
+  test("Theme, Your shop, Install, the leave row, then Send feedback last", () => {
+    assert.deepEqual(SETTINGS_ORDER, ["theme", "shop", "install", "leave", "feedback"]);
     const at = (needle) => {
       const i = screen.indexOf(needle);
       assert.ok(i >= 0, needle);
       return i;
     };
-    const order = [at('data-part="settings-theme"'), at('data-part="settings-shop"'), at('data-part="settings-install"'), at("<FeedbackSection")];
+    const order = [at('data-part="settings-theme"'), at('data-part="settings-shop"'), at('data-part="settings-install"'), at('data-part="leave"'), at("<FeedbackSection")];
     assert.deepEqual(order, [...order].sort((a, b) => a - b));
   });
 
-  test("nothing important sits below the Feedback card", () => {
+  test("the leave row sits directly above the Send feedback card, and nothing comes after the card", () => {
+    const between = screen.slice(screen.indexOf('data-part="leave"'), screen.indexOf("<FeedbackSection"));
+    assert.doesNotMatch(between, /<Card|<InstallRow|<textarea|<FeedbackSection[^]*<FeedbackSection/);
     const tail = screen.slice(screen.indexOf("<FeedbackSection"));
     assert.doesNotMatch(tail, /data-part="leave"|login-to-shop|<Button|<Card|<InstallRow/);
   });
 
-  test("Leave the demo / Sign out is a small secondary button inside the Your shop card, near the top", () => {
-    const shopCard = screen.slice(screen.indexOf('data-part="settings-shop"'), screen.indexOf('data-part="settings-install"'));
-    const leave = shopCard.match(/<Button data-part="leave" variant=\{info\.leave\.variant\} size="sm"([^>]*)onClick=\{onExit\}>/);
-    assert.ok(leave, "the leave button is in the shop section");
-    assert.equal(shopCard.indexOf('data-part="leave"') < shopCard.indexOf("<Avatar"), true); // in the card's title row, above the identity
-    assert.match(shopCard, /Your shop/);
-    assert.equal(shopInfo(demo).leave.variant, "quiet"); // secondary, not the primary button
-    assert.equal(shopInfo(real).leave.variant, "quiet");
+  test("the Your shop card has no button in it and its title is on one line", () => {
+    const card = screen.slice(screen.indexOf('id="your-shop-title"') - 120, screen.indexOf("{info.openReal &&"));
+    assert.doesNotMatch(card, /<Button|onExit|onLogin|LogOut/);
+    assert.match(card, /<SectionTitle as="h2" id="your-shop-title" className="[^"]*whitespace-nowrap"/);
+    // the title has its own row: not a flex row shared with anything else
+    assert.doesNotMatch(card, /justify-between/);
+    assert.match(card, /Your shop/);
+    assert.match(card, /info\.name/);
+    assert.match(card, /info\.badge/);
+    assert.match(card, /info\.line/);
   });
 
-  test("a 360px phone sees Leave the demo without scrolling: only Theme sits above it, and it is compact", () => {
-    const aboveLeave = screen.slice(0, screen.indexOf('data-part="leave"'));
-    assert.doesNotMatch(aboveLeave, /<FeedbackSection|<InstallRow|open-real-shop|<textarea/);
-    // the Theme card is a title and one control (no paragraph of explanation)
-    const theme = screen.slice(screen.indexOf('data-part="settings-theme"'), screen.indexOf('data-part="settings-shop"'));
-    assert.doesNotMatch(theme, /<p /);
-    // title and button share one row, so the button costs no extra height
-    assert.match(screen, /<div className="flex items-center justify-between gap-3">\s*<SectionTitle as="h2" id="your-shop-title"/);
-    assert.match(screen, /whitespace-nowrap/);
+  test("Leave the demo / Sign out is its own full-width secondary row, a 48px tap target", () => {
+    const leave = screen.match(/<Button data-part="leave" variant=\{info\.leave\.variant\} className="([^"]*)" onClick=\{onExit\}>/);
+    assert.ok(leave, "the leave button");
+    assert.match(leave[1], /\bw-full\b/);
+    assert.doesNotMatch(leave[1], /\bw-auto\b|\bw-\[|min-w-|shrink-0|whitespace-nowrap/);
+    assert.equal(shopInfo(demo).leave.variant, "quiet"); // secondary, not the primary button
+    assert.equal(shopInfo(real).leave.variant, "quiet");
+    assert.doesNotMatch(screen.match(/<Button data-part="leave"[^>]*>/)[0], /size="sm"/); // the default size has min-h-12
+    // the shared Button is 48px high and full width unless told otherwise
+    const ui = read("src/ui.jsx");
+    assert.match(ui, /inline-flex min-h-12 w-full items-center justify-center/);
+    assert.match(ui, /md: "px-5 py-3 text-base"/);
   });
 
   test("the Install list hides itself when empty", () => {
     assert.match(screen, /data-part="settings-install" className="[^"]*empty:hidden/);
+  });
+});
+
+describe("no overflow, no squeezed titles", () => {
+  test("the page is one column that can shrink below its content (minmax(0, 1fr)), so nothing is wider than the margins", () => {
+    assert.match(screen, /<section data-part="settings" className="grid grid-cols-\[minmax\(0,1fr\)\] gap-4">/);
+    assert.match(screen, /data-part="settings-shop"[^>]*className="grid grid-cols-\[minmax\(0,1fr\)\] gap-4"/);
+  });
+
+  test("every Settings card can shrink (min-w-0) and wraps long text", () => {
+    for (const marker of ['data-part="settings-theme"', 'data-part="open-real-shop"']) {
+      const tag = screen.slice(screen.lastIndexOf("<Card", screen.indexOf(marker)), screen.indexOf(">", screen.indexOf(marker)));
+      assert.match(tag, /min-w-0/, marker);
+    }
+    assert.match(screen, /<Card as="article" className="grid min-w-0 gap-3">/); // Your shop
+    assert.match(screen, /\[overflow-wrap:anywhere\]/);
+    const feedback = read("src/FeedbackSection.jsx");
+    assert.match(feedback, /min-w-0 flex-1/); // the Send feedback title column can shrink beside its chevron
+  });
+
+  test("titles that sit next to something can shrink; titles that must stay on one line say so", () => {
+    assert.match(screen, /id="your-shop-title" className="mt-0 whitespace-nowrap"/);
+    assert.match(screen, /<div className="flex min-w-0 items-center gap-3">\s*<IconCircle/); // Open your real shop: icon + title
+    assert.match(screen, /<div className="flex min-w-0 items-center gap-4">\s*<Avatar/); // avatar + name
+    assert.match(screen, /<div className="grid min-w-0 gap-1">/);
+  });
+
+  test("no fixed widths, no absolute or fixed positions, no horizontal scrolling inside Settings", () => {
+    assert.doesNotMatch(screen, /\bw-\[\d|\bmin-w-\[|\bfixed\b|\babsolute\b|overflow-x-(auto|scroll)|whitespace-nowrap[^"]*"[^>]*>\s*<LogOut/);
+  });
+
+  test("the cards use the page's own gutter and nothing adds margins that could push past it", () => {
+    assert.doesNotMatch(screen, /\b-?m[xlr]-\d|\bpx-\d|\bw-screen\b|\bw-\[100vw\]/);
   });
 });
 
@@ -67,7 +107,7 @@ describe("the demo shop", () => {
     assert.equal(info.openReal.button, "Log in to my shop");
   });
 
-  test("Leave the demo is the quiet button inside the Your shop card", () => {
+  test("Leave the demo is the quiet button, its own row", () => {
     assert.deepEqual(info.leave, { label: "Leave the demo", variant: "quiet" });
   });
 
@@ -153,7 +193,7 @@ describe("Feedback inside Settings", () => {
 
 describe("layout", () => {
   test("every card is one full-width column of the page grid, so nothing is wider than the screen", () => {
-    assert.match(screen, /<section data-part="settings" className="grid gap-4">/);
+    assert.match(screen, /<section data-part="settings" className="grid grid-cols-\[minmax\(0,1fr\)\] gap-4">/);
     assert.doesNotMatch(screen, /fixed|absolute|w-\[\d+px\]|min-w-\[/);
   });
 

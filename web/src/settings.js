@@ -1,10 +1,10 @@
 // What the Settings screen says about the shop, in plain data so the tests can
 // check it. The order of the sections is fixed here too. Plain JavaScript.
 
-// The sections, top to bottom. The leave button (Leave the demo, or Sign out
-// in a real shop) sits inside "shop"; "install" shows only where installing is
-// possible; nothing important comes after "feedback".
-export const SETTINGS_ORDER = ["theme", "shop", "install", "feedback"];
+// The sections, top to bottom. The leave button (Leave the demo, or Sign out in
+// a real shop) is its own row just above "feedback", which is last; "install"
+// shows only where installing is possible.
+export const SETTINGS_ORDER = ["theme", "shop", "install", "leave", "feedback"];
 
 // A real shop never shows the words "Demo" or "fake data".
 export function shopInfo(shop) {
