@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { BarChart3, ScanSearch, Check, ChevronRight, Ellipsis, Mic, Package, Receipt, ScrollText, Settings, ShoppingBag, Users, UserRound, Wallet } from "lucide-react";
 import { setShop } from "./api.js";
 import DevBanner from "./DevBanner.jsx";
+import InstallRow, { InstallSteps } from "./InstallRow.jsx";
 import OfflinePill from "./OfflinePill.jsx";
 import { greeting } from "./format.js";
 import { plural } from "./format.js";
@@ -58,6 +59,7 @@ export default function App({ shop, onExit }) {
   // { item, unit, display } (Ledger: that item's sales).
   const [intent, setIntent] = useState(null);
   const [more, setMore] = useState(false);
+  const [installSteps, setInstallSteps] = useState(false); // iPhone and iPad: how to add it to the home screen
   // Where Record was opened from, so Back and Save return there: { tab, label },
   // or null when Record was not opened from another screen.
   const [origin, setOrigin] = useState(null);
@@ -221,8 +223,10 @@ export default function App({ shop, onExit }) {
               </button>
             </li>
           ))}
+          <InstallRow onClose={() => setMore(false)} onSteps={() => setInstallSteps(true)} />
         </ul>
       </Sheet>
+      <InstallSteps open={installSteps} onClose={() => setInstallSteps(false)} />
     </div>
   );
 }

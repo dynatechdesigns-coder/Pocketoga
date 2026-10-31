@@ -1,5 +1,4 @@
-import { useEffect, useState } from "react";
-import { Download, LogOut, ShieldCheck } from "lucide-react";
+import { LogOut, ShieldCheck } from "lucide-react";
 import { Avatar, Button, Card, IconCircle, PeriodTabs, ScreenHeader, SectionTitle, setTheme, useDark } from "../ui.jsx";
 
 const THEMES = [
@@ -8,20 +7,9 @@ const THEMES = [
 ];
 
 // Theme (light unless the trader picks dark, remembered on this device), the
-// shop, installing the app, and leaving the shop.
+// shop, and leaving the shop. (Installing the app is in the More menu.)
 export default function SettingsScreen({ shop, onExit }) {
   const dark = useDark();
-
-  // Chrome and Android offer an install prompt; keep it for our button.
-  const [installEvent, setInstallEvent] = useState(null);
-  useEffect(() => {
-    const keep = (e) => {
-      e.preventDefault();
-      setInstallEvent(e);
-    };
-    window.addEventListener("beforeinstallprompt", keep);
-    return () => window.removeEventListener("beforeinstallprompt", keep);
-  }, []);
 
   return (
     <section className="grid gap-4">
@@ -49,12 +37,6 @@ export default function SettingsScreen({ shop, onExit }) {
         <IconCircle icon={ShieldCheck} tone="lavender" />
         <p className="text-muted">PocketOga only suggests. Nothing is saved until you tap Save, and saved records are never edited: fixes are added as corrections.</p>
       </Card>
-
-      {installEvent && (
-        <Button variant="secondary" onClick={() => installEvent.prompt()}>
-          <Download aria-hidden="true" /> Install PocketOga on this phone
-        </Button>
-      )}
 
       <Button variant="quiet" onClick={onExit}>
         <LogOut aria-hidden="true" /> {shop.demo ? "Leave the demo" : "Log out"}
