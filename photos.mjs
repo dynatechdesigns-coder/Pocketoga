@@ -9,7 +9,7 @@
 // ledger entries, and confirm writes a payment_checks row (never the
 // ledger). Photo types today: payment_alert (screenshot or SMS), unknown.
 import { DatabaseSync } from "node:sqlite";
-import { voiceError, namesSimilar, toProposal } from "./voice.mjs";
+import { voiceError, namesSimilar, toProposal, resolveOccurredAt } from "./voice.mjs";
 import { parseNaira, formatKobo } from "./money.mjs";
 import { allocatedSales, customerDebts, lagosDay, daysBetween } from "./debts.mjs";
 
@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS payment_checks (
   warnings_json TEXT NOT NULL,
   check_status TEXT NOT NULL CHECK (check_status IN ('unconfirmed','confirmed')),
   created_at TEXT NOT NULL,
+  occurred_at TEXT,
   seen_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_payment_checks_shop ON payment_checks(shop_id);
@@ -72,19 +73,27 @@ export class PhotoCheckStore {
       this.ownsDb = false;
     }
     this.db.exec(PAYMENT_CHECK_SCHEMA);
+    // Databases created before the offline queue get it now.
+    const columns = this.db
+      .prepare("PRAGMA table_info(payment_checks)")
+      .all()
+      .map((c) => c.name);
+    if (!columns.includes("occurred_at")) {
+      this.db.exec("ALTER TABLE payment_checks ADD COLUMN occurred_at TEXT");
+    }
   }
 
-  create({ shopId, proposalId = null, photoType, customer = null, sender = null, amountKobo, reference = null, alertDate = null, alertStatus = null, warnings = [], createdAt = null }) {
+  create({ shopId, proposalId = null, photoType, customer = null, sender = null, amountKobo, reference = null, alertDate = null, alertStatus = null, warnings = [], createdAt = null, occurredAt = null }) {
     if (!shopId || typeof shopId !== "string") throw new Error("shopId is required");
     if (!Number.isInteger(amountKobo) || amountKobo < 0) throw new Error("amountKobo must be a non-negative integer (kobo)");
     const stamp = createdAt ?? new Date().toISOString();
     const result = this.db
       .prepare(
         `INSERT INTO payment_checks
-           (shop_id, proposal_id, photo_type, customer, sender, amount_kobo, reference, alert_date, alert_status, warnings_json, check_status, created_at, seen_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unconfirmed', ?, NULL)`
+           (shop_id, proposal_id, photo_type, customer, sender, amount_kobo, reference, alert_date, alert_status, warnings_json, check_status, created_at, occurred_at, seen_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unconfirmed', ?, ?, NULL)`
       )
-      .run(shopId, proposalId, photoType, customer, sender, amountKobo, reference, alertDate, alertStatus, JSON.stringify(warnings ?? []), stamp);
+      .run(shopId, proposalId, photoType, customer, sender, amountKobo, reference, alertDate, alertStatus, JSON.stringify(warnings ?? []), stamp, occurredAt ?? stamp);
     return this.get(Number(result.lastInsertRowid));
   }
 
@@ -129,6 +138,7 @@ export class PhotoCheckStore {
     sender: row.sender ?? null,
     alert_date: row.alert_date ?? null,
     created_at: row.created_at,
+    occurred_at: row.occurred_at ?? row.created_at ?? null,
     warnings,
   };
 }
@@ -261,12 +271,14 @@ function isBadJson(err) {
 // Classifies one photo, extracts its fields and runs the code checks,
 // storing a proposal the trader confirms as usual. Unknown photos become
 // flagged proposals with no Save button; nothing is ever recorded here.
-export async function proposePhotoCheck(shopId, input, { proposals, model, ledger, photoChecks, now = Date.now() }) {
+export async function proposePhotoCheck(shopId, input, { proposals, model, ledger, photoChecks, now = Date.now(), occurredAt = null }) {
   if (!proposals || !model || !ledger || !photoChecks) {
     throw new Error("proposePhotoCheck needs { proposals, model, ledger, photoChecks }");
   }
   if (!shopId || typeof shopId !== "string") throw voiceError(400, "shopId is required");
   const photo = checkPhotoInput(input);
+  const happenedAt =
+    resolveOccurredAt(occurredAt ?? input?.occurred_at, now) ?? new Date(now).toISOString();
   let raw;
   try {
     raw = await model.complete({ image: { data: photo.data, format: photo.mime }, system: PHOTO_SYSTEM_PROMPT });
@@ -288,6 +300,7 @@ export async function proposePhotoCheck(shopId, input, { proposals, model, ledge
       },
       heard: "(photo)",
       question: CONFUSED_PHOTO_FLAG,
+      occurredAt: happenedAt,
     });
     return toProposal(row);
   }
@@ -305,6 +318,7 @@ export async function proposePhotoCheck(shopId, input, { proposals, model, ledge
       },
       heard: "(photo)",
       question: UNKNOWN_PHOTO_FLAG,
+      occurredAt: happenedAt,
     });
     return toProposal(row);
   }
@@ -327,6 +341,7 @@ export async function proposePhotoCheck(shopId, input, { proposals, model, ledge
     },
     heard: "(photo)",
     question: null,
+    occurredAt: happenedAt,
   });
   return toProposal(row);
 }

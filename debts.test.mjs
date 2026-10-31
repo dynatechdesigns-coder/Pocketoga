@@ -585,8 +585,8 @@ describe("money leak report (fake data, clock fixed at Wed 28 Oct 2026 Lagos)", 
         count: 2,
         totalKobo: 1700000,
         items: [
-          { id: 1, customer: "Ada", amountKobo: 1200000, reference: "R1", warned: false, createdAt: "2026-10-27T10:00:00.000Z" },
-          { id: 2, customer: "Bola", amountKobo: 500000, reference: "R2", warned: true, createdAt: "2026-10-28T10:00:00.000Z" },
+          { id: 1, customer: "Ada", amountKobo: 1200000, reference: "R1", warned: false, createdAt: "2026-10-27T10:00:00.000Z", occurredAt: "2026-10-27T10:00:00.000Z" },
+          { id: 2, customer: "Bola", amountKobo: 500000, reference: "R2", warned: true, createdAt: "2026-10-28T10:00:00.000Z", occurredAt: "2026-10-28T10:00:00.000Z" },
         ],
       });
       const empty = moneyLeakReport(ledger.list("shop-a"), [], { now: NOW });

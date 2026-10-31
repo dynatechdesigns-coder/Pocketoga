@@ -155,6 +155,7 @@ export function moneyLeakReport(ledgerRows, promises, { now = Date.now(), paymen
       reference: c.reference ?? null,
       warned: parseCheckWarnings(c).length > 0,
       createdAt: c.created_at,
+      occurredAt: c.occurred_at ?? c.created_at ?? null,
     })),
   };
 

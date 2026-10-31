@@ -417,8 +417,12 @@ describe("unconfirmed transfers in the report", () => {
           reference: "REF-13",
           warned: true,
           createdAt: out.json.report.unconfirmed.items[0].createdAt,
+          occurredAt: out.json.report.unconfirmed.items[0].occurredAt,
         },
       ]);
+      // occurredAt rides from the proposal (propose time), while the check's
+      // created_at is stamped at confirm time, so they differ by design.
+      assert.equal(out.json.report.unconfirmed.items[0].occurredAt, warned.occurred_at);
       assert.equal(Number.isInteger(out.json.report.unconfirmed.totalKobo), true);
 
       const other = await dispatch(deps, { url: "/report", headers: { "x-shop-id": OTHER_SHOP } });
@@ -509,8 +513,8 @@ describe("unconfirmed list route (fake data)", () => {
       const out = await dispatch(deps, { method: "GET", url: "/photo-checks/unconfirmed", headers: { "x-shop-id": SHOP } });
       assert.equal(out.status, 200);
       assert.deepEqual(out.json.checks, [
-        { id: older.id, amount_kobo: 1200000, sender: "Ada", alert_date: lagosDay(Date.now()), created_at: "2026-10-27T10:00:00.000Z", warnings: [] },
-        { id: newer.id, amount_kobo: 500000, sender: "Bola", alert_date: lagosDay(Date.now()), created_at: "2026-10-28T10:00:00.000Z", warnings: ["Amount ₦5,000 matches no unpaid sale."] },
+        { id: older.id, amount_kobo: 1200000, sender: "Ada", alert_date: lagosDay(Date.now()), created_at: "2026-10-27T10:00:00.000Z", occurred_at: "2026-10-27T10:00:00.000Z", warnings: [] },
+        { id: newer.id, amount_kobo: 500000, sender: "Bola", alert_date: lagosDay(Date.now()), created_at: "2026-10-28T10:00:00.000Z", occurred_at: "2026-10-28T10:00:00.000Z", warnings: ["Amount ₦5,000 matches no unpaid sale."] },
       ]);
       for (const item of out.json.checks) {
         assert.ok(!("photo" in item) && !("phone" in item) && !("shop_id" in item));

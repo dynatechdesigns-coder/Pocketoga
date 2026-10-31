@@ -22,8 +22,9 @@ import { PROFIT_PERIODS, profitForPeriod, expensesForPeriod } from "./profit.mjs
 import { SecondOpinionStore } from "./secondopinion.mjs";
 import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
 import { PhotoCheckStore } from "./photos.mjs";
+import { IdempotencyStore, MAX_REQUEST_ID_LENGTH } from "./idempotency.mjs";
 import { createModelClient } from "./model.mjs";
-import { propose, confirmProposal, fixProposal, rejectProposal, getProposal, proposeCorrection, proposeFromForm } from "./voice.mjs";
+import { propose, confirmProposal, fixProposal, rejectProposal, getProposal, proposeCorrection, proposeFromForm, toProposal } from "./voice.mjs";
 import { proposePhotoCheck } from "./photos.mjs";
 import {
   verifyWhatsAppSignature,
@@ -275,6 +276,76 @@ function withCorrectionInfo(ledger, shopId) {
   });
 }
 
+// Offline queue: the optional client request id. Missing means a normal call;
+// present-but-blank or overlong is a 400 (never silently ignored, so a
+// retrying client learns its header is broken instead of double-proposing).
+function readRequestId(headers) {
+  const raw = headers ? headers["x-request-id"] : null;
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "string" || !raw.trim()) {
+    throw Object.assign(new Error("x-request-id must be a non-empty string"), { status: 400 });
+  }
+  const id = raw.trim();
+  if (id.length > MAX_REQUEST_ID_LENGTH) {
+    throw Object.assign(new Error(`x-request-id must be under ${MAX_REQUEST_ID_LENGTH} characters`), { status: 400 });
+  }
+  return id;
+}
+
+// The offline queue's "when it happened": passed through to the propose
+// functions (which validate it in plain code and fall back to now), never a
+// 400 — a bad value is ignored, not a reason to drop the note.
+function readOccurredAt(body) {
+  if (!body || typeof body !== "object") return null;
+  return body.occurred_at ?? null;
+}
+
+// Runs produce() once per (shop, request id): a repeat of the same id
+// replays the stored proposal instead of proposing (or recording) twice.
+// Keys live 24 hours; older repeats propose fresh. The proposal object is
+// identical either way; only the status differs (201 first, 200 replay).
+// Request ids are scoped per shop, so a replay never crosses shops.
+async function idempotentPropose(req, res, deps, shopId, produce) {
+  const requestId = readRequestId(req.headers);
+  if (!requestId) return send(res, 201, { proposal: await produce() });
+  if (!deps.idempotency) throw Object.assign(new Error("idempotency store is required"), { status: 500 });
+  const store = deps.idempotency;
+  store.prune();
+  // send() returns nothing, so the replay helper reports with a boolean.
+  const replay = (proposalId) => {
+    const row = deps.proposals.get(proposalId);
+    if (!row || row.shop_id !== shopId) return false;
+    send(res, 200, { proposal: toProposal(row) });
+    return true;
+  };
+  const existing = store.find(shopId, requestId);
+  if (existing && store.fresh(existing)) {
+    if (existing.proposal_id) {
+      if (replay(existing.proposal_id)) return;
+      store.remove(shopId, requestId); // mapping survived its proposal: propose fresh
+    } else {
+      // The same id is being processed right now: no second proposal.
+      return send(res, 409, { error: "that x-request-id is already being processed" });
+    }
+  } else if (existing) {
+    store.remove(shopId, requestId); // older than 24 hours: propose fresh
+  }
+  if (!store.reserve(shopId, requestId, new Date().toISOString())) {
+    const retry = store.find(shopId, requestId);
+    if (retry && retry.proposal_id && replay(retry.proposal_id)) return;
+    return send(res, 409, { error: "that x-request-id is already being processed" });
+  }
+  let proposal;
+  try {
+    proposal = await produce();
+  } catch (err) {
+    store.remove(shopId, requestId);
+    throw err;
+  }
+  store.attach(shopId, requestId, proposal.id);
+  return send(res, 201, { proposal });
+}
+
 // Exported for in-process tests; createVoiceServer wires it to real sockets.
 export async function handleVoiceRequest(req, res, deps) {
   const url = new URL(req.url ?? "/", "http://x");
@@ -367,8 +438,9 @@ export async function handleVoiceRequest(req, res, deps) {
           ? { audioBase64: body.audioBase64, audioFormat: body.audioFormat }
           : undefined;
     const hint = body && typeof body === "object" ? body.hint : undefined;
-    const proposal = await propose(shopId, input, { ...deps, hint: hint ?? null });
-    return send(res, 201, { proposal });
+    const occurredAt = readOccurredAt(body);
+    return idempotentPropose(req, res, deps, shopId, () =>
+      propose(shopId, input, { ...deps, hint: hint ?? null, occurredAt }));
   }
 
   // Structured form fields into a proposal, with no model call. Same checks,
@@ -378,8 +450,9 @@ export async function handleVoiceRequest(req, res, deps) {
   if (req.method === "POST" && parts.length === 1 && parts[0] === "propose-form") {
     const body = await readBody(req);
     const fields = body && typeof body === "object" ? body : {};
-    const proposal = proposeFromForm(shopId, fields, deps);
-    return send(res, 201, { proposal });
+    const occurredAt = readOccurredAt(body);
+    return idempotentPropose(req, res, deps, shopId, () =>
+      proposeFromForm(shopId, fields, { ...deps, occurredAt }));
   }
 
   // Photo pipeline (Alert Guard first): classifies the photo, extracts its
@@ -388,12 +461,13 @@ export async function handleVoiceRequest(req, res, deps) {
   if (req.method === "POST" && parts.length === 1 && parts[0] === "photo-checks") {
     const body = await readBody(req);
     const fields = body && typeof body === "object" ? body : {};
-    const proposal = await proposePhotoCheck(
-      shopId,
-      { photoBase64: fields.photoBase64, photoFormat: fields.photoFormat },
-      { proposals: deps.proposals, model: deps.model, ledger: deps.ledger, photoChecks: deps.photoChecks }
-    );
-    return send(res, 201, { proposal });
+    const occurredAt = readOccurredAt(body);
+    return idempotentPropose(req, res, deps, shopId, () =>
+      proposePhotoCheck(
+        shopId,
+        { photoBase64: fields.photoBase64, photoFormat: fields.photoFormat },
+        { proposals: deps.proposals, model: deps.model, ledger: deps.ledger, photoChecks: deps.photoChecks, occurredAt }
+      ));
   }
 
   // Saved payment checks for the web "Check alert" screen: extracted fields
@@ -721,6 +795,7 @@ export function buildDeps(env = process.env) {
     customers: new CustomerStore(db),
     secondOpinions: new SecondOpinionStore(db),
     photoChecks: new PhotoCheckStore(db),
+    idempotency: new IdempotencyStore(db),
     auths: new AuthStore(db),
     model: createModelClient({ apiKey: env.META_API_KEY ?? null }),
     env,

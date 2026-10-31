@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS proposals (
   heard TEXT NOT NULL,
   question TEXT,
   created_at TEXT NOT NULL,
+  occurred_at TEXT,
   recorded_ids TEXT,
   name_checked TEXT,
   source TEXT CHECK (source IS NULL OR source IN ('voice','text','form'))
@@ -42,21 +43,26 @@ export class ProposalStore {
     if (!columns.includes("source")) {
       this.db.exec("ALTER TABLE proposals ADD COLUMN source TEXT CHECK (source IS NULL OR source IN ('voice','text','form'))");
     }
+    // Databases created before the offline queue get it now; old rows read
+    // back occurred_at as their created_at (see toProposal in voice.mjs).
+    if (!columns.includes("occurred_at")) {
+      this.db.exec("ALTER TABLE proposals ADD COLUMN occurred_at TEXT");
+    }
   }
 
   // envelope: { version, entries, totals, flags, notes } (plain-code checks).
   // source names the entry path (voice, text, form); photo checks predate
   // it and pass nothing.
-  create({ shopId, status = "pending", envelope, heard, question = null, createdAt = null, recordedIds = null, nameChecked = null, source = null }) {
+  create({ shopId, status = "pending", envelope, heard, question = null, createdAt = null, occurredAt = null, recordedIds = null, nameChecked = null, source = null }) {
     if (!shopId || typeof shopId !== "string") throw new Error("shopId is required");
     const stamp = createdAt ?? new Date().toISOString();
     const result = this.db
       .prepare(
         `INSERT INTO proposals
-           (shop_id, status, entries_json, heard, question, created_at, recorded_ids, name_checked, source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           (shop_id, status, entries_json, heard, question, created_at, occurred_at, recorded_ids, name_checked, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(shopId, status, JSON.stringify(envelope), heard, question, stamp, recordedIds ? JSON.stringify(recordedIds) : null, nameChecked ? JSON.stringify(nameChecked) : null, source ?? null);
+      .run(shopId, status, JSON.stringify(envelope), heard, question, stamp, occurredAt ?? stamp, recordedIds ? JSON.stringify(recordedIds) : null, nameChecked ? JSON.stringify(nameChecked) : null, source ?? null);
     return this.get(Number(result.lastInsertRowid));
   }
 

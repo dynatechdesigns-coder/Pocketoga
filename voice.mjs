@@ -63,6 +63,23 @@ export function voiceError(status, message) {
 }
 
 // Row + parsed envelope for callers.
+// Offline queue's "when it happened", in whole days back from now.
+export const OCCURRED_AT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Plain-code check on occurred_at: a valid value is an ISO timestamp, not
+// in the future and not older than 7 days. Returns the normalised ISO
+// string, or null when missing or invalid - callers fall back to now, never
+// throw. The ledger never sees this value: ordering and the hash chain keep
+// using the recorded created_at.
+export function resolveOccurredAt(value, nowMs = Date.now()) {
+  if (typeof value !== "string" || !value.includes("T")) return null;
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return null;
+  if (ms > nowMs) return null;
+  if (nowMs - ms > OCCURRED_AT_MAX_AGE_MS) return null;
+  return new Date(ms).toISOString();
+}
+
 export function toProposal(row) {
   const env = JSON.parse(row.entries_json);
   return {
@@ -72,6 +89,7 @@ export function toProposal(row) {
     heard: row.heard,
     question: row.question,
     created_at: row.created_at,
+    occurred_at: row.occurred_at ?? row.created_at ?? null,
     entries: env.entries,
     totals: env.totals,
     flags: env.flags,
@@ -1189,6 +1207,7 @@ export async function propose(
     secondOpinionEnv = process.env,
     secondOpinionTimeoutMs = SECOND_OPINION_TIMEOUT_MS,
     secondOpinionMode = "auto",
+    occurredAt = null,
     timings = null,
   }
 ) {
@@ -1201,6 +1220,7 @@ export async function propose(
   const norm = normalizeInput(input);
   const fallbackHeard = norm.kind === "text" ? norm.text : "(voice note)";
   const source = norm.kind === "audio" ? "voice" : "text";
+  const happenedAt = resolveOccurredAt(occurredAt, now) ?? new Date(now).toISOString();
   // Second-opinion keys, read once. Without the stats store or keys the
   // feature is off entirely and legacy callers never call out.
   const secondApiKey = secondOpinionEnv?.BASETEN_API_KEY;
@@ -1251,7 +1271,7 @@ export async function propose(
   if (timings) timings[modelKey] = Date.now() - tModel;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     const c = confusedEnvelope(fallbackHeard, source, modelTruncated);
-    const confused = proposals.create({ shopId, envelope: c.envelope, heard: c.heard, question: c.question, source });
+    const confused = proposals.create({ shopId, envelope: c.envelope, heard: c.heard, question: c.question, occurredAt: happenedAt, source });
     if (secondOpinions) {
       secondOpinions.record({ proposalId: confused.id, agreed: "no_second_opinion", differingFields: [], latencyMs: 0 });
     }
@@ -1304,7 +1324,7 @@ export async function propose(
   if (norm.kind === "audio" && envelope.entries.length === 0) {
     const retryHeard = heard !== "(no transcript)" ? heard : fallbackHeard;
     const c = confusedEnvelope(retryHeard, source, false, AUDIO_EMPTY_RETRY);
-    const confused = proposals.create({ shopId, envelope: c.envelope, heard: c.heard, question: c.question, source });
+    const confused = proposals.create({ shopId, envelope: c.envelope, heard: c.heard, question: c.question, occurredAt: happenedAt, source });
     if (secondOpinions) {
       secondOpinions.record({ proposalId: confused.id, agreed: "no_second_opinion", differingFields: [], latencyMs: 0 });
     }
@@ -1406,6 +1426,7 @@ export async function propose(
     envelope,
     heard,
     question: finalQuestion,
+    occurredAt: happenedAt,
     nameChecked: questionedNames.length > 0 ? questionedNames : null,
     source,
   });
@@ -1429,7 +1450,7 @@ export async function propose(
 // Present-but-wrong input is a plain 400; absent-but-needed input becomes a
 // clarifying question, exactly like the voice path. Nothing here touches
 // the ledger.
-export function proposeFromForm(shopId, fields, { proposals, ledger = null, products = null, now = Date.now(), timings = null } = {}) {
+export function proposeFromForm(shopId, fields, { proposals, ledger = null, products = null, now = Date.now(), timings = null, occurredAt = null } = {}) {
   if (!proposals) throw new Error("proposeFromForm needs { proposals }");
   if (!shopId || typeof shopId !== "string") throw voiceError(400, "shopId is required");
   const f = fields && typeof fields === "object" ? fields : null;
@@ -1520,6 +1541,7 @@ export function proposeFromForm(shopId, fields, { proposals, ledger = null, prod
   const ledgerRows = ledger && typeof ledger.list === "function" ? ledger.list(shopId) : null;
   const catalog = products && typeof products.listByShop === "function" ? products.listByShop(shopId) : null;
   const tChecks = Date.now();
+  const happenedAt = resolveOccurredAt(occurredAt ?? f.occurred_at, now) ?? new Date(now).toISOString();
   const { heard: checkedHeard, question, questionedNames, ...envelope } = checkModelOutput(
     { heard: cleanText(note) ?? heardAuto, entries, totals: null, promise: null, question: null },
     shopId,
@@ -1533,6 +1555,7 @@ export function proposeFromForm(shopId, fields, { proposals, ledger = null, prod
     envelope,
     heard: checkedHeard,
     question,
+    occurredAt: happenedAt,
     nameChecked: questionedNames.length > 0 ? questionedNames : null,
     source: "form",
   });
@@ -1745,6 +1768,7 @@ export function confirmProposal(proposalId, shopId, { proposals, ledger, promise
     const check = photoChecks.create({
       shopId: row.shop_id,
       proposalId: row.id,
+      occurredAt: row.occurred_at ?? null,
       photoType: pc.photoType,
       customer: pc.matchedCustomer ?? null,
       sender: pc.fields.sender,
