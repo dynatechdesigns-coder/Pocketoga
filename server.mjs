@@ -16,6 +16,7 @@ import { ProposalStore } from "./proposals.mjs";
 import { PromiseStore, refreshPromises } from "./promises.mjs";
 import { customerDebts, chaseForShop, allocatedSales } from "./debts.mjs";
 import { moneyLeakReport } from "./leak.mjs";
+import { buildMonthlyCsv, parseReportMonth } from "./reports.mjs";
 import { ProductStore, withStock, toProductJson } from "./products.mjs";
 import { CustomerStore, describeCustomers, normalizePhone, nextAutoCustomerLabel, normCustomerName } from "./customers.mjs";
 import { PROFIT_PERIODS, profitForPeriod, expensesForPeriod } from "./profit.mjs";
@@ -113,7 +114,7 @@ export function resolveDbPath(env = process.env) {
 const API_FIRST = new Set([
   "webhook", "session", "propose", "propose-form", "photo-checks", "confirm",
   "fix", "reject", "proposals", "ledger", "correct-last", "debts", "promises",
-  "report", "sales", "products", "customers", "profit", "expenses", "summary",
+  "report", "reports", "sales", "products", "customers", "profit", "expenses", "summary",
   "health", "feedback",
 ]);
 
@@ -757,6 +758,29 @@ export async function handleVoiceRequest(req, res, deps) {
     const promises = deps.promises ? deps.promises.listByShop(shopId) : [];
     const paymentChecks = deps.photoChecks ? deps.photoChecks.listUnconfirmedByShop(shopId) : [];
     return send(res, 200, { report: moneyLeakReport(rows, promises, { paymentChecks }) });
+  }
+
+  // Monthly CSV export for the caller's own shop: confirmed ledger rows
+  // only (proposals never land here), plain code, no model, no cap charge.
+  // Month boundaries use Africa/Lagos days; a missing month reads as the
+  // current Lagos month, a bad one is a plain-words 400. The file opens
+  // with a UTF-8 BOM so Excel reads it correctly.
+  if (req.method === "GET" && parts.length === 2 && parts[0] === "reports" && parts[1] === "monthly.csv") {
+    let parsed;
+    try {
+      parsed = parseReportMonth(url.searchParams.get("month"), Date.now());
+    } catch (err) {
+      return send(res, err.status ?? 400, { error: err.message ?? "month must look like 2026-10" });
+    }
+    const { csv } = buildMonthlyCsv(deps.ledger.list(shopId), parsed.month);
+    const body = Buffer.from(csv, "utf8");
+    res.writeHead(200, {
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": `attachment; filename="pocketoga-${parsed.month}.csv"`,
+      "Content-Length": body.length,
+    });
+    res.end(body);
+    return;
   }
 
   // Every effective sale with oldest-first payment allocation: what was
