@@ -216,7 +216,7 @@ describe("deploy static app (temp folder)", () => {
       let res = await get(deps, "/");
       assert.equal(res.statusCode, 200);
       assert.ok(res.text.includes("app"));
-      assert.equal(res.headers["Cache-Control"], "no-cache");
+      assert.equal(res.headers["Cache-Control"], "no-cache, max-age=0, must-revalidate");
       res = await get(deps, "/assets/app-abc123.js");
       assert.equal(res.statusCode, 200);
       assert.equal(res.headers["Cache-Control"], "public, max-age=31536000, immutable");
@@ -370,7 +370,7 @@ describe("deploy static app (temp folder)", () => {
       for (const url of ["/", "/index.html", "/sw.js"]) {
         const res = await run("GET", url, none);
         assert.equal(res.status, 200, url);
-        assert.equal(res.headers["Cache-Control"], "no-cache", url);
+        assert.equal(res.headers["Cache-Control"], "no-cache, max-age=0, must-revalidate", url);
         assert.ok(res.headers.ETag, url);
       }
       const sw = await run("GET", "/sw.js", none);
@@ -379,9 +379,10 @@ describe("deploy static app (temp folder)", () => {
       const js = await run("GET", "/assets/app-xyz789.js", none);
       assert.equal(js.headers["Cache-Control"], "public, max-age=31536000, immutable");
       assert.ok(js.headers.ETag);
-      // Manifest and icons keep the daily cache and their content types.
+      // Manifest revalidates too, with its content type intact.
       const mf = await run("GET", "/manifest.webmanifest", none);
-      assert.equal(mf.headers["Cache-Control"], "public, max-age=86400");
+      assert.equal(mf.headers["Cache-Control"], "no-cache");
+      assert.ok(mf.headers.ETag);
       assert.equal(mf.headers["Content-Type"], "application/manifest+json");
       const icon = await run("GET", "/icon.png", none);
       assert.equal(icon.headers["Cache-Control"], "public, max-age=86400");
@@ -396,7 +397,7 @@ describe("deploy static app (temp folder)", () => {
       assert.equal(headGz.text, "");
       const headRoot = await run("HEAD", "/", none);
       assert.equal(headRoot.status, 200);
-      assert.equal(headRoot.headers["Cache-Control"], "no-cache");
+      assert.equal(headRoot.headers["Cache-Control"], "no-cache, max-age=0, must-revalidate");
       assert.ok(headRoot.headers.ETag);
       assert.equal(headRoot.text, "");
       // Matching ETag revalidates with an empty 304.
@@ -410,6 +411,59 @@ describe("deploy static app (temp folder)", () => {
       const health = await run("GET", "/health", none);
       assert.equal(health.status, 200);
       assert.ok(!("Cache-Control" in health.headers) && !("ETag" in health.headers));
+    } finally {
+      deps.db.close();
+    }
+  });
+
+  it("serves /sw.js with the no-cache revalidate header, never the daily one", async () => {
+    const root = join(scratch, "dist-sw");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "index.html"), "<html>app</html>");
+    writeFileSync(join(root, "sw.js"), "self.addEventListener('fetch',()=>{})");
+    writeFileSync(join(root, "icon.png"), Buffer.from([1, 2, 3]));
+    const deps = buildDeps(FAKE_ENV);
+    try {
+      deps.static = createStaticHandler(root);
+      const none = {};
+      let res = fakeRes();
+      await handleVoiceRequest(fakeReq({ url: "/sw.js", headers: none }), res, deps);
+      assert.equal(res.statusCode, 200);
+      assert.equal(res.headers["Cache-Control"], "no-cache, max-age=0, must-revalidate");
+      assert.ok(res.headers.ETag);
+      assert.equal(res.headers["Content-Type"], "text/javascript; charset=utf-8");
+      assert.equal(res.headers["Service-Worker-Allowed"], "/");
+      // A matching ETag revalidates to 304 without downloading again.
+      const etag = res.headers.ETag;
+      res = fakeRes();
+      await handleVoiceRequest(fakeReq({ url: "/sw.js", headers: { "if-none-match": etag } }), res, deps);
+      assert.equal(res.statusCode, 304);
+      assert.equal(res.headers["Cache-Control"], "no-cache, max-age=0, must-revalidate");
+      assert.equal(res.text, "");
+      // The scope header stays on sw.js only.
+      res = fakeRes();
+      await handleVoiceRequest(fakeReq({ url: "/icon.png", headers: none }), res, deps);
+      assert.equal(res.statusCode, 200);
+      assert.ok(!("Service-Worker-Allowed" in res.headers));
+    } finally {
+      deps.db.close();
+    }
+  });
+
+  it("serves /manifest.webmanifest with no-cache and an ETag", async () => {
+    const root = join(scratch, "dist-manifest");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "index.html"), "<html>app</html>");
+    writeFileSync(join(root, "manifest.webmanifest"), '{"name":"x"}');
+    const deps = buildDeps(FAKE_ENV);
+    try {
+      deps.static = createStaticHandler(root);
+      const res = fakeRes();
+      await handleVoiceRequest(fakeReq({ url: "/manifest.webmanifest", headers: {} }), res, deps);
+      assert.equal(res.statusCode, 200);
+      assert.equal(res.headers["Cache-Control"], "no-cache");
+      assert.ok(res.headers.ETag);
+      assert.equal(res.headers["Content-Type"], "application/manifest+json");
     } finally {
       deps.db.close();
     }

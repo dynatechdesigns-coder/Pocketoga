@@ -23,6 +23,7 @@ import { SecondOpinionStore } from "./secondopinion.mjs";
 import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
 import { PhotoCheckStore } from "./photos.mjs";
 import { IdempotencyStore, MAX_REQUEST_ID_LENGTH } from "./idempotency.mjs";
+import { FeedbackStore, validateFeedbackBody, feedbackError, notifyFeedbackWebhook } from "./feedback.mjs";
 import { createModelClient } from "./model.mjs";
 import { propose, confirmProposal, fixProposal, rejectProposal, getProposal, proposeCorrection, proposeFromForm, proposeManual, toProposal } from "./voice.mjs";
 import { proposePhotoCheck } from "./photos.mjs";
@@ -112,7 +113,7 @@ const API_FIRST = new Set([
   "webhook", "session", "propose", "propose-form", "photo-checks", "confirm",
   "fix", "reject", "proposals", "ledger", "correct-last", "debts", "promises",
   "report", "sales", "products", "customers", "profit", "expenses", "summary",
-  "health",
+  "health", "feedback",
 ]);
 
 const STATIC_TYPES = {
@@ -147,13 +148,20 @@ export function createStaticHandler(rootDir) {
   const cache = new Map();
   // Entry points must revalidate every time so updates — and the service
   // worker, which the browser only refreshes from its own cached copy —
-  // are never stuck behind a stale cache.
+  // are never stuck behind a stale cache. The exact "no-cache, max-age=0,
+  // must-revalidate" value (not bare "no-cache") keeps browsers and CDNs
+  // from serving a stale copy of the files that decide which app version
+  // runs. The manifest rides along with no-cache so icon/name updates
+  // apply; hashed /assets/* files are immutable for a year; icons and
+  // other static files keep a daily cache.
   const cacheControlFor = (rel, isFallback) =>
     isFallback || rel === "index.html" || rel === "sw.js"
-      ? "no-cache"
-      : rel.startsWith("assets/")
-        ? "public, max-age=31536000, immutable"
-        : "public, max-age=86400";
+      ? "no-cache, max-age=0, must-revalidate"
+      : rel === "manifest.webmanifest"
+        ? "no-cache"
+        : rel.startsWith("assets/")
+          ? "public, max-age=31536000, immutable"
+          : "public, max-age=86400";
   const load = (rel) => {
     if (cache.has(rel)) return cache.get(rel);
     let file;
@@ -192,6 +200,11 @@ export function createStaticHandler(rootDir) {
       ETag: entry.etag,
       "Cache-Control": cacheControlFor(rel, isFallback),
     };
+    // Pin the worker's scope to the whole origin. sw.js is served from the
+    // root so the default scope is already "/", but the explicit header
+    // keeps CDNs and browsers from narrowing it. Only on sw.js, never
+    // elsewhere. The .js content type above is unchanged.
+    if (rel === "sw.js") headers["Service-Worker-Allowed"] = "/";
     let out = body;
     const acceptsGzip = (req.headers["accept-encoding"] ?? "").includes("gzip");
     if (acceptsGzip && entry.gz) {
@@ -203,7 +216,9 @@ export function createStaticHandler(rootDir) {
     // Cheap revalidation: the ETag above lets the browser revalidate with
     // If-None-Match instead of downloading again.
     if (req.headers["if-none-match"] === entry.etag) {
-      res.writeHead(304, { ETag: entry.etag, "Cache-Control": headers["Cache-Control"] });
+      const notModified = { ETag: entry.etag, "Cache-Control": headers["Cache-Control"] };
+      if (rel === "sw.js") notModified["Service-Worker-Allowed"] = "/";
+      res.writeHead(304, notModified);
       res.end();
       return true;
     }
@@ -267,6 +282,20 @@ async function handleWebhookRoute(req, res, url, deps) {
     return;
   }
   return send(res, 404, { error: "not found" });
+}
+
+// Best-effort client IP for per-IP rate limits: the first forwarded address,
+// else the tunnel header, else the socket address. Opaque string, never a
+// secret; proxies are the only callers that set the headers.
+function clientIp(req) {
+  const headers = req.headers ?? {};
+  const forwarded = typeof headers["x-forwarded-for"] === "string" ? headers["x-forwarded-for"].split(",")[0].trim() : "";
+  if (forwarded) return forwarded;
+  const connecting = typeof headers["cf-connecting-ip"] === "string" ? headers["cf-connecting-ip"].trim() : "";
+  if (connecting) return connecting;
+  const socketAddr = req.socket?.remoteAddress;
+  if (typeof socketAddr === "string" && socketAddr) return socketAddr;
+  return "unknown";
 }
 
 // "Bearer <token>" (scheme case-insensitive) to the token, else null.
@@ -447,6 +476,61 @@ export async function handleVoiceRequest(req, res, deps) {
     const session = deps.auths.verifyToken(bearerToken(req.headers.authorization), {});
     if (!session) return send(res, 401, { error: "login required" });
     if (session.shopId !== shopId) return send(res, 403, { error: "this login is for another shop" });
+  }
+
+  // Trader feedback about the app itself (never ledger data): a typed note or
+  // a voice note up to 45 seconds, exactly one of the two. Typed answers
+  // 201 { ok: true }; audio is transcribed with the same model call as a
+  // voice note and answers 201 { ok: true, text }. Validation is 400 with a
+  // plain message; past 5 per hour per IP or per shop is 429. Invalid bodies
+  // never consume quota; only stored feedback counts. The stored row is also
+  // forwarded to the owner inbox (FEEDBACK_WEBHOOK_URL, best-effort).
+  if (req.method === "POST" && parts.length === 1 && parts[0] === "feedback") {
+    if (!deps.feedback) throw Object.assign(new Error("feedback store is required"), { status: 500 });
+    const body = await readBody(req);
+    const fields = validateFeedbackBody(body);
+    const ip = clientIp(req);
+    if (deps.feedback.limited(ip, shopId, Date.now())) {
+      throw feedbackError(429, "too many feedback messages — try again in an hour");
+    }
+    let text = fields.text;
+    if (fields.audio) {
+      let raw;
+      try {
+        raw = await deps.model.complete({ audio: fields.audio });
+      } catch (err) {
+        if (err?.code === "MODEL_BAD_JSON" || err?.code === "MODEL_TRUNCATED") {
+          throw feedbackError(400, "could not hear that voice note — please try again");
+        }
+        throw err;
+      }
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        throw feedbackError(400, "could not hear that voice note — please try again");
+      }
+      text = typeof raw.heard === "string" ? raw.heard.trim() : "";
+      if (!text || text === "(no transcript)") {
+        throw feedbackError(400, "could not hear anything in that voice note — please try again");
+      }
+    }
+    deps.feedback.record({ shopId, ip, type: fields.type, rating: fields.rating, text });
+    // Owner inbox, best-effort: a missing config or failed delivery still
+    // answers 201 below, and the notifier logs only its fixed failure line.
+    try {
+      const env = deps.env ?? process.env;
+      await notifyFeedbackWebhook({
+        url: env.FEEDBACK_WEBHOOK_URL,
+        secret: env.FEEDBACK_WEBHOOK_SECRET,
+        type: fields.type,
+        rating: fields.rating,
+        message: text,
+        source: fields.audio ? "voice" : "text",
+        fetchFn: deps.feedbackFetch ?? fetch,
+      });
+    } catch {
+      // notifyFeedbackWebhook never throws; this guards the wiring itself.
+    }
+    if (fields.audio) return send(res, 201, { ok: true, text });
+    return send(res, 201, { ok: true });
   }
 
   if (req.method === "POST" && parts.length === 1 && parts[0] === "propose") {
@@ -828,6 +912,7 @@ export function buildDeps(env = process.env) {
     secondOpinions: new SecondOpinionStore(db),
     photoChecks: new PhotoCheckStore(db),
     idempotency: new IdempotencyStore(db),
+    feedback: new FeedbackStore(db),
     auths: new AuthStore(db),
     model: createModelClient({ apiKey: env.META_API_KEY ?? null }),
     env,
