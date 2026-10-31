@@ -1,9 +1,14 @@
 import { useEffect, useState } from "react";
-import { BarChart3, ScanSearch, Check, ChevronRight, Ellipsis, Mic, Package, Receipt, ScrollText, Settings, ShoppingBag, Users, UserRound, Wallet } from "lucide-react";
-import { setShop } from "./api.js";
+import { BarChart3, ScanSearch, Check, ChevronRight, Ellipsis, MessageSquare, Mic, Package, Receipt, ScrollText, Settings, ShoppingBag, Users, UserRound, Wallet } from "lucide-react";
+import { getShopId, requestsRunning, setShop } from "./api.js";
 import DevBanner from "./DevBanner.jsx";
 import InstallRow, { InstallSteps } from "./InstallRow.jsx";
 import OfflinePill from "./OfflinePill.jsx";
+import { connection, isOffline } from "./connection.js";
+import { createPrefetch } from "./prefetch.js";
+import { PREFETCH_TASKS } from "./savedLoaders.js";
+import { savedData } from "./savedData.js";
+import { hasSession, loadShop } from "./shop.js";
 import { greeting } from "./format.js";
 import { plural } from "./format.js";
 import { Avatar, IconCircle, Sheet, ThemeToggle, cx } from "./ui.jsx";
@@ -18,6 +23,7 @@ import ExpensesScreen from "./screens/ExpensesScreen.jsx";
 import CustomersScreen from "./screens/CustomersScreen.jsx";
 import AlertCheckScreen from "./screens/AlertCheckScreen.jsx";
 import SettingsScreen from "./screens/SettingsScreen.jsx";
+import FeedbackScreen from "./screens/FeedbackScreen.jsx";
 
 // The dock: five equal slots, the raised mic in the middle one, so it is
 // centred on the dock at any width.
@@ -35,6 +41,7 @@ const MORE = [
   { key: "customers", label: "Customers", icon: UserRound, hint: "Phone numbers and balances" },
   { key: "ledger", label: "Ledger", icon: ScrollText, hint: "All records, and fixes" },
   { key: "settings", label: "Settings", icon: Settings, hint: "Theme and shop" },
+  { key: "feedback", label: "Send feedback", icon: MessageSquare, hint: "Suggestions, problems and reviews" },
 ];
 const MORE_KEYS = MORE.map((m) => m.key);
 
@@ -84,6 +91,29 @@ export default function App({ shop, onExit }) {
     go(to);
     setSaved({ count: result.count, already: result.already });
   }
+
+  // Quietly keeps the saved copies behind Money, Debts and Reports recent (see
+  // prefetch.js): on open and whenever the app returns to the foreground.
+  useEffect(() => {
+    const prefetch = createPrefetch({
+      getShop: () => {
+        const s = loadShop();
+        return s && !s.demo && hasSession(s) ? s : null;
+      },
+      isOnline: () => !isOffline(connection.get()),
+      isIdle: () => requestsRunning() === 0,
+      activeShopId: getShopId,
+      tasks: PREFETCH_TASKS,
+      store: savedData,
+    });
+    const onVisible = () => document.visibilityState === "visible" && prefetch.trigger();
+    document.addEventListener("visibilitychange", onVisible);
+    prefetch.trigger();
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      prefetch.stop();
+    };
+  }, [shop.id]);
 
   // The "Saved" note goes away by itself.
   useEffect(() => {
@@ -148,6 +178,7 @@ export default function App({ shop, onExit }) {
         {tab === "ledger" && <LedgerScreen shop={shop} intent={intent} onGo={go} />}
         {tab === "alert" && <AlertCheckScreen shop={shop} />}
         {tab === "settings" && <SettingsScreen shop={shop} onExit={onExit} />}
+        {tab === "feedback" && <FeedbackScreen onGo={go} />}
       </main>
 
       {saved && (

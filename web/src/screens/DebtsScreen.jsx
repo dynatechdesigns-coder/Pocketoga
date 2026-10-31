@@ -1,21 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { CalendarX2, Check, ChevronRight, Copy, MessageCircle, Search, Users } from "lucide-react";
-import { getCustomers, getDebts, getPromises } from "../api.js";
-import { withoutPhones } from "../savedData.js";
+import { DEBTS_SAVED as SAVED, loadDebts } from "../savedLoaders.js";
 import { ageText, dueText, formatDueDay, formatKobo, sameCustomer } from "../format.js";
 import { draftReminder, TONES, whatsappLink } from "../reminders.js";
 import { Avatar, Button, Card, EmptyState, ErrorState, Pill, RecordShortcut, ScreenHeader, SectionTitle, Sheet, SavedBanner, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
-
-// All reads in one go: the ranked chase list, every promise, and customers
-// (for phone numbers stored with consent; optional, so Debts still works
-// without them and WhatsApp then asks who to send to).
-// What is kept on the device for offline (phone numbers stay out of it).
-const SAVED = { key: "debts", prepare: withoutPhones };
-
-async function loadDebts() {
-  const [{ debts, chase }, promises, customers] = await Promise.all([getDebts(), getPromises(), getCustomers().catch(() => [])]);
-  return { debts, chase, promises, customers };
-}
 
 // The pill a customer row shows: the next open promise, else Broken if a
 // promise was missed, else Kept if one was kept.

@@ -1,18 +1,11 @@
 import { ChevronRight, CircleCheck, Clock, HandCoins, Megaphone, Mic, PackagePlus, ScanSearch, Share2, ShieldAlert, ShieldCheck, Users } from "lucide-react";
-import { getLedger, getReport } from "../api.js";
+import { loadMoney } from "../savedLoaders.js";
 import { checkLabel } from "../cancelRun.js";
 import { formatKobo, plural } from "../format.js";
 import { reportText, shareText } from "../share.js";
 import { Button, Card, ErrorState, IconCircle, SavedBanner, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
 import WaitingToSend from "../WaitingToSend.jsx";
 import { attentionCount } from "./ReportScreen.jsx";
-
-// The report, plus the ledger's own check of its hash chain for the chip.
-// The chip is optional: if the ledger cannot load, Money still shows.
-async function loadMoney() {
-  const [report, verify] = await Promise.all([getReport(), getLedger().then((l) => l.verify, () => null)]);
-  return { ...report, verify };
-}
 
 // Home, top to bottom: money in today (brand gradient), money owed (amber),
 // quick actions (Check carries the count of things needing attention), and the
@@ -31,6 +24,13 @@ export default function MoneyScreen({ shop, onGo }) {
       ) : (
         <MoneyBody report={report} shop={shop} onGo={onGo} />
       )}
+      {/* The last thing on Home: a quiet link, in the page flow (the main area's
+          bottom padding already clears the dock, the mic and the home bar). */}
+      <p className="mt-8 pb-2 text-center">
+        <button type="button" data-part="feedback-link" onClick={() => onGo("feedback")} className="min-h-12 rounded-full px-4 text-sm font-medium text-muted underline">
+          Send feedback
+        </button>
+      </p>
     </section>
   );
 }

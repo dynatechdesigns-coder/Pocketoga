@@ -48,8 +48,21 @@ export class ApiError extends Error {
   }
 }
 
+// How many requests are running right now; the background refresh waits for 0.
+let running = 0;
+export const requestsRunning = () => running;
+
 async function request(method, path, body, signal, extraHeaders) {
   if (!shopId) throw new ApiError(400, "No shop is open.");
+  running++;
+  try {
+    return await send(method, path, body, signal, extraHeaders);
+  } finally {
+    running--;
+  }
+}
+
+async function send(method, path, body, signal, extraHeaders) {
   let res;
   // A read with no signal of its own gets a time limit.
   let timer = null;
@@ -156,6 +169,12 @@ export async function proposeManual(entry, signal, meta) {
 // POST /confirm/:id.
 export async function proposeForm(fields) {
   return (await request("POST", "/propose-form", fields)).proposal;
+}
+
+// POST /feedback (format in feedbackFormat.js) -> 201 { ok, text? }. Sent live,
+// never queued: on any error the form keeps what was typed.
+export function sendFeedback(req, signal) {
+  return request("POST", req.path, req.body, signal);
 }
 
 // POST /confirm/:id -> { proposal, recordedIds, alreadyConfirmed }
