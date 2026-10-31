@@ -11,6 +11,7 @@ const API_BASE = (import.meta.env?.VITE_API_BASE ?? "/api").replace(/\/$/, "");
 // The shop scripts/seed-demo.mjs fills with fake data.
 export const DEMO_SHOP_ID = "demo";
 
+import { connection } from "./connection.js";
 import { notifyDataChanged } from "./refresh.js";
 
 let shopId = null;
@@ -49,9 +50,13 @@ async function request(method, path, body, signal, extraHeaders) {
       body: body ? JSON.stringify(body) : undefined,
       signal,
     });
-  } catch {
+  } catch (err) {
+    // A Cancel (AbortError) says nothing about the connection; the timeout
+    // reports itself in waitForProposal.
+    if (err?.name !== "AbortError") connection.reportFailed();
     throw new ApiError(0, "network");
   }
+  connection.reportReached();
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (res.status === 401 && shopId !== DEMO_SHOP_ID) window.dispatchEvent(new Event(SESSION_ENDED));

@@ -2,6 +2,7 @@
 // (never a percentage), a 40-second limit, and one plain message per way it
 // can go wrong. Plain JavaScript so the web tests can run it under node.
 import { ApiError, friendlyError } from "./api.js";
+import { connection } from "./connection.js";
 
 export const TIMEOUT_MS = 40_000;
 
@@ -65,6 +66,7 @@ export async function waitForProposal(call, { onStage, startAt = 0, delays = STA
   try {
     return await call(controller.signal);
   } catch (err) {
+    if (timedOut) connection.reportFailed(); // a timeout counts as unreachable
     throw timedOut ? new WaitError("timeout") : toWaitError(err);
   } finally {
     timers.forEach(clearTimeout);

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { BarChart3, ScanSearch, Check, ChevronRight, Ellipsis, Mic, Package, Receipt, ScrollText, Settings, ShoppingBag, Users, UserRound, Wallet } from "lucide-react";
 import { setShop } from "./api.js";
 import DevBanner from "./DevBanner.jsx";
+import OfflinePill from "./OfflinePill.jsx";
 import { greeting } from "./format.js";
 import { plural } from "./format.js";
 import { Avatar, IconCircle, Sheet, ThemeToggle, cx } from "./ui.jsx";
@@ -115,6 +116,7 @@ export default function App({ shop, onExit }) {
         <div className="grid min-w-0">
           <span className="text-sm font-medium text-muted">{greeting()},</span>
           <span className="truncate text-lg font-extrabold tracking-tight">{shop.name}</span>
+          <OfflinePill shopId={shop.id} />
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <ThemeToggle />
