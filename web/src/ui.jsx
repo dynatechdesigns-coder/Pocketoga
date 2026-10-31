@@ -130,10 +130,15 @@ const BUTTON_SIZES = {
 // Pill-shaped button. `as="a"` for links. Disabled looks disabled: flat grey
 // with a dashed edge; `calm` keeps the edge solid for an empty form.
 export function Button({ as: Tag = "button", variant = "primary", size = "md", calm, className, ...props }) {
+  // Full width unless the caller sets its own width (w-auto, w-12...). Both
+  // `w-full` and `w-auto` on one element would be settled by stylesheet order,
+  // and a stray w-full in a flex row pushes the row past its card.
+  const ownWidth = /(^|\s)!?w-/.test(className ?? "");
   return (
     <Tag
       className={cx(
-        "inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full border-[1.5px] font-bold no-underline",
+        "inline-flex min-h-12 items-center justify-center gap-2 rounded-full border-[1.5px] font-bold no-underline",
+        !ownWidth && "w-full",
         "transition-[translate,scale,background-color] duration-150 ease-out-soft active:scale-96 [&_svg]:size-5",
         "disabled:cursor-not-allowed disabled:border-dashed disabled:border-grey disabled:bg-slate disabled:text-muted disabled:active:scale-100",
         calm && "disabled:border-solid disabled:border-transparent",

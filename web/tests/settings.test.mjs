@@ -53,7 +53,8 @@ describe("order", () => {
     assert.doesNotMatch(screen.match(/<Button data-part="leave"[^>]*>/)[0], /size="sm"/); // the default size has min-h-12
     // the shared Button is 48px high and full width unless told otherwise
     const ui = read("src/ui.jsx");
-    assert.match(ui, /inline-flex min-h-12 w-full items-center justify-center/);
+    assert.match(ui, /inline-flex min-h-12 items-center justify-center/);
+    assert.match(ui, /!ownWidth && "w-full"/);
     assert.match(ui, /md: "px-5 py-3 text-base"/);
   });
 

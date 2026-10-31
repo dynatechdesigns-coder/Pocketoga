@@ -53,10 +53,10 @@ export default function Nav({ onDemo, onLogin }) {
         <a
           href="/"
           aria-label="PocketOga home"
-          className="flex min-h-12 shrink-0 items-center gap-2 max-[399px]:gap-1.5 text-lg font-extrabold tracking-tight text-ink no-underline max-[399px]:text-base"
+          className="flex min-h-12 min-w-0 shrink items-center gap-2 max-[399px]:gap-1.5 text-lg font-extrabold tracking-tight text-ink no-underline max-[399px]:text-base"
         >
           <img src="/icon.svg" alt="" width="36" height="36" className="size-9 shrink-0 rounded-[11px]" />
-          <span>PocketOga</span>
+          <span className="min-w-0 truncate">PocketOga</span>
         </a>
 
         <nav aria-label="Sections" className="hidden items-center gap-1 lg:flex">
@@ -72,7 +72,7 @@ export default function Nav({ onDemo, onLogin }) {
         </nav>
 
         <div className="flex shrink-0 items-center gap-2 max-[399px]:gap-1.5">
-          <div ref={menu} className="lg:hidden">
+          <div ref={menu} className="shrink-0 lg:hidden">
             <button
               data-part="menu-button"
               aria-expanded={open}

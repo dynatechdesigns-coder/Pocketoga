@@ -91,19 +91,25 @@ export function validateFeedback(s) {
   return { ok: true, mode: "text" };
 }
 
-// A server message with developer wording in it is not shown to the person.
-const TECHNICAL = /\b(audio|payload|body|json|field|type|exactly|must|required|undefined|null|string|integer|param\w*)\b|[a-z][A-Z]|_/;
+// A server message that is plain words is shown as it is. Code-style text
+// (names like audioBase64 or invalid_field, "exactly one of", null, JSON) is
+// not, and neither is the app's own "server error 500" filler.
+const TECHNICAL_WORDS = /\b(undefined|null|payload|json|exception|stack|exactly\s+one\s+of)\b|^server error \d+$/i;
+const CODE_NAMES = /[a-z][A-Z]|_/;
+export const isPlainMessage = (m) => !!m && !TECHNICAL_WORDS.test(m) && !CODE_NAMES.test(m.replace(/PocketOga/g, "Pocket"));
 
-// The plain sentence for a failed send. A 400 shows the server's own message
-// when it is plain words, and a fixed plain sentence when it is not.
+// The plain sentence for a failed send. A 429 is the fixed sentence. Any other
+// answer of the 4xx kind with a plain message in { error } shows that message;
+// an unknown or code-style one gets the generic sentence. A lost connection and
+// a server fault say so in plain words.
 export function feedbackError(err) {
   const status = err?.status;
   if (status === 429) return TOO_MANY_MESSAGE;
-  if (status === 400) {
-    const m = typeof err.message === "string" ? err.message.trim() : "";
-    return m && !TECHNICAL.test(m) ? m.charAt(0).toUpperCase() + m.slice(1) : REFUSED_MESSAGE;
-  }
   if (status === 0) return NETWORK_MESSAGE;
+  if (status >= 400 && status < 500) {
+    const m = typeof err.message === "string" ? err.message.trim() : "";
+    return isPlainMessage(m) ? m.charAt(0).toUpperCase() + m.slice(1) : REFUSED_MESSAGE;
+  }
   return FAILED_MESSAGE;
 }
 

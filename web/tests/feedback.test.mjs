@@ -217,11 +217,26 @@ describe("sending", () => {
     assert.deepEqual(out, { type: "failed", message: "Your message is too long" });
   });
 
-  test("a 400 with developer wording is replaced by a plain sentence", async () => {
-    for (const msg of ["Send exactly one of text or audio", "type must be one of suggestion, problem, review", "audioBase64 is required", "rating must be an integer", "invalid_field"]) {
+  test("a plain message in { error } is shown as it is, for any 4xx except the 429 sentence", async () => {
+    const cases = [
+      [400, "message is too short", "Message is too short"],
+      [400, "rating must be a whole number from 1 to 5", "Rating must be a whole number from 1 to 5"],
+      [403, "you cannot send feedback for this shop", "You cannot send feedback for this shop"],
+      [409, "that was already sent", "That was already sent"],
+    ];
+    for (const [status, msg, shown] of cases) {
+      const out = await F.runSubmit(form(), { online, toWav: null, send: fail(status, msg) });
+      assert.equal(out.message, shown, msg);
+    }
+  });
+
+  test("code-style server text gets the generic sentence, which is kept for unknown errors only", async () => {
+    for (const msg of ["Send exactly one of text or audio", "audioBase64 is required", "invalid_field", "payload is null", "server error 400"]) {
       const out = await F.runSubmit(form(), { online, toWav: null, send: fail(400, msg) });
       assert.equal(out.message, F.REFUSED_MESSAGE, msg);
     }
+    assert.equal(F.isPlainMessage("Please write something first"), true);
+    assert.equal(F.isPlainMessage("PocketOga is busy"), true);
     assert.match(F.REFUSED_MESSAGE, /still here/);
   });
 

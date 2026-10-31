@@ -224,7 +224,7 @@ function FeedbackForm({ onDone, open }) {
           disabled={sending || recording}
           onChange={(e) => dispatch({ type: "text", value: e.target.value })}
           aria-describedby="feedback-count feedback-privacy"
-          placeholder="Tell us what to fix or add"
+          placeholder="Write your feedback here"
           className={inputClass}
         />
         <p id="feedback-count" data-part="feedback-count" className={cx("text-right text-sm tabular-nums", form.text.length >= FEEDBACK_TEXT_MAX ? "font-bold text-coral-ink" : "text-muted")}>
@@ -242,16 +242,29 @@ function FeedbackForm({ onDone, open }) {
 
         {canRecord &&
           (recording ? (
-            <div className="flex gap-2">
-              <Button type="button" data-part="feedback-stop" variant="secondary" className="flex-1" onClick={stopRecording} aria-label="Stop recording">
-                <Square aria-hidden="true" fill="currentColor" /> <span className="tabular-nums">Recording {mmss(seconds)}</span>
-              </Button>
-              <Button type="button" data-part="feedback-cancel-recording" variant="quiet" className="w-auto shrink-0 px-4" onClick={cancelRecording} aria-label="Cancel recording and throw the audio away">
+            <div className="flex min-w-0 items-center gap-2">
+              <button
+                type="button"
+                data-part="feedback-stop"
+                aria-label="Stop recording"
+                onClick={stopRecording}
+                className="flex min-h-12 min-w-0 flex-1 items-center justify-center gap-2 rounded-full border-[1.5px] border-transparent bg-lavender px-4 font-bold text-link transition-transform duration-150 active:scale-96 [&_svg]:size-5 [&_svg]:shrink-0"
+              >
+                <Square aria-hidden="true" fill="currentColor" />
+                <span className="min-w-0 truncate tabular-nums">Recording {mmss(seconds)}</span>
+              </button>
+              <button
+                type="button"
+                data-part="feedback-cancel-recording"
+                aria-label="Cancel recording"
+                onClick={cancelRecording}
+                className="grid size-12 shrink-0 place-items-center rounded-xl border-[1.5px] border-line bg-card text-ink transition-transform duration-150 active:scale-96 [&_svg]:size-6"
+              >
                 <X aria-hidden="true" />
-              </Button>
+              </button>
             </div>
           ) : (
-            <Button type="button" data-part="feedback-mic" variant="quiet" disabled={sending} onClick={startRecording}>
+            <Button type="button" data-part="feedback-mic" variant="quiet" className="min-w-0 text-center" disabled={sending} onClick={startRecording}>
               <Mic aria-hidden="true" /> {hasAudio ? "Record again" : "Record a voice message"} (up to {FEEDBACK_AUDIO_MAX_SECONDS} seconds)
             </Button>
           ))}
