@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useState } from "react";
 import { SESSION_ENDED, logout } from "./api.js";
 import { hasSession, loadShop, saveShop } from "./shop.js";
+import { savedData } from "./savedData.js";
 import Landing from "./screens/Landing.jsx";
 import LoginScreen from "./screens/LoginScreen.jsx";
 import AccuracyPage from "./screens/AccuracyPage.jsx";
@@ -30,6 +31,8 @@ export default function Root() {
   }
 
   function open(next) {
+    // Opening a different shop: the one we were in leaves nothing behind.
+    if (shop && shop.id !== next.id) savedData.clearShop(shop.id);
     saveShop(next);
     setShop(next);
     setNotice("");
@@ -37,6 +40,7 @@ export default function Root() {
   }
 
   function exit() {
+    if (shop) savedData.clearShop(shop.id); // signing out removes this device's saved copy
     if (shop && !shop.demo) logout(shop.token);
     saveShop(null);
     setShop(null);
@@ -49,6 +53,8 @@ export default function Root() {
     const onPop = () => setOnLogin(location.pathname === "/login");
     // The server turned the token away: back to the login, with a reason.
     const onEnded = () => {
+      const ended = loadShop();
+      if (ended) savedData.clearShop(ended.id);
       saveShop(null);
       setShop(null);
       setNotice(ENDED);

@@ -3,7 +3,7 @@ import { getLedger, getReport } from "../api.js";
 import { checkLabel } from "../cancelRun.js";
 import { formatKobo, plural } from "../format.js";
 import { reportText, shareText } from "../share.js";
-import { Button, Card, ErrorState, IconCircle, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
+import { Button, Card, ErrorState, IconCircle, SavedBanner, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
 import WaitingToSend from "../WaitingToSend.jsx";
 import { attentionCount } from "./ReportScreen.jsx";
 
@@ -18,11 +18,12 @@ async function loadMoney() {
 // quick actions (Check carries the count of things needing attention), and the
 // records check. The leak cards themselves live on Reports.
 export default function MoneyScreen({ shop, onGo }) {
-  const { data: report, error, loading, reload } = useLoad(loadMoney);
+  const { data: report, error, loading, saved, reload } = useLoad(loadMoney, { cache: { key: "money" } });
 
   return (
     <section>
       <h1 className="sr-only">Money check</h1>
+      {report && <SavedBanner saved={saved} />}
       {loading && !report ? (
         <Skeleton blocks={[112, 172, 84, 48, 56]} label="Loading money check" />
       ) : error ? (

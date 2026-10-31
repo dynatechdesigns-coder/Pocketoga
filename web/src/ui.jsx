@@ -5,8 +5,10 @@
 // together) so Tailwind can find them.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Hourglass, Moon, Sun, X } from "lucide-react";
-import { friendlyError, isNotBuilt } from "./api.js";
+import { CloudOff, Hourglass, Moon, Sun, X } from "lucide-react";
+import { friendlyError, getShopId, isNotBuilt } from "./api.js";
+import { loadWithSaved } from "./loadWithSaved.js";
+import { oldestSaved, retryDelayMs, savedLabel } from "./savedLabel.js";
 import { onDataChanged } from "./refresh.js";
 import { isDark, setTheme } from "./theme.js";
 export { setTheme };
@@ -15,24 +17,77 @@ export { setTheme };
 export const cx = (...parts) => parts.filter(Boolean).join(" ");
 
 // Runs an async loader on mount. Returns { data, error, loading, unavailable,
-// reload }. `unavailable` means the server has no such route yet (not a
-// failure): screens show NotAvailable for it.
-export function useLoad(loader) {
-  const [state, setState] = useState({ loading: true, data: null, error: null, unavailable: false });
+// saved, network, reload }. `unavailable` means the server has no such route
+// yet (not a failure): screens show NotAvailable for it.
+//
+// With `cache: { key, prepare? }` the last good answer is kept on this device,
+// and when the connection is lost the screen gets that saved data with
+// `saved: { savedAt }` set (the screen must show SavedBanner with it). A server
+// answer such as 400, 401, 403 or 500 is never replaced by saved data. While
+// saved data (or a lost connection) is showing, the load is retried by itself:
+// when the browser says online, when the app comes back to the foreground, and
+// every 20 s with backoff.
+export function useLoad(loader, { cache } = {}) {
+  const [state, setState] = useState({ loading: true, data: null, error: null, unavailable: false, saved: null, network: false });
+  const cacheKey = cache?.key;
+  const prepare = cache?.prepare;
   const reload = useCallback(async () => {
     setState((s) => ({ ...s, loading: true, error: null, unavailable: false }));
-    try {
-      setState({ loading: false, data: await loader(), error: null, unavailable: false });
-    } catch (err) {
-      setState({ loading: false, data: null, error: friendlyError(err), unavailable: isNotBuilt(err) });
-    }
-  }, [loader]);
+    const shopId = getShopId(); // the shop this load belongs to
+    const next = await loadWithSaved(loader, { shopId, cacheKey, prepare });
+    setState(next);
+  }, [loader, cacheKey, prepare]);
   useEffect(() => {
     reload();
   }, [reload]);
   // A save anywhere in the app reloads what this screen shows.
   useEffect(() => onDataChanged(reload), [reload]);
+
+  // Automatic retry while the connection is down.
+  const down = !!(state.saved || state.network);
+  const attempts = useRef(0);
+  const reloadRef = useRef(reload);
+  reloadRef.current = reload;
+  useEffect(() => {
+    if (!down) {
+      attempts.current = 0;
+      return undefined;
+    }
+    const now = () => {
+      attempts.current = 0;
+      reloadRef.current();
+    };
+    const onVisible = () => document.visibilityState === "visible" && now();
+    window.addEventListener("online", now);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("online", now);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [down]);
+  useEffect(() => {
+    if (!down || state.loading) return undefined;
+    const t = setTimeout(() => {
+      attempts.current += 1;
+      reloadRef.current();
+    }, retryDelayMs(attempts.current));
+    return () => clearTimeout(t);
+  }, [down, state.loading]);
+
   return { ...state, reload };
+}
+
+// The label at the top of a screen that is showing saved data. `saved` is a
+// useLoad `saved` value, or several (the oldest time wins). Nothing when none.
+export function SavedBanner({ saved }) {
+  const at = oldestSaved(...[].concat(saved));
+  if (!at) return null;
+  return (
+    <p data-part="saved-banner" role="status" className="mb-4 flex items-start gap-2.5 rounded-2xl border border-amber bg-amber-soft px-4 py-3 text-[0.9375rem] font-bold text-amber-ink">
+      <CloudOff aria-hidden="true" className="mt-0.5 size-5 shrink-0" />
+      <span className="min-w-0 [overflow-wrap:anywhere]">{savedLabel(at)}</span>
+    </p>
+  );
 }
 
 // Fade and rise in on load, one after another; `i` is the position.

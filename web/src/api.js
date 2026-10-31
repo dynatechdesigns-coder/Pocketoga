@@ -32,6 +32,13 @@ function authHeaders() {
 // Root listens and sends the trader back to the login.
 export const SESSION_ENDED = "pocketoga:session-ended";
 
+// How long a screen's data request may take before it counts as a lost
+// connection (a weak signal otherwise leaves the screen loading for ever).
+export const GET_TIMEOUT_MS = 20_000;
+
+// The shop the app is open for (the saved-data store keys on it).
+export const getShopId = () => shopId;
+
 // An error the UI can show: `status` is the HTTP code (0 = no connection).
 export class ApiError extends Error {
   constructor(status, message) {
@@ -43,6 +50,17 @@ export class ApiError extends Error {
 async function request(method, path, body, signal, extraHeaders) {
   if (!shopId) throw new ApiError(400, "No shop is open.");
   let res;
+  // A read with no signal of its own gets a time limit.
+  let timer = null;
+  let timedOut = false;
+  if (method === "GET" && !signal) {
+    const controller = new AbortController();
+    signal = controller.signal;
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, GET_TIMEOUT_MS);
+  }
   try {
     res = await fetch(API_BASE + path, {
       method,
@@ -52,9 +70,11 @@ async function request(method, path, body, signal, extraHeaders) {
     });
   } catch (err) {
     // A Cancel (AbortError) says nothing about the connection; the timeout
-    // reports itself in waitForProposal.
-    if (err?.name !== "AbortError") connection.reportFailed();
-    throw new ApiError(0, "network");
+    // of a proposal reports itself in waitForProposal.
+    if (err?.name !== "AbortError" || timedOut) connection.reportFailed();
+    throw new ApiError(0, timedOut ? "timeout" : "network");
+  } finally {
+    clearTimeout(timer);
   }
   connection.reportReached();
   const data = await res.json().catch(() => ({}));
@@ -287,6 +307,10 @@ export function correctEntry(id, changes) {
 export async function proposeCorrection(changes) {
   return (await request("POST", "/correct-last", changes)).proposal;
 }
+
+// A lost connection or a timeout (no answer from the server at all), as
+// opposed to a server that answered with an error.
+export const isNetworkFailure = (err) => err instanceof ApiError && err.status === 0;
 
 // Turns any error into one plain sentence for the trader.
 export function friendlyError(err) {

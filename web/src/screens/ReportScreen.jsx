@@ -1,14 +1,16 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { ArrowDownLeft, ArrowRight, CalendarX2, ChevronRight, Package, PackageMinus, PartyPopper, Receipt, Share2, ShoppingBag, TrendingDown } from "lucide-react";
 import { getProfit, getReport } from "../api.js";
 import { PERIODS, formatKobo, plural } from "../format.js";
 import { reportText, shareText } from "../share.js";
-import { Button, Card, EmptyState, ErrorState, IconCircle, NotAvailable, PeriodTabs, ScreenHeader, SectionTitle, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
+import { Button, Card, EmptyState, ErrorState, IconCircle, NotAvailable, PeriodTabs, ScreenHeader, SavedBanner, SectionTitle, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
 import ProfitChart from "../ProfitChart.jsx";
 
 // How many leak categories need the trader's attention (Money shows the count).
 export const attentionCount = (report) =>
   (report.broken.count > 0 ? 1 : 0) + (report.shortfalls.length > 0 ? 1 : 0) + (report.belowCost.items.length > 0 ? 1 : 0);
+
+const LEAKS_CACHE = { key: "report" };
 
 // Reports: what the shop made (GET /profit, by period) and, below it, where
 // money is leaking (GET /report). Profit is always "Estimated": it can only
@@ -17,12 +19,14 @@ export const attentionCount = (report) =>
 export default function ReportScreen({ shop, onGo }) {
   const [period, setPeriod] = useState("today");
   const loadProfit = useCallback(() => getProfit(period), [period]);
-  const profit = useLoad(loadProfit);
-  const leaks = useLoad(getReport);
+  const profitCache = useMemo(() => ({ key: `profit:${period}` }), [period]);
+  const profit = useLoad(loadProfit, { cache: profitCache });
+  const leaks = useLoad(getReport, { cache: LEAKS_CACHE });
 
   return (
     <section>
       <ScreenHeader title="Reports" />
+      <SavedBanner saved={[profit.data && profit.saved, leaks.data && leaks.saved]} />
       <div className="grid gap-4">
         {!profit.unavailable && <PeriodTabs periods={PERIODS} value={period} onChange={setPeriod} label="Report period" />}
         {profit.loading && !profit.data ? (

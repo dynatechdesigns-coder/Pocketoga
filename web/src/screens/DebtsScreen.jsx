@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { CalendarX2, Check, ChevronRight, Copy, MessageCircle, Search, Users } from "lucide-react";
 import { getCustomers, getDebts, getPromises } from "../api.js";
+import { withoutPhones } from "../savedData.js";
 import { ageText, dueText, formatDueDay, formatKobo, sameCustomer } from "../format.js";
 import { draftReminder, TONES, whatsappLink } from "../reminders.js";
-import { Avatar, Button, Card, EmptyState, ErrorState, Pill, RecordShortcut, ScreenHeader, SectionTitle, Sheet, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
+import { Avatar, Button, Card, EmptyState, ErrorState, Pill, RecordShortcut, ScreenHeader, SectionTitle, Sheet, SavedBanner, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
 
 // All reads in one go: the ranked chase list, every promise, and customers
 // (for phone numbers stored with consent; optional, so Debts still works
 // without them and WhatsApp then asks who to send to).
+// What is kept on the device for offline (phone numbers stay out of it).
+const SAVED = { key: "debts", prepare: withoutPhones };
+
 async function loadDebts() {
   const [{ debts, chase }, promises, customers] = await Promise.all([getDebts(), getPromises(), getCustomers().catch(() => [])]);
   return { debts, chase, promises, customers };
@@ -28,7 +32,7 @@ function status(promises) {
 // "chase" opens the most urgent customer; "broken" lists only customers
 // with a broken promise.
 export default function DebtsScreen({ intent, onGo }) {
-  const { data, error, loading, reload } = useLoad(loadDebts);
+  const { data, error, loading, saved, reload } = useLoad(loadDebts, { cache: SAVED });
   const [query, setQuery] = useState("");
   const [brokenOnly, setBrokenOnly] = useState(intent === "broken");
   const [open, setOpen] = useState(null); // customer name
@@ -141,6 +145,7 @@ export default function DebtsScreen({ intent, onGo }) {
   return (
     <section>
       <ScreenHeader title="Who owes you" action={<RecordShortcut onClick={() => onGo("record", { hint: "payment" })}>Record a payment</RecordShortcut>} />
+      {data && <SavedBanner saved={saved} />}
       {body}
       <Sheet open={!!row} onClose={closeSheet} title={r ? r.customer : ""}>
         {r && (
