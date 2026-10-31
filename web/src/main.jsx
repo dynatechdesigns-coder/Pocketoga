@@ -9,8 +9,26 @@ createRoot(document.getElementById("root")).render(
   </React.StrictMode>
 );
 
-// Service worker (makes the app installable). Only in the built app, so it
-// never serves stale files while developing.
+// Service worker (installable, opens offline). Only in the built app, so it
+// never serves stale files while developing. A new version downloads in the
+// background and waits; when the app is opened again it takes over and the
+// page reloads once, so nobody stays on an old version and a running screen
+// is never swapped under the trader.
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
-  window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js"));
+  let reloadForUpdate = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (reloadForUpdate) location.reload();
+  });
+  window.addEventListener("load", async () => {
+    try {
+      const reg = await navigator.serviceWorker.register("/sw.js");
+      if (reg.waiting && navigator.serviceWorker.controller) {
+        reloadForUpdate = true;
+        reg.waiting.postMessage("SKIP_WAITING");
+      }
+      reg.update().catch(() => {}); // look for a newer build on every open
+    } catch {
+      // no service worker: the app still works online
+    }
+  });
 }

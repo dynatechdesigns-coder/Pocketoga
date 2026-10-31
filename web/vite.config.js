@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import basicSsl from "@vitejs/plugin-basic-ssl";
 import landingImages from "./scripts/landing-images.mjs";
+import pwaShell from "./scripts/pwa-shell.mjs";
 
 // In dev, the app calls /api/... and Vite forwards it to the backend, so the
 // browser never needs CORS. Point BACKEND_URL elsewhere if the server moves.
@@ -29,7 +30,7 @@ export default defineConfig(({ command, isPreview }) => {
     // certificate, because phones only allow the microphone on secure pages.
     // landingImages: which landing photos/illustrations exist, and their sizes,
     // decided at build time (virtual:landing-images).
-    plugins: [react(), tailwindcss(), landingImages(), dev && basicSsl()],
+    plugins: [react(), tailwindcss(), landingImages(), pwaShell(), dev && basicSsl()],
     // True only while the mock is on in dev; a constant false in builds, so
     // the dev banner is removed from the bundle.
     define: { __MOCK_CONTRACT__: JSON.stringify(mock) },

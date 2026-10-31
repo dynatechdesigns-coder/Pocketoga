@@ -2,12 +2,13 @@
   "name": "PocketOga",
   "short_name": "PocketOga",
   "description": "Finds and protects the money your shop is losing.",
+  "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#f6f7fb",
-  "theme_color": "#2e1a7a",
+  "background_color": "#f7f8fc",
+  "theme_color": "#f7f8fc",
   "icons": [
     {
       "src": "/icon-192.png",
