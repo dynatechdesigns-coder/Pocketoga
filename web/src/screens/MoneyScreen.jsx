@@ -4,6 +4,7 @@ import { checkLabel } from "../cancelRun.js";
 import { formatKobo, plural } from "../format.js";
 import { reportText, shareText } from "../share.js";
 import { Button, Card, ErrorState, IconCircle, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
+import WaitingToSend from "../WaitingToSend.jsx";
 import { attentionCount } from "./ReportScreen.jsx";
 
 // The report, plus the ledger's own check of its hash chain for the chip.
@@ -135,6 +136,8 @@ function MoneyBody({ report, shop, onGo }) {
           </button>
         ))}
       </nav>
+
+      <WaitingToSend shopId={shop.id} />
 
       {report.verify && <VerifiedChip verify={report.verify} onOpen={() => onGo("ledger")} />}
 

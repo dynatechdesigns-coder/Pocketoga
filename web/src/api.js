@@ -39,13 +39,13 @@ export class ApiError extends Error {
   }
 }
 
-async function request(method, path, body, signal) {
+async function request(method, path, body, signal, extraHeaders) {
   if (!shopId) throw new ApiError(400, "No shop is open.");
   let res;
   try {
     res = await fetch(API_BASE + path, {
       method,
-      headers: { ...authHeaders(), ...(body ? { "Content-Type": "application/json" } : {}) },
+      headers: { ...authHeaders(), ...(extraHeaders ?? {}), ...(body ? { "Content-Type": "application/json" } : {}) },
       body: body ? JSON.stringify(body) : undefined,
       signal,
     });
@@ -97,16 +97,24 @@ export async function logout(sessionToken) {
 // clearly says something else the proposal's hintNote says so.
 const withHint = (body, hint) => (hint ? { ...body, hint } : body);
 
+// `meta` ({ requestId, spokenAt }) rides on every propose call: the client's
+// request id (header x-request-id, the same on every retry of one note) and
+// the ISO time it was spoken or typed (body field spokenAt). Both are
+// optional; a server that does not know them ignores them, and nothing here
+// depends on them for correctness.
+const withSpoken = (body, meta) => (meta?.spokenAt ? { ...body, spokenAt: meta.spokenAt } : body);
+const metaHeaders = (meta) => (meta?.requestId ? { "x-request-id": meta.requestId } : undefined);
+
 // POST /propose { text, hint? } -> { proposal }
 // proposal: { id, status, heard, question, entries[], totals, flags[], promise,
 //   effects[], source, hint, hintNote }
-export async function proposeText(text, hint, signal) {
-  return (await request("POST", "/propose", withHint({ text }, hint), signal)).proposal;
+export async function proposeText(text, hint, signal, meta) {
+  return (await request("POST", "/propose", withSpoken(withHint({ text }, hint), meta), signal, metaHeaders(meta))).proposal;
 }
 
 // POST /propose { audioBase64, audioFormat, hint? } -> { proposal }. Format: wav|mp3.
-export async function proposeAudio(audioBase64, audioFormat = "wav", hint, signal) {
-  return (await request("POST", "/propose", withHint({ audioBase64, audioFormat }, hint), signal)).proposal;
+export async function proposeAudio(audioBase64, audioFormat = "wav", hint, signal, meta) {
+  return (await request("POST", "/propose", withSpoken(withHint({ audioBase64, audioFormat }, hint), meta), signal, metaHeaders(meta))).proposal;
 }
 
 // POST /propose-form <fields from recordForm.js> -> 201 { proposal }. No model
@@ -147,8 +155,8 @@ export async function getProposal(id) {
 //   matchedCustomer }. Confirming it (POST /confirm/:id) records an
 //   unconfirmed payment check, never a ledger entry; recordedIds is
 //   { paymentCheckId }. The photo itself is never stored.
-export async function proposePhoto(photoBase64, photoFormat = "jpg", signal) {
-  return (await request("POST", "/photo-checks", { photoBase64, photoFormat }, signal)).proposal;
+export async function proposePhoto(photoBase64, photoFormat = "jpg", signal, meta) {
+  return (await request("POST", "/photo-checks", withSpoken({ photoBase64, photoFormat }, meta), signal, metaHeaders(meta))).proposal;
 }
 
 // GET /photo-checks/unconfirmed -> { checks[]: { id, amount_kobo, sender,

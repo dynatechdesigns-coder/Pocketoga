@@ -142,7 +142,7 @@ export default function App({ shop, onExit }) {
         {tab === "expenses" && <ExpensesScreen onGo={go} />}
         {tab === "customers" && <CustomersScreen />}
         {tab === "ledger" && <LedgerScreen shop={shop} intent={intent} onGo={go} />}
-        {tab === "alert" && <AlertCheckScreen />}
+        {tab === "alert" && <AlertCheckScreen shop={shop} />}
         {tab === "settings" && <SettingsScreen shop={shop} onExit={onExit} />}
       </main>
 

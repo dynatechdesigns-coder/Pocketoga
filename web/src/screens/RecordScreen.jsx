@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, Keyboard, Mic, RotateCcw, ScanSearch, Send, Square, X } from "lucide-react";
+import { ArrowLeft, Check, CloudOff, Keyboard, Mic, RotateCcw, ScanSearch, Send, Square, X } from "lucide-react";
 import { getProposal, proposeAudio, proposeText } from "../api.js";
+import { OFFLINE_MESSAGE, SAVED_MESSAGE, newMeta } from "../offlineQueue.js";
+import { READY_EVENT, getShopQueue, popReady } from "../shopQueue.js";
 import { MESSAGES, STAGES, VOICE_STAGES, VOICE_STAGE_DELAYS_MS, VOICE_TIMEOUT_MS, canRetry, isEmptyRecording, toWaitError, waitForProposal } from "../recordWait.js";
 import { CANCELLED_MESSAGE, CANCELLED_MS, createRunTracker, micAction } from "../cancelRun.js";
 import { TIME_UP_MESSAGE, VOICE_HINT, createRecordTimer } from "../recordLimits.js";
@@ -61,6 +63,9 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
   const [cancelled, setCancelled] = useState(false); // the short "Cancelled" note
   const runs = useRef(null);
   if (!runs.current) runs.current = createRunTracker();
+  const [queuedNote, setQueuedNote] = useState(null); // "Saved. It will send when you are back online."
+  const proposalRef = useRef(null);
+  const readyBusy = useRef(false);
   const cancelTimer = useRef(null);
   const recorderRef = useRef(null);
   const toggleRef = useRef(null);
@@ -69,6 +74,40 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
   // Remember the open note for this browser tab, so a reload does not lose it.
   const pendingKey = `pocketoga.pending.${shop.id}`;
   const canRecord = !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
+
+  proposalRef.current = proposal;
+
+  // Notes that were sent from the queue come back as ordinary proposals: the
+  // oldest one opens here to be checked, and nothing is saved until Save.
+  async function loadReady() {
+    if (proposalRef.current || readyBusy.current) return;
+    readyBusy.current = true;
+    try {
+      for (;;) {
+        const id = popReady(shop.id, "record");
+        if (id === null) return;
+        try {
+          const p = await getProposal(id);
+          if (p.status === "pending") {
+            showProposal(p);
+            return;
+          }
+        } catch {
+          // expired or gone: try the next one
+        }
+      }
+    } finally {
+      readyBusy.current = false;
+    }
+  }
+  const loadReadyRef = useRef(loadReady);
+  loadReadyRef.current = loadReady;
+  useEffect(() => {
+    const onReady = () => loadReadyRef.current();
+    window.addEventListener(READY_EVENT, onReady);
+    onReady();
+    return () => window.removeEventListener(READY_EVENT, onReady);
+  }, []);
 
   useEffect(() => {
     const id = session.get(pendingKey);
@@ -168,6 +207,7 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
       return;
     }
     setOutcome(result);
+    loadReadyRef.current();
   }
 
   function closeSheet() {
@@ -233,11 +273,21 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
   // One place that waits for a proposal: shows the stages, then either the
   // confirm card or a plain message (with Try again when a retry can help).
   // Nothing here saves anything; only Save on the card does.
-  async function runProposal(call, { startAt = 0, onDone, wait, run = runs.current.begin() } = {}) {
+  // `offline(failed)` keeps the note in the queue (see queueNote). When the
+  // phone is offline, or the send fails with a network error, it is used
+  // instead of showing an error.
+  async function runProposal(call, { startAt = 0, onDone, wait, offline, run = runs.current.begin() } = {}) {
     setError(null);
     setSheetOpen(false);
     setCancelled(false);
-    retryRef.current = () => runProposal(call, { startAt, onDone, wait });
+    setQueuedNote(null);
+    retryRef.current = () => runProposal(call, { startAt, onDone, wait, offline });
+    if (offline && navigator.onLine === false) {
+      runs.current.end(run);
+      setBusy(null);
+      await offline(false);
+      return;
+    }
     try {
       const p = await waitForProposal(call, { onStage: (t) => run.isCurrent() && setBusy(t), startAt, outer: run.signal, ...wait });
       if (!run.isCurrent()) return; // cancelled while waiting: a late answer is ignored
@@ -246,6 +296,12 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
     } catch (err) {
       if (!run.isCurrent()) return;
       const e = toWaitError(err);
+      if (offline && e.kind === "network") {
+        runs.current.end(run);
+        setBusy(null);
+        await offline(true);
+        return;
+      }
       setError({ message: e.message, retry: canRetry(e) });
     } finally {
       if (run.isCurrent()) {
@@ -269,9 +325,11 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
       return;
     }
     if (!run.isCurrent()) return;
-    await runProposal((signal) => proposeAudio(wav, "wav", hint ?? undefined, signal), {
+    const meta = newMeta();
+    await runProposal((signal) => proposeAudio(wav, "wav", hint ?? undefined, signal, meta), {
       startAt: 0,
       run,
+      offline: (failed) => queueNote("audio", { base64: wav }, meta, failed),
       wait: { stages: VOICE_STAGES, delays: VOICE_STAGE_DELAYS_MS, timeoutMs: VOICE_TIMEOUT_MS },
     });
   }
@@ -280,7 +338,27 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
     e.preventDefault();
     const note = text.trim();
     if (!note) return;
-    runProposal((signal) => proposeText(note, hint ?? undefined, signal), { startAt: 1, onDone: () => setText("") });
+    const meta = newMeta();
+    runProposal((signal) => proposeText(note, hint ?? undefined, signal, meta), {
+      startAt: 1,
+      onDone: () => setText(""),
+      offline: async (failed) => {
+        if (await queueNote("text", { text: note }, meta, failed)) setText("");
+      },
+    });
+  }
+
+  // Keep a note that could not be sent on this phone. Without IndexedDB the
+  // trader is told plainly that they are offline. True when it was kept.
+  async function queueNote(kind, payload, meta, failed) {
+    const queue = await getShopQueue(shop.id).catch(() => null);
+    if (!queue) {
+      setError({ message: OFFLINE_MESSAGE });
+      return false;
+    }
+    await queue.enqueue(kind, payload, { hint: hint ?? null, requestId: meta.requestId, spokenAt: meta.spokenAt, failed });
+    setQueuedNote(SAVED_MESSAGE);
+    return true;
   }
 
   // The trader corrected the heard text: read it again from that text. No audio
@@ -392,6 +470,12 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
           </>
         )}
       </div>
+
+      {queuedNote && (
+        <p data-part="queued-note" role="status" className="mb-4 flex items-start gap-2 rounded-2xl border border-line bg-slate px-4 py-3 font-bold">
+          <CloudOff aria-hidden="true" className="mt-0.5 size-5 shrink-0" /> {queuedNote}
+        </p>
+      )}
 
       {cancelled && (
         <p data-part="cancelled" role="status" className="mb-4 rounded-2xl bg-slate px-4 py-3 text-center font-bold">

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Camera, CheckCircle2, ImageOff, ShieldAlert, X } from "lucide-react";
-import { getUnconfirmed, proposePhoto, rejectProposal } from "../api.js";
+import { AlertTriangle, Camera, CheckCircle2, CloudOff, ImageOff, ShieldAlert, X } from "lucide-react";
+import { getProposal, getUnconfirmed, proposePhoto, rejectProposal } from "../api.js";
 import { FILE_MESSAGES, ALERT_STAGES, ALERT_STAGE_DELAYS_MS, ALERT_TIMEOUT_MS, FIXED_LINE, checkAgeDays, describeCheck, markSeenSafely, prepareAlertPhoto, saveAlert } from "../alertCheck.js";
+import { OFFLINE_MESSAGE, SAVED_MESSAGE, newMeta } from "../offlineQueue.js";
 import { canRetry, toWaitError, waitForProposal } from "../recordWait.js";
+import { READY_EVENT, getShopQueue, popReady } from "../shopQueue.js";
 import { ageText, formatKobo } from "../format.js";
 import { Button, Card, ErrorState, IconCircle, Pill, ScreenHeader, SectionTitle, Skeleton, cx, rise, useLoad } from "../ui.jsx";
 
@@ -10,7 +12,7 @@ import { Button, Card, ErrorState, IconCircle, Pill, ScreenHeader, SectionTitle,
 // calmly, then a card of warning signs. The photo is shrunk in the browser,
 // sent once, and dropped: only the small thumbnail during the check is kept,
 // and it is released the moment the result shows.
-export default function AlertCheckScreen() {
+export default function AlertCheckScreen({ shop }) {
   const [phase, setPhase] = useState("idle"); // idle | waiting | result | done
   const [stage, setStage] = useState("");
   const [thumb, setThumb] = useState(null);
@@ -23,6 +25,41 @@ export default function AlertCheckScreen() {
   const fileRef = useRef(null);
   const headingRef = useRef(null);
   const list = useLoad(getUnconfirmed);
+  const [queuedNote, setQueuedNote] = useState(null);
+  const metaRef = useRef(null); // request id and time of the photo being checked
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
+
+  // A photo sent from the queue comes back as an ordinary result card.
+  useEffect(() => {
+    let busy = false;
+    async function loadReady() {
+      if (busy || phaseRef.current === "waiting" || phaseRef.current === "result") return;
+      busy = true;
+      try {
+        for (;;) {
+          const id = popReady(shop.id, "alert");
+          if (id === null) return;
+          try {
+            const p = await getProposal(id);
+            if (p.status === "pending") {
+              setProposal(p);
+              setQueuedNote(null);
+              setPhase("result");
+              return;
+            }
+          } catch {
+            // expired or gone: try the next one
+          }
+        }
+      } finally {
+        busy = false;
+      }
+    }
+    window.addEventListener(READY_EVENT, loadReady);
+    loadReady();
+    return () => window.removeEventListener(READY_EVENT, loadReady);
+  }, [shop.id]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
   // After the photo is gone, move focus to the result for screen readers.
@@ -52,6 +89,7 @@ export default function AlertCheckScreen() {
       return;
     }
     photoRef.current = photo;
+    metaRef.current = newMeta();
     setThumb(photo.thumbUrl);
     run();
   }
@@ -60,11 +98,13 @@ export default function AlertCheckScreen() {
     const photo = photoRef.current;
     if (!photo) return;
     setProblem(null);
+    setQueuedNote(null);
+    if (navigator.onLine === false) return queuePhoto(false);
     setPhase("waiting");
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      const p = await waitForProposal((signal) => proposePhoto(photo.base64, photo.format, signal), {
+      const p = await waitForProposal((signal) => proposePhoto(photo.base64, photo.format, signal, metaRef.current), {
         onStage: setStage,
         stages: ALERT_STAGES,
         delays: ALERT_STAGE_DELAYS_MS,
@@ -78,9 +118,25 @@ export default function AlertCheckScreen() {
     } catch (err) {
       if (controller.signal.aborted) return;
       const e = toWaitError(err);
+      if (e.kind === "network") return queuePhoto(true);
       setProblem({ message: e.message, retry: canRetry(e) });
       setPhase("idle");
     }
+  }
+
+  // No connection: keep the photo on this phone (it is dropped from the
+  // screen at once) and send it when the phone is back online.
+  async function queuePhoto(failed) {
+    const photo = photoRef.current;
+    const queue = await getShopQueue(shop.id).catch(() => null);
+    dropPhoto();
+    setPhase("idle");
+    if (!queue) {
+      setProblem({ message: OFFLINE_MESSAGE });
+      return;
+    }
+    await queue.enqueue("photo", { base64: photo.base64, format: photo.format }, { ...metaRef.current, failed });
+    setQueuedNote(SAVED_MESSAGE);
   }
 
   function cancel() {
@@ -173,6 +229,12 @@ export default function AlertCheckScreen() {
           </Button>
           <p className="text-center text-sm text-muted">A bank SMS or a transfer screenshot. JPEG, PNG or WebP. The photo is not kept.</p>
         </Card>
+      )}
+
+      {queuedNote && (
+        <p data-part="queued-note" role="status" className="mb-4 flex items-start gap-2 rounded-2xl border border-line bg-slate px-4 py-3 font-bold">
+          <CloudOff aria-hidden="true" className="mt-0.5 size-5 shrink-0" /> {queuedNote}
+        </p>
       )}
 
       {problem && (
