@@ -110,6 +110,44 @@ describe("deploy /health (fake env)", () => {
       deps.db.close();
     }
   });
+
+  it("answers GET and HEAD through the production server with no shop header", async () => {
+    const deps = buildDeps(FAKE_ENV);
+    try {
+      const server = createVoiceServer(deps);
+      const run = (method) =>
+        new Promise((done) => {
+          const req = new EventEmitter();
+          req.method = method;
+          req.url = "/health";
+          req.headers = {};
+          req.destroy = () => {};
+          let text = "";
+          const res = new EventEmitter();
+          res.headersSent = false;
+          res.responseHeaders = {};
+          res.writeHead = (status, headers) => {
+            res.statusCode = status;
+            Object.assign(res.responseHeaders, headers);
+            res.headersSent = true;
+          };
+          res.end = (chunk) => {
+            if (chunk) text += chunk;
+            done({ status: res.statusCode, headers: res.responseHeaders, text });
+          };
+          server.emit("request", req, res);
+        });
+      const getRes = await run("GET");
+      assert.equal(getRes.status, 200);
+      assert.deepEqual(JSON.parse(getRes.text), { ok: true });
+      const headRes = await run("HEAD");
+      assert.equal(headRes.status, 200);
+      assert.deepEqual(headRes.headers, getRes.headers);
+      assert.equal(headRes.text, "");
+    } finally {
+      deps.db.close();
+    }
+  });
 });
 
 describe("deploy demo reseed (fake data)", () => {

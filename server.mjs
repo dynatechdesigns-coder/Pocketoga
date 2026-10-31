@@ -298,9 +298,13 @@ export async function handleVoiceRequest(req, res, deps) {
   }
 
   // Liveness probe for the host (Render healthCheckPath). No auth, no
-  // secrets, no shop header — just proof the process answers.
-  if (req.method === "GET" && parts.length === 1 && parts[0] === "health") {
-    return send(res, 200, { ok: true });
+  // secrets, no shop header — just proof the process answers. HEAD answers
+  // with the same status and headers as GET and no body.
+  if ((req.method === "GET" || req.method === "HEAD") && parts.length === 1 && parts[0] === "health") {
+    const body = JSON.stringify({ ok: true });
+    res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
+    res.end(req.method === "GET" ? body : undefined);
+    return;
   }
 
   // Passwordless login: exchange a WhatsApp code for a session token, or
