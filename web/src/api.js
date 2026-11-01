@@ -13,6 +13,7 @@ export const DEMO_SHOP_ID = "demo";
 
 import { connection } from "./connection.js";
 import { buildManualRequest } from "./manualFormat.js";
+import { buildCorrectionRequest } from "./entryCorrection.js";
 import { csvPath } from "./monthlyCsv.js";
 import { notifyDataChanged } from "./refresh.js";
 
@@ -362,6 +363,13 @@ export function correctEntry(id, changes) {
 // fails loudly instead of fixing the wrong entry.
 export async function proposeCorrection(changes) {
   return (await request("POST", "/correct-last", changes)).proposal;
+}
+
+// POST /entries/:id/correct (see entryCorrection.js) -> { proposal }. A correction
+// of any past entry; nothing is saved until the trader confirms the proposal.
+export async function proposeEntryCorrection(entryId, changes, signal, meta) {
+  const req = buildCorrectionRequest(entryId, changes, meta);
+  return (await request("POST", req.path, req.body, signal, req.headers)).proposal;
 }
 
 // A lost connection or a timeout (no answer from the server at all), as

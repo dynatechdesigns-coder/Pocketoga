@@ -5,6 +5,7 @@
 // here can reach the ledger. Storage and sending are passed in, so this file
 // is plain JavaScript the web tests run under node.
 import { ApiError, friendlyError } from "./api.js";
+import { correctionError } from "./entryCorrection.js";
 
 export const MAX_TRIES = 5;
 export const SAVED_MESSAGE = "Saved. It will send when you are back online.";
@@ -110,7 +111,7 @@ export function createQueue({ store, send, onResult, isOnline = () => globalThis
       const serverRefused =
         err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 429 && !(err.status === 409 && /being processed/i.test(err.message));
       if (serverRefused || tries >= MAX_TRIES) {
-        const message = network ? `Could not reach PocketOga after ${MAX_TRIES} tries.` : friendlyError(err);
+        const message = network ? `Could not reach PocketOga after ${MAX_TRIES} tries.` : item.kind === "correction" ? correctionError(err) : friendlyError(err);
         await save({ ...item, tries, status: "needs-you", error: message, nextAt: 0 });
       } else {
         await save({ ...item, tries, nextAt: now() + backoffMs(tries), error: network ? null : friendlyError(err) });

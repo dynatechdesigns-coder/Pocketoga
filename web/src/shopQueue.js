@@ -1,7 +1,7 @@
 // The one offline queue for the open shop, plus the small "ready" lists that
 // carry a sent item's proposal to the screen that shows it. Results are never
 // saved here: a proposal waits for the trader's Save like any other note.
-import { proposeAudio, proposeManual, proposePhoto, proposeText } from "./api.js";
+import { proposeAudio, proposeEntryCorrection, proposeManual, proposePhoto, proposeText } from "./api.js";
 import { createQueue } from "./offlineQueue.js";
 import { openQueueStore } from "./offlineStore.js";
 
@@ -47,6 +47,7 @@ export const readyCount = (shopId, area) => keep.get(readyKey(shopId, area)).len
 export function sendItem(item, signal) {
   const meta = { requestId: item.requestId, spokenAt: item.spokenAt };
   if (item.kind === "text") return proposeText(item.payload.text, item.hint ?? undefined, signal, meta);
+  if (item.kind === "correction") return proposeEntryCorrection(item.payload.entryId, item.payload.changes, signal, meta);
   if (item.kind === "manual") return proposeManual(item.payload.entry, signal, meta);
   if (item.kind === "audio") return proposeAudio(item.payload.base64, "wav", item.hint ?? undefined, signal, meta);
   return proposePhoto(item.payload.base64, item.payload.format ?? "jpg", signal, meta);

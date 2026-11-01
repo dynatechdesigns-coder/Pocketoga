@@ -1,8 +1,12 @@
 import { useState } from "react";
 import { ArrowDownLeft, Check, Filter, PackagePlus, Pencil, RotateCcw, ScrollText, ShieldAlert, ShieldCheck, ShoppingBag } from "lucide-react";
-import { friendlyError, getLedger, proposeCorrection } from "../api.js";
-import { dayLabel, formatKobo, itemText, nairaInput, parseNaira, plural, timeLabel, typeLabel } from "../format.js";
-import { fixableEntryId, supersededById } from "../ledger.js";
+import { getLedger, proposeEntryCorrection } from "../api.js";
+import { connection, isOffline } from "../connection.js";
+import { CORRECTION_KIND, QUEUED_EDIT_MESSAGE, canEdit, correctionError, currentEntries, editChanges, editStart, wasNowLine } from "../entryCorrection.js";
+import { dayLabel, formatKobo, itemText, lagosToday, plural, timeLabel, typeLabel } from "../format.js";
+import { supersededById } from "../ledger.js";
+import { newMeta } from "../offlineQueue.js";
+import { getShopQueue } from "../shopQueue.js";
 import { Button, Card, EmptyState, ErrorState, Field, IconCircle, Pill, ScreenHeader, Sheet, Skeleton, cx, rise, useLoad } from "../ui.jsx";
 import ConfirmCard, { inputClass } from "./ConfirmCard.jsx";
 
@@ -30,11 +34,17 @@ export default function LedgerScreen({ shop, intent, onGo }) {
   const [fix, setFix] = useState(null); // { entry, proposal } — the fix being written
   const [shown, setShown] = useState(null); // kept while the sheet slides away
   const [added, setAdded] = useState(null); // the correction just added
+  const [queued, setQueued] = useState(false); // an edit kept on the phone until it can be sent
 
   function openFix(e) {
     const next = { entry: e, proposal: null };
     setShown(next);
     setFix(next);
+  }
+
+  function onQueued() {
+    setFix(null);
+    setQueued(true);
   }
 
   function onProposed(proposal) {
@@ -50,6 +60,7 @@ export default function LedgerScreen({ shop, intent, onGo }) {
   async function onFixed() {
     const target = fix?.entry ?? shown?.entry;
     setFix(null);
+    setQueued(false);
     try {
       const fresh = await getLedger();
       setAdded(fresh.entries.find((e) => e.corrects_id === target?.id) ?? null);
@@ -68,18 +79,19 @@ export default function LedgerScreen({ shop, intent, onGo }) {
         <ErrorState message={error} onRetry={reload} />
       ) : (
         <LedgerBody
-          entries={only ? data.entries.filter((e) => isSaleOf(e, only)) : data.entries}
+          entries={currentEntries(only ? data.entries.filter((e) => isSaleOf(e, only)) : data.entries)}
           all={data.entries}
           verify={data.verify}
           only={only}
           onShowAll={() => setOnly(null)}
           added={added}
+          queued={queued}
           onFix={openFix}
           shop={shop}
           onGo={onGo}
         />
       )}
-      <Sheet open={!!fix} onClose={() => setFix(null)} title={fix?.proposal ? "Check before you save" : "Fix this entry"}>
+      <Sheet open={!!fix} onClose={() => setFix(null)} title={fix?.proposal ? "Check before you save" : "Edit this entry"}>
         {shown &&
           (shown.proposal ? (
             <ConfirmCard
@@ -90,16 +102,15 @@ export default function LedgerScreen({ shop, intent, onGo }) {
               onStartOver={() => setFix(null)}
             />
           ) : (
-            <FixForm key={shown.entry.id} entry={shown.entry} shop={shop} onProposed={onProposed} />
+            <EditForm key={shown.entry.id} entry={shown.entry} shop={shop} onProposed={onProposed} onQueued={onQueued} />
           ))}
       </Sheet>
     </section>
   );
 }
 
-function LedgerBody({ entries, all, verify, only, onShowAll, added, onFix, shop, onGo }) {
-  // One fixable row in the whole shop, from the full list (not the filter).
-  const fixableId = fixableEntryId(all);
+function LedgerBody({ entries, all, verify, only, onShowAll, added, queued, onFix, shop, onGo }) {
+  const [openTag, setOpenTag] = useState(null); // id of the row whose earlier values show
   // Group newest first by Lagos day.
   const days = [];
   for (const e of [...entries].reverse()) {
@@ -133,7 +144,13 @@ function LedgerBody({ entries, all, verify, only, onShowAll, added, onFix, shop,
 
       {added && (
         <p data-part="fix-added" role="status" className="flex items-center gap-2 rounded-2xl border border-line bg-card px-4 py-3 font-semibold [&_svg]:size-5 [&_svg]:shrink-0">
-          <Check aria-hidden="true" /> Correction #{added.seq} added. The original entry is kept and marked Corrected.
+          <Check aria-hidden="true" /> Change saved as entry #{added.seq}. The earlier version stays in your records.
+        </p>
+      )}
+
+      {queued && (
+        <p data-part="edit-queued" role="status" className="rounded-2xl border border-line bg-slate px-4 py-3 font-bold [overflow-wrap:anywhere]">
+          {QUEUED_EDIT_MESSAGE} You will see it in Waiting to send.
         </p>
       )}
 
@@ -186,20 +203,39 @@ function LedgerBody({ entries, all, verify, only, onShowAll, added, onFix, shop,
                       </span>
                     </div>
                     <div className="flex min-h-12 items-center justify-between gap-2 pl-14">
-                      <span className="text-[0.8125rem] font-semibold text-muted">
-                        {replaced ? <Pill tone="slate">Corrected</Pill> : fixes ? `Corrects #${fixes.seq}` : ""}
+                      <span className="min-w-0 text-[0.8125rem] font-semibold text-muted">
+                        {fixes ? (
+                          <button
+                            type="button"
+                            data-part="corrected-tag"
+                            aria-expanded={openTag === e.id}
+                            onClick={() => setOpenTag(openTag === e.id ? null : e.id)}
+                            className="inline-flex min-h-11 items-center rounded-full transition-transform active:scale-96"
+                          >
+                            <Pill tone="slate">Corrected</Pill>
+                          </button>
+                        ) : replaced ? (
+                          <Pill tone="slate">Corrected</Pill>
+                        ) : (
+                          ""
+                        )}
                       </span>
-                      {e.id === fixableId && (
+                      {canEdit(e) && (
                         <button
-                          data-part="fix-entry"
+                          data-part="edit-entry"
                           onClick={() => onFix(e)}
-                          aria-label={`Fix this entry, #${e.seq}`}
-                          className="-mr-3 inline-flex min-h-12 shrink-0 items-center gap-1.5 rounded-full px-3 text-sm font-bold text-link transition-transform active:scale-96 [&_svg]:size-4"
+                          aria-label={`Edit entry #${e.seq}`}
+                          className="-mr-3 inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-sm font-bold text-link transition-transform active:scale-96 [&_svg]:size-5"
                         >
-                          <Pencil aria-hidden="true" /> Fix this entry
+                          <Pencil aria-hidden="true" /> <span className="max-[359px]:sr-only">Edit</span>
                         </button>
                       )}
                     </div>
+                    {fixes && openTag === e.id && (
+                      <p data-part="was-now" className="pl-14 text-sm text-muted [overflow-wrap:anywhere]">
+                        {wasNowLine(e, all) ?? "Corrected. Nothing you can see changed."}
+                      </p>
+                    )}
                   </li>
                 );
               })}
@@ -211,102 +247,79 @@ function LedgerBody({ entries, all, verify, only, onShowAll, added, onFix, shop,
   );
 }
 
-// The fix sheet. Fields start as the entry is; only what the trader changes
-// is proposed, with a reason. Nothing is saved here: the proposal goes to
-// Record's card, and the correction lands only on Save.
-function FixForm({ entry, shop, onProposed }) {
-  const goods = entry.type === "sale" || entry.type === "restock" || (entry.type === "correction" && !!entry.item);
-  const start = {
-    amount: nairaInput(entry.amount_kobo),
-    customer: entry.customer === shop.id ? "" : entry.customer ?? "",
-    item: entry.item ?? "",
-    quantity: entry.quantity == null ? "" : String(entry.quantity),
-    unit: entry.unit ?? "",
-  };
+// The edit sheet. Fields start as the entry is; only what the trader changes
+// is proposed. Nothing is saved here: the proposal goes to the confirm card and
+// the change lands only when the trader taps Save there. Offline, the change is
+// kept on the phone (Waiting to send) and sent later.
+function EditForm({ entry, shop, onProposed, onQueued }) {
+  const start = editStart(entry, shop.id);
   const [v, setV] = useState(start);
-  const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
-  const set = (k) => (e) => setV((x) => ({ ...x, [k]: e.target.value }));
+  const [error, setError] = useState(null); // { text, field }
+  const set = (k) => (e) => {
+    setV((x) => ({ ...x, [k]: e.target.value }));
+    setError(null);
+  };
+  const invalid = (k) => (error?.field === k ? "true" : undefined);
 
-  const amountKobo = parseNaira(v.amount);
-  const q = v.quantity.trim();
-  const quantity = q === "" ? null : /^\d+$/.test(q) && Number(q) > 0 ? Number(q) : NaN;
-  const badAmount = amountKobo === null || amountKobo === 0;
-  const bad = badAmount || Number.isNaN(quantity);
-
-  // Only what changed is sent.
-  const changes = {};
-  if (v.amount !== start.amount && !badAmount) changes.amountKobo = amountKobo;
-  if (v.customer.trim() && v.customer.trim() !== start.customer) changes.customer = v.customer.trim();
-  if (goods && v.item.trim() !== start.item) changes.item = v.item.trim() || null;
-  if (goods && q !== start.quantity && !Number.isNaN(quantity)) changes.quantity = quantity;
-  if (goods && v.unit.trim() !== start.unit) changes.unit = v.unit.trim() || null;
-  const changed = Object.keys(changes).length > 0;
-  const ready = changed && reason.trim() && !bad && !busy;
+  async function queueIt(changes) {
+    const queue = await getShopQueue(shop.id).catch(() => null);
+    if (!queue) throw new Error("no queue");
+    const meta = newMeta();
+    await queue.enqueue(CORRECTION_KIND, { entryId: entry.id, changes }, { requestId: meta.requestId, spokenAt: meta.spokenAt });
+    onQueued();
+  }
 
   async function submit(e) {
     e.preventDefault();
-    if (!ready) return;
+    if (busy) return;
+    const out = editChanges(start, v);
+    if (out.error) return setError({ text: out.error, field: out.field });
     setBusy(true);
     setError(null);
     try {
-      onProposed(await proposeCorrection({ entryId: entry.id, ...changes, reason: reason.trim() }));
+      if (isOffline(connection.get())) {
+        await queueIt(out.changes);
+      } else {
+        try {
+          onProposed(await proposeEntryCorrection(entry.id, out.changes));
+        } catch (err) {
+          if (err?.status !== 0) throw err;
+          await queueIt(out.changes); // the signal dropped while sending: keep it on the phone
+        }
+      }
     } catch (err) {
-      // 400s are validation the form missed; everything else has its own
-      // plain sentence. Never raw error text.
-      setError(err?.status === 400 ? "Check the details: plain numbers, amount above zero." : friendlyError(err));
+      setError({ text: err?.status === undefined ? "Could not keep it on your phone. Please try again." : correctionError(err) });
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <form className="grid gap-4" onSubmit={submit} data-part="fix-form">
-      <p data-part="fix-explainer" className="rounded-2xl border-[1.5px] border-line bg-card px-4 py-3">
-        <strong>Fixing adds a correction; it never edits.</strong> Entry #{entry.seq} stays in your records exactly as saved, marked
-        Corrected, and a new entry with the right details takes its place in your totals.
+    <form className="grid min-w-0 gap-4" onSubmit={submit} noValidate data-part="edit-form">
+      <p data-part="edit-explainer" className="rounded-2xl border-[1.5px] border-line bg-card px-4 py-3 [overflow-wrap:anywhere]">
+        Change what is wrong in entry #{entry.seq}. You check it on the next card, and nothing is saved until you tap Save there.
       </p>
-      <Field id="fix-amount" label="Amount (₦)">
-        <input id="fix-amount" inputMode="decimal" autoComplete="off" value={v.amount} onChange={set("amount")} className={inputClass} aria-invalid={badAmount} />
+      <Field id="edit-amount" label="Amount (₦)">
+        <input id="edit-amount" inputMode="decimal" autoComplete="off" value={v.amount} onChange={set("amount")} className={inputClass} aria-invalid={invalid("amount")} />
       </Field>
-      <Field id="fix-customer" label={entry.type === "restock" ? "Supplier" : "Customer"}>
-        <input id="fix-customer" autoComplete="off" value={v.customer} onChange={set("customer")} placeholder={entry.customer === shop.id ? "Your shop" : ""} className={inputClass} />
+      <Field id="edit-item" label="Item">
+        <input id="edit-item" autoComplete="off" value={v.item} onChange={set("item")} className={inputClass} aria-invalid={invalid("item")} />
       </Field>
-      {goods && (
-        <>
-          <Field id="fix-item" label="Item">
-            <input id="fix-item" autoComplete="off" value={v.item} onChange={set("item")} className={inputClass} />
-          </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field id="fix-quantity" label="Quantity">
-              <input id="fix-quantity" inputMode="numeric" autoComplete="off" value={v.quantity} onChange={set("quantity")} className={inputClass} aria-invalid={Number.isNaN(quantity)} />
-            </Field>
-            <Field id="fix-unit" label="Unit">
-              <input id="fix-unit" autoComplete="off" value={v.unit} onChange={set("unit")} placeholder="e.g. bag" className={inputClass} />
-            </Field>
-          </div>
-        </>
-      )}
-      <Field id="fix-reason" label="Reason for the fix" hint="Kept with the correction, e.g. “wrong price, it was 45k”.">
-        <textarea id="fix-reason" rows={2} value={reason} onChange={(e) => setReason(e.target.value)} className={inputClass} aria-describedby="fix-reason-hint" />
+      <Field id="edit-customer" label={entry.type === "restock" ? "Supplier" : "Customer label"}>
+        <input id="edit-customer" autoComplete="off" value={v.customer} onChange={set("customer")} placeholder={entry.customer === shop.id ? "Your shop" : ""} className={inputClass} aria-invalid={invalid("customer")} />
       </Field>
-      {bad && (
-        <p role="alert" className="font-semibold text-coral-ink">
-          Check the amount and quantity: plain numbers, amount above zero.
-        </p>
-      )}
+      <Field id="edit-date" label="Date">
+        <input id="edit-date" type="date" value={v.date} max={lagosToday()} onChange={set("date")} className={`${inputClass} min-w-0`} aria-invalid={invalid("date")} />
+      </Field>
       {error && (
-        <p role="alert" className="rounded-2xl bg-slate px-4 py-3">
-          {error}
+        <p role="alert" data-part="edit-error" className="rounded-2xl bg-slate px-4 py-3 font-semibold [overflow-wrap:anywhere]">
+          {error.text}
         </p>
       )}
-      <Button size="lg" disabled={!ready} aria-describedby="fix-why">
-        {busy ? "Checking…" : "Check fix"}
+      <Button size="lg" disabled={busy}>
+        {busy ? "Checking…" : "Save changes"}
       </Button>
-      <p id="fix-why" className="-mt-2 text-center text-sm text-muted">
-        {!changed ? "Change at least one detail above." : !reason.trim() ? "Give a reason to fix the entry." : "Next: check the card, then tap Save."}
-      </p>
     </form>
   );
 }
