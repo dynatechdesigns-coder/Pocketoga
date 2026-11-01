@@ -9,6 +9,7 @@ import { escapeMd, customerOwedKobo, MISMATCH_PREFIX, BAD_AUDIO_JSON, TEXT_FAILE
 import { resolvePromiseDate } from "./promises.mjs";
 import { fetchSecondReading, compareReadings, SECOND_OPINION_TIMEOUT_MS, SECOND_OPINION_LATE_MS, SECOND_CHECK_UNAVAILABLE, SECOND_CHECK_CREDIT, NORMALISED_AMOUNT } from "./secondopinion.mjs";
 import { stockLevels, productKey } from "./products.mjs";
+import { allocatedSales } from "./debts.mjs";
 import { costBasisByProduct, costBasisKey } from "./profit.mjs";
 
 export const PROPOSAL_TTL_MS = 30 * 60 * 1000;
@@ -100,6 +101,7 @@ export function toProposal(row) {
     promise: env.promise ?? null,
     correctionOf: env.correctionOf ?? null,
     correctionReason: env.correctionReason ?? null,
+    correctionScope: env.correctionScope ?? null,
     photoCheck: env.photoCheck ?? null,
     effects: env.effects ?? [],
     source: row.source ?? null,
@@ -1926,6 +1928,78 @@ export function resolveCorrectionTarget(ledger, shopId, entryId) {
   return row;
 }
 
+// --- Any-entry corrections (POST /entries/:id/correct) -----------------------
+//
+// Same propose/confirm flow as correct-last, but for ANY past entry: no
+// latest-only and no already-corrected rule. The ledger still stays
+// append-only — a re-correction chains to the previous current version, so
+// the new row's corrects_id is the current version's id, never an edit.
+
+// Latest correction of one entry id in chain order (null when uncorrected).
+function latestCorrectionOf(rows, entryId) {
+  let best = null;
+  for (const r of rows) {
+    if (r.corrects_id !== entryId) continue;
+    if (!best || r.seq > best.seq || (r.seq === best.seq && r.id > best.id)) best = r;
+  }
+  return best;
+}
+
+// The current version of one row: follows the correction chain to its end
+// (cycle-guarded). A stale sibling correction resolves to the winning
+// sibling, matching effectiveEntries downstream.
+export function currentVersionRow(ledger, row) {
+  const byId = new Map(ledger.list(row.shop_id).map((r) => [r.id, r]));
+  let cur = row;
+  const seen = new Set([row.id]);
+  for (;;) {
+    let next = latestCorrectionOf([...byId.values()], cur.id);
+    if (!next && cur.corrects_id !== null && cur.corrects_id !== undefined) {
+      const sib = latestCorrectionOf([...byId.values()], cur.corrects_id);
+      if (sib && sib.id !== cur.id) next = sib;
+    }
+    if (!next || seen.has(next.id)) return cur;
+    seen.add(next.id);
+    cur = next;
+  }
+}
+
+// Resolves any past entry of the caller's own shop. Missing ids and other
+// shops' ids both read 404, so one shop can never probe another shop's rows.
+export function resolveAnyCorrectionTarget(ledger, shopId, entryId) {
+  if (!ledger) throw new Error("resolveAnyCorrectionTarget needs a ledger");
+  if (!Number.isInteger(entryId) || entryId <= 0) throw voiceError(400, `bad entry id: ${String(entryId)}`);
+  const row = ledger.get(entryId);
+  if (!row || row.shop_id !== shopId) throw voiceError(404, `entry ${entryId} not found`);
+  return { target: row, current: currentVersionRow(ledger, row) };
+}
+
+// Amount already paid against one effective sale row (0 when it is not a
+// live sale). A sale with payments behind it is the ledger's shape of "a
+// debt that already has payments": its amount is locked, its label is not.
+function paidAgainstSale(ledger, shopId, row) {
+  const line = allocatedSales(ledger.list(shopId), {}).find((s) => s.id === row.id);
+  return line ? line.paidKobo : 0;
+}
+
+function paidSaleBlocksAmount(ledger, shopId, current, amountKobo) {
+  return (
+    amountKobo !== undefined &&
+    amountKobo !== current.amount_kobo &&
+    paidAgainstSale(ledger, shopId, current) > 0
+  );
+}
+
+// Trader-supplied correction date: an ISO timestamp that is not in the
+// future. Undefined means "keep the original's date".
+function checkCorrectionDate(date) {
+  if (date === undefined) return undefined;
+  const ms = typeof date === "string" ? Date.parse(date) : NaN;
+  if (!Number.isFinite(ms)) throw voiceError(400, "date must be a valid date");
+  if (ms > Date.now()) throw voiceError(400, "date must not be in the future");
+  return new Date(ms).toISOString();
+}
+
 // Trader-supplied corrected values, same rules as the immediate correct
 // route: whole non-negative kobo, non-empty text, positive quantities.
 // Undefined inherits the original; explicit null clears item/quantity/unit.
@@ -1956,7 +2030,7 @@ function checkCorrectionReason(reason) {
   return clean;
 }
 
-function correctionEnvelope(entry, target, reason, { flags = [], question = null, notes = [] } = {}) {
+function correctionEnvelope(entry, target, reason, { flags = [], question = null, notes = [], scope = null } = {}) {
   return {
     version: 1,
     entries: [entry],
@@ -1966,20 +2040,13 @@ function correctionEnvelope(entry, target, reason, { flags = [], question = null
     promise: null,
     correctionOf: target.id,
     correctionReason: reason,
+    correctionScope: scope,
     assumptions: [],
   };
 }
 
-// Proposes a correction with explicit values (the /correct-last route).
-// Nothing is recorded; the trader confirms the proposal as usual.
-export function proposeCorrection(shopId, entryId, values, { proposals, ledger, reason, heard = null }) {
-  if (!proposals || !ledger) throw new Error("proposeCorrection needs { proposals, ledger }");
-  if (!shopId || typeof shopId !== "string") throw voiceError(400, "shopId is required");
-  const target = resolveCorrectionTarget(ledger, shopId, entryId);
-  const cleanReason = checkCorrectionReason(reason);
-  const v = checkCorrectionValues(values);
-  const amountKobo = v.amountKobo ?? target.amount_kobo;
-  const entry = {
+function correctionEntryFor(target, v, amountKobo, extra = {}) {
+  return {
     type: target.type,
     customer: v.customer ?? target.customer,
     item: v.item === undefined ? target.item : v.item,
@@ -1991,7 +2058,44 @@ export function proposeCorrection(shopId, entryId, values, { proposals, ledger, 
     amountPhrase: null,
     eachNaira: null,
     eachKobo: null,
+    ...extra,
   };
+}
+
+// Proposes a correction with explicit values (the /correct-last route, and
+// POST /entries/:id/correct with scope "any").
+// Nothing is recorded; the trader confirms the proposal as usual.
+export function proposeCorrection(shopId, entryId, values, { proposals, ledger, reason, heard = null, scope = null, occurredAt = null } = {}) {
+  if (!proposals || !ledger) throw new Error("proposeCorrection needs { proposals, ledger }");
+  if (!shopId || typeof shopId !== "string") throw voiceError(400, "shopId is required");
+  if (scope === "any") {
+    const raw = values && typeof values === "object" ? values : {};
+    const { target, current } = resolveAnyCorrectionTarget(ledger, shopId, entryId);
+    if (raw.type !== undefined && raw.type !== target.type) {
+      throw voiceError(400, "the entry type cannot be changed");
+    }
+    const cleanReason = typeof reason === "string" && reason.trim() ? reason.trim() : "trader correction";
+    const v = checkCorrectionValues(raw);
+    if (paidSaleBlocksAmount(ledger, shopId, current, v.amountKobo)) {
+      throw voiceError(409, "that debt already has payments, so the amount cannot be changed. You can still rename it.");
+    }
+    const amountKobo = v.amountKobo ?? target.amount_kobo;
+    const entry = correctionEntryFor(target, v, amountKobo, { createdAt: checkCorrectionDate(raw.date) ?? target.created_at });
+    const row = proposals.create({
+      shopId,
+      envelope: correctionEnvelope(entry, target, cleanReason, { scope: "any" }),
+      heard: heard ?? cleanReason,
+      question: null,
+      source: "form",
+      occurredAt,
+    });
+    return toProposal(row);
+  }
+  const target = resolveCorrectionTarget(ledger, shopId, entryId);
+  const cleanReason = checkCorrectionReason(reason);
+  const v = checkCorrectionValues(values);
+  const amountKobo = v.amountKobo ?? target.amount_kobo;
+  const entry = correctionEntryFor(target, v, amountKobo);
   const row = proposals.create({
     shopId,
     envelope: correctionEnvelope(entry, target, cleanReason),
@@ -2117,7 +2221,23 @@ export function confirmProposal(proposalId, shopId, { proposals, ledger, promise
   // Corrections revalidate their target at confirm time: another entry may
   // have landed since the proposal, or the target may have been corrected
   // another way. Reads only, so this runs before the transaction opens.
-  if (isCorrection) resolveCorrectionTarget(ledger, row.shop_id, proposal.correctionOf);
+  // Any-entry corrections chain to the previous current version instead, so
+  // a rival correction that landed first extends the chain rather than
+  // failing the confirm.
+  let correctionParentId = null;
+  let correctionCreatedAt = null;
+  if (isCorrection && proposal.correctionScope === "any") {
+    const { current } = resolveAnyCorrectionTarget(ledger, row.shop_id, proposal.correctionOf);
+    const e = proposal.entries[0];
+    if (paidSaleBlocksAmount(ledger, row.shop_id, current, e.amountKobo)) {
+      throw voiceError(409, "that debt already has payments, so the amount cannot be changed. You can still rename it.");
+    }
+    correctionParentId = current.id;
+    correctionCreatedAt =
+      typeof e.createdAt === "string" && Number.isFinite(Date.parse(e.createdAt)) ? e.createdAt : current.created_at;
+  } else if (isCorrection) {
+    resolveCorrectionTarget(ledger, row.shop_id, proposal.correctionOf);
+  }
   // One transaction so a mid-confirm failure records nothing. The proposal is
   // marked confirmed right after; a crash in between would need manual review.
   ledger.db.exec("BEGIN IMMEDIATE");
@@ -2125,12 +2245,13 @@ export function confirmProposal(proposalId, shopId, { proposals, ledger, promise
   try {
     if (isCorrection) {
       const e = proposal.entries[0];
-      const created = ledger.appendCorrection(proposal.correctionOf, {
+      const created = ledger.appendCorrection(correctionParentId ?? proposal.correctionOf, {
         amountKobo: e.amountKobo,
         customer: e.customer,
         item: e.item,
         quantity: e.quantity,
         unit: e.unit,
+        createdAt: correctionCreatedAt,
       });
       ledger.recordCorrectionReason(created.id, proposal.correctionReason);
       recorded = [created];
@@ -2283,6 +2404,7 @@ export function applyShorthandFix(proposalId, shopId, pick, { proposals, ledger 
       assumptions: checked.assumptions,
       correctionOf: prior.correctionOf ?? null,
       correctionReason: prior.correctionReason ?? null,
+      correctionScope: prior.correctionScope ?? null,
     },
     heard: checked.heard,
     question: checked.question,
@@ -2326,7 +2448,7 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
   }
   if (timings) timings.classifyMs = Date.now() - tClassify;
   const stamp = new Date().toISOString();
-  const priorCorrection = { correctionOf: prior.correctionOf ?? null, correctionReason: prior.correctionReason ?? null };
+  const priorCorrection = { correctionOf: prior.correctionOf ?? null, correctionReason: prior.correctionReason ?? null, correctionScope: prior.correctionScope ?? null };
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     const msg = "I no understand the correction — abeg talk am again.";
     const envelope = {

@@ -113,7 +113,7 @@ export function resolveDbPath(env = process.env) {
 // so a bundle built against the dev proxy keeps working on one origin.
 const API_FIRST = new Set([
   "webhook", "session", "propose", "propose-form", "photo-checks", "confirm",
-  "fix", "reject", "proposals", "ledger", "correct-last", "debts", "promises",
+  "fix", "reject", "proposals", "ledger", "entries", "correct-last", "debts", "promises",
   "report", "reports", "sales", "products", "customers", "profit", "expenses", "summary",
   "health", "feedback",
 ]);
@@ -310,20 +310,53 @@ function bearerToken(header) {
 
 // Each entry gains correctedById (the latest correcting entry's id in
 // chain order, or null) and correctionReason (the logged reason, or null
-// when uncorrected or corrected before reasons existed).
+// when uncorrected or corrected before reasons existed), plus the fields
+// the web app needs for a per-row Edit button: canCorrect (this row is the
+// current version, so a new correction chains from it), wasCorrected (a
+// correction points at this row) and currentVersionId (the row id the
+// reports, debts and CSV treat as live — the chain end, or a winning
+// sibling when two corrections named the same original).
 function withCorrectionInfo(ledger, shopId) {
   const entries = ledger.list(shopId);
+  const byId = new Map(entries.map((e) => [e.id, e]));
   const latest = new Map();
+  const hasCorrection = new Set();
   for (const e of entries) {
     if (e.corrects_id === null || e.corrects_id === undefined) continue;
+    hasCorrection.add(e.corrects_id);
     const prev = latest.get(e.corrects_id);
     if (!prev || e.seq > prev.seq || (e.seq === prev.seq && e.id > prev.id)) {
       latest.set(e.corrects_id, e);
     }
   }
+  const currentOf = (id) => {
+    let cur = id;
+    const seen = new Set([id]);
+    for (;;) {
+      let next = latest.get(cur) ?? null;
+      if (!next) {
+        const row = byId.get(cur);
+        if (row && row.corrects_id !== null && row.corrects_id !== undefined) {
+          const sib = latest.get(row.corrects_id);
+          if (sib && sib.id !== cur) next = sib;
+        }
+      }
+      if (!next || seen.has(next.id)) return cur;
+      seen.add(next.id);
+      cur = next.id;
+    }
+  };
   return entries.map((e) => {
     const fix = latest.get(e.id);
-    return { ...e, correctedById: fix ? fix.id : null, correctionReason: fix ? ledger.correctionReason(fix.id) : null };
+    const currentVersionId = currentOf(e.id);
+    return {
+      ...e,
+      correctedById: fix ? fix.id : null,
+      correctionReason: fix ? ledger.correctionReason(fix.id) : null,
+      canCorrect: currentVersionId === e.id,
+      wasCorrected: hasCorrection.has(e.id),
+      currentVersionId,
+    };
   });
 }
 
@@ -735,6 +768,38 @@ export async function handleVoiceRequest(req, res, deps) {
       reason,
     });
     return send(res, 201, { proposal });
+  }
+
+  // Read-only alias of /ledger: same entries (with per-row correction info)
+  // and the same verification, under the entry namespace the web app uses
+  // for its per-row Edit buttons.
+  if (req.method === "GET" && parts.length === 1 && parts[0] === "entries") {
+    return send(res, 200, { entries: withCorrectionInfo(deps.ledger, shopId), verify: deps.ledger.verify(shopId) });
+  }
+
+  // Proposes a correction of ANY past entry of the caller's own shop — not
+  // only the latest. Plain-code checks only (no model call); nothing is
+  // recorded until the trader confirms the proposal as usual
+  // (POST /confirm/:id). Missing ids and other shops' ids both read 404.
+  // Like every other propose route it honours x-request-id, so offline
+  // retries replay the stored proposal instead of proposing twice.
+  if (req.method === "POST" && parts.length === 3 && parts[0] === "entries" && parts[2] === "correct") {
+    const id = Number(decodeURIComponent(parts[1]));
+    if (!Number.isInteger(id) || id <= 0) return send(res, 400, { error: "bad entry id" });
+    const probe = deps.ledger.get(id);
+    if (!probe || probe.shop_id !== shopId) return send(res, 404, { error: "entry not found" });
+    const body = await readBody(req);
+    const fields = body && typeof body === "object" ? body : {};
+    const occurredAt = readOccurredAt(body);
+    return idempotentPropose(req, res, deps, shopId, () =>
+      proposeCorrection(shopId, id, fields, {
+        proposals: deps.proposals,
+        ledger: deps.ledger,
+        reason: fields.reason,
+        heard: typeof fields.heard === "string" ? fields.heard : null,
+        scope: "any",
+        occurredAt,
+      }));
   }
 
   // Read-only debt views for the caller's own shop: what the WhatsApp debt

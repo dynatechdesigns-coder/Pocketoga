@@ -9,7 +9,9 @@ import { Ledger } from "./ledger.mjs";
 import { ProposalStore } from "./proposals.mjs";
 import { PromiseStore } from "./promises.mjs";
 import { createMockModelClient } from "./model.mjs";
-import { effectiveEntries } from "./debts.mjs";
+import { effectiveEntries, lagosDay } from "./debts.mjs";
+import { buildMonthlyCsv } from "./reports.mjs";
+import { IdempotencyStore } from "./idempotency.mjs";
 import { stockLevels } from "./products.mjs";
 import { handleVoiceRequest, handleWebhookOnlyRequest } from "./server.mjs";
 import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
@@ -595,6 +597,322 @@ describe("POST /correct-last", () => {
       assert.equal(out.status, 404);
     } finally {
       teardown(ctx);
+    }
+  });
+});
+
+describe("POST /entries/:id/correct", () => {
+  // Correction proposals need the proposals store (and idempotency for the
+  // offline replays); no model call is ever made on this path.
+  function anyCtx() {
+    const db = new DatabaseSync(":memory:");
+    const ledger = new Ledger(db);
+    const proposals = new ProposalStore(db);
+    const promises = new PromiseStore(db);
+    const auths = new AuthStore(db);
+    const idempotency = new IdempotencyStore(db);
+    return { db, ledger, proposals, promises, auths, idempotency, deps: { ledger, proposals, promises, auths, idempotency } };
+  }
+
+  function anyTeardown(ctx) {
+    ctx.db.close();
+  }
+
+  it("corrects an old entry (not the latest) and saves nothing before confirm", async () => {
+    const ctx = anyCtx();
+    try {
+      const headers = { "x-shop-id": SHOP_A };
+      const old = ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 2000000, customer: "Ada", item: "rice", quantity: 2, unit: "bag" });
+      ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 3000000, customer: "Bola" });
+
+      const out = await dispatch(ctx.deps, {
+        method: "POST",
+        url: `/entries/${old.id}/correct`,
+        headers,
+        body: { amountKobo: 1500000 },
+      });
+      assert.equal(out.status, 201);
+      const p = out.json.proposal;
+      assert.equal(p.correctionOf, old.id);
+      assert.equal(p.correctionScope, "any");
+      assert.equal(p.correctionReason, "trader correction");
+      assert.equal(p.entries.length, 1);
+      assert.deepEqual(
+        [p.entries[0].type, p.entries[0].amountKobo, p.entries[0].customer, p.entries[0].item, p.entries[0].quantity, p.entries[0].unit],
+        ["sale", 1500000, "Ada", "rice", 2, "bag"]
+      );
+      // Nothing saved yet: no ledger row, no reason, same verify count.
+      assert.equal(ctx.ledger.list(SHOP_A).length, 2);
+      assert.equal(ctx.db.prepare("SELECT COUNT(*) AS c FROM corrections_log").get().c, 0);
+      assert.deepEqual(ctx.ledger.verify(SHOP_A), { ok: true, count: 2, shopId: SHOP_A });
+
+      const confirmed = await dispatch(ctx.deps, { method: "POST", url: `/confirm/${p.id}`, headers });
+      assert.equal(confirmed.status, 200);
+      assert.equal(confirmed.json.alreadyConfirmed, false);
+      assert.equal(confirmed.json.recordedIds.length, 1);
+      const created = ctx.ledger.get(confirmed.json.recordedIds[0]);
+      assert.equal(created.type, "correction");
+      assert.equal(created.corrects_id, old.id);
+      assert.equal(created.amount_kobo, 1500000);
+      // The original row is untouched; the chain still verifies.
+      assert.equal(ctx.ledger.get(old.id).amount_kobo, 2000000);
+      assert.deepEqual(ctx.ledger.verify(SHOP_A), { ok: true, count: 3, shopId: SHOP_A });
+      assert.deepEqual(
+        effectiveEntries(ctx.ledger.list(SHOP_A)).map((e) => e.amount_kobo),
+        [3000000, 1500000]
+      );
+      assert.equal(ctx.ledger.correctionReason(created.id), "trader correction");
+    } finally {
+      anyTeardown(ctx);
+    }
+  });
+
+  it("a second correction chains to the previous current version", async () => {
+    const ctx = anyCtx();
+    try {
+      const headers = { "x-shop-id": SHOP_A };
+      const old = ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 2000000, customer: "Ada" });
+      ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 3000000, customer: "Bola" });
+
+      const first = await dispatch(ctx.deps, {
+        method: "POST", url: `/entries/${old.id}/correct`, headers, body: { amountKobo: 1500000, reason: "first fix" },
+      });
+      const firstId = ctx.ledger.get((await dispatch(ctx.deps, { method: "POST", url: `/confirm/${first.json.proposal.id}`, headers })).json.recordedIds[0]).id;
+
+      const second = await dispatch(ctx.deps, {
+        method: "POST", url: `/entries/${old.id}/correct`, headers, body: { amountKobo: 1200000, reason: "second fix" },
+      });
+      assert.equal(second.status, 201);
+      const created = ctx.ledger.get((await dispatch(ctx.deps, { method: "POST", url: `/confirm/${second.json.proposal.id}`, headers })).json.recordedIds[0]);
+      assert.equal(created.corrects_id, firstId);
+      assert.equal(created.amount_kobo, 1200000);
+      assert.equal(ctx.ledger.get(old.id).amount_kobo, 2000000);
+      assert.deepEqual(ctx.ledger.verify(SHOP_A), { ok: true, count: 4, shopId: SHOP_A });
+      assert.deepEqual(
+        effectiveEntries(ctx.ledger.list(SHOP_A)).map((e) => e.amount_kobo).sort((a, b) => a - b),
+        [1200000, 3000000]
+      );
+
+      const listed = await dispatch(ctx.deps, { url: "/ledger", headers });
+      const byId = new Map(listed.json.entries.map((e) => [e.id, e]));
+      assert.deepEqual(
+        [byId.get(old.id).canCorrect, byId.get(old.id).wasCorrected, byId.get(old.id).currentVersionId],
+        [false, true, created.id]
+      );
+      assert.equal(byId.get(old.id).correctedById, firstId);
+      assert.deepEqual(
+        [byId.get(firstId).canCorrect, byId.get(firstId).wasCorrected, byId.get(firstId).currentVersionId],
+        [false, true, created.id]
+      );
+      assert.deepEqual(
+        [byId.get(created.id).canCorrect, byId.get(created.id).wasCorrected, byId.get(created.id).currentVersionId],
+        [true, false, created.id]
+      );
+    } finally {
+      anyTeardown(ctx);
+    }
+  });
+
+  it("debts, profit and the CSV use only the current version", async () => {
+    const ctx = anyCtx();
+    try {
+      const headers = { "x-shop-id": SHOP_A };
+      const old = ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 3000000, customer: "Ada" });
+      ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 1000000, customer: "Chidi" });
+      const out = await dispatch(ctx.deps, {
+        method: "POST", url: `/entries/${old.id}/correct`, headers, body: { amountKobo: 2000000, reason: "discounted" },
+      });
+      await dispatch(ctx.deps, { method: "POST", url: `/confirm/${out.json.proposal.id}`, headers });
+
+      const debts = await dispatch(ctx.deps, { url: "/debts", headers });
+      assert.equal(debts.json.debts.find((d) => d.customer === "Ada").owedKobo, 2000000);
+
+      const profit = await dispatch(ctx.deps, { url: "/profit?period=today", headers });
+      assert.equal(profit.json.salesKobo, 3000000);
+
+      const month = lagosDay(Date.now()).slice(0, 7);
+      const { csv } = buildMonthlyCsv(ctx.ledger.list(SHOP_A), month);
+      const adaLines = csv.split("\n").filter((line) => line.includes("Ada"));
+      assert.equal(adaLines.length, 1);
+      assert.ok(adaLines[0].includes("20000.00"));
+    } finally {
+      anyTeardown(ctx);
+    }
+  });
+
+  it("another shop's entry reads 404 and saves nothing", async () => {
+    const ctx = anyCtx();
+    try {
+      const sale = ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 2000000, customer: "Ada" });
+      const cross = await dispatch(ctx.deps, {
+        method: "POST",
+        url: `/entries/${sale.id}/correct`,
+        headers: { "x-shop-id": SHOP_B },
+        body: { amountKobo: 100, reason: "nope" },
+      });
+      assert.equal(cross.status, 404);
+      const missing = await dispatch(ctx.deps, {
+        method: "POST",
+        url: "/entries/9999/correct",
+        headers: { "x-shop-id": SHOP_A },
+        body: { amountKobo: 100, reason: "nothing" },
+      });
+      assert.equal(missing.status, 404);
+      assert.equal(ctx.ledger.list(SHOP_A).length, 1);
+      assert.equal(ctx.ledger.list(SHOP_B).length, 0);
+      assert.equal(ctx.db.prepare("SELECT COUNT(*) AS c FROM proposals").get().c, 0);
+    } finally {
+      anyTeardown(ctx);
+    }
+  });
+
+  it("changing the type is refused but restating it passes", async () => {
+    const ctx = anyCtx();
+    try {
+      const headers = { "x-shop-id": SHOP_A };
+      const sale = ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 2000000, customer: "Ada" });
+      const bad = await dispatch(ctx.deps, {
+        method: "POST", url: `/entries/${sale.id}/correct`, headers, body: { type: "payment", reason: "switch" },
+      });
+      assert.equal(bad.status, 400);
+      assert.match(bad.json.error, /cannot be changed/);
+      const ok = await dispatch(ctx.deps, {
+        method: "POST", url: `/entries/${sale.id}/correct`, headers, body: { type: "sale", amountKobo: 1900000, reason: "same type" },
+      });
+      assert.equal(ok.status, 201);
+      assert.equal(ok.json.proposal.entries[0].type, "sale");
+      assert.equal(ctx.ledger.list(SHOP_A).length, 1);
+    } finally {
+      anyTeardown(ctx);
+    }
+  });
+
+  it("a sale with payments locks the amount but still renames the label", async () => {
+    const ctx = anyCtx();
+    try {
+      const headers = { "x-shop-id": SHOP_A };
+      const sale = ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 3000000, customer: "Ada" });
+      ctx.ledger.append({ shopId: SHOP_A, type: "payment", amountKobo: 1000000, customer: "Ada" });
+
+      const blocked = await dispatch(ctx.deps, {
+        method: "POST", url: `/entries/${sale.id}/correct`, headers, body: { amountKobo: 2000000, reason: "cheaper" },
+      });
+      assert.equal(blocked.status, 409);
+      assert.match(blocked.json.error, /already has payments/);
+
+      const renamed = await dispatch(ctx.deps, {
+        method: "POST", url: `/entries/${sale.id}/correct`, headers, body: { customer: "Adaeze", reason: "full name" },
+      });
+      assert.equal(renamed.status, 201);
+      const created = ctx.ledger.get((await dispatch(ctx.deps, { method: "POST", url: `/confirm/${renamed.json.proposal.id}`, headers })).json.recordedIds[0]);
+      assert.equal(created.amount_kobo, 3000000);
+      assert.equal(created.customer, "Adaeze");
+      // Only the sale row is relabelled; its payment stays under the old
+      // label (whole-customer renames go through POST /customers/rename).
+      const debts = await dispatch(ctx.deps, { url: "/debts", headers });
+      assert.equal(debts.json.debts.find((d) => d.customer === "Adaeze").owedKobo, 3000000);
+      assert.equal(ctx.ledger.list(SHOP_A).filter((r) => r.type === "correction").length, 1);
+    } finally {
+      anyTeardown(ctx);
+    }
+  });
+
+  it("bad dates and non-integer amounts are refused; a past date records", async () => {
+    const ctx = anyCtx();
+    try {
+      const headers = { "x-shop-id": SHOP_A };
+      const sale = ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 2000000, customer: "Ada" });
+      for (const body of [
+        { date: new Date(Date.now() + 3600000).toISOString(), reason: "future" },
+        { date: "not-a-date", reason: "garbage" },
+        { amountKobo: 10.5, reason: "r" },
+        { amountKobo: "100", reason: "r" },
+        { amountKobo: -5, reason: "r" },
+      ]) {
+        const bad = await dispatch(ctx.deps, { method: "POST", url: `/entries/${sale.id}/correct`, headers, body });
+        assert.equal(bad.status, 400, JSON.stringify(body));
+      }
+      const past = "2026-10-15T12:00:00.000Z";
+      const out = await dispatch(ctx.deps, {
+        method: "POST", url: `/entries/${sale.id}/correct`, headers, body: { date: past, reason: "wrong day" },
+      });
+      assert.equal(out.status, 201);
+      const created = ctx.ledger.get((await dispatch(ctx.deps, { method: "POST", url: `/confirm/${out.json.proposal.id}`, headers })).json.recordedIds[0]);
+      assert.equal(created.created_at, past);
+      assert.equal(ctx.ledger.list(SHOP_A).filter((r) => r.type === "correction").length, 1);
+    } finally {
+      anyTeardown(ctx);
+    }
+  });
+
+  it("offline replays share one proposal and confirm records once", async () => {
+    const ctx = anyCtx();
+    try {
+      const headers = { "x-shop-id": SHOP_A, "x-request-id": "correct-offline-1" };
+      const old = ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 2000000, customer: "Ada" });
+      ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 3000000, customer: "Bola" });
+      const first = await dispatch(ctx.deps, {
+        method: "POST", url: `/entries/${old.id}/correct`, headers, body: { amountKobo: 1500000, reason: "offline fix" },
+      });
+      assert.equal(first.status, 201);
+      const replay = await dispatch(ctx.deps, {
+        method: "POST", url: `/entries/${old.id}/correct`, headers, body: { amountKobo: 1500000, reason: "offline fix" },
+      });
+      assert.equal(replay.status, 200);
+      assert.equal(replay.json.proposal.id, first.json.proposal.id);
+      assert.equal(ctx.db.prepare("SELECT COUNT(*) AS c FROM proposals").get().c, 1);
+      const done = await dispatch(ctx.deps, { method: "POST", url: `/confirm/${first.json.proposal.id}`, headers: { "x-shop-id": SHOP_A } });
+      assert.equal(done.json.alreadyConfirmed, false);
+      const again = await dispatch(ctx.deps, { method: "POST", url: `/confirm/${first.json.proposal.id}`, headers: { "x-shop-id": SHOP_A } });
+      assert.equal(again.json.alreadyConfirmed, true);
+      assert.equal(ctx.ledger.list(SHOP_A).filter((r) => r.type === "correction").length, 1);
+    } finally {
+      anyTeardown(ctx);
+    }
+  });
+
+  it("every listed entry carries the Edit-button fields; entries alias matches ledger", async () => {
+    const ctx = anyCtx();
+    try {
+      const headers = { "x-shop-id": SHOP_A };
+      const old = ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 2000000, customer: "Ada" });
+      const out = await dispatch(ctx.deps, {
+        method: "POST", url: `/entries/${old.id}/correct`, headers, body: { amountKobo: 1500000, reason: "fix" },
+      });
+      await dispatch(ctx.deps, { method: "POST", url: `/confirm/${out.json.proposal.id}`, headers });
+      for (const url of ["/ledger", "/entries"]) {
+        const listed = await dispatch(ctx.deps, { url, headers });
+        assert.equal(listed.status, 200);
+        assert.equal(listed.json.entries.length, 2);
+        for (const e of listed.json.entries) {
+          assert.equal(typeof e.canCorrect, "boolean", url);
+          assert.equal(typeof e.wasCorrected, "boolean", url);
+          assert.ok(Number.isInteger(e.currentVersionId), url);
+        }
+        assert.deepEqual(listed.json.verify, { ok: true, count: 2, shopId: SHOP_A });
+      }
+    } finally {
+      anyTeardown(ctx);
+    }
+  });
+
+  it("the webhook port 404s the entries correct route", async () => {
+    const ctx = anyCtx();
+    try {
+      const sale = ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 2000000, customer: "Ada" });
+      assert.equal(
+        (
+          await dispatchOnly(ctx.deps, {
+            method: "POST",
+            url: `/entries/${sale.id}/correct`,
+            headers: { "x-shop-id": SHOP_A },
+            body: { amountKobo: 100, reason: "tunneled" },
+          })
+        ).status,
+        404
+      );
+    } finally {
+      anyTeardown(ctx);
     }
   });
 });
