@@ -6,6 +6,7 @@ import { OFFLINE_MESSAGE, SAVED_MESSAGE, newMeta } from "../offlineQueue.js";
 import { canRetry, toWaitError, waitForProposal } from "../recordWait.js";
 import { READY_EVENT, getShopQueue, popReady } from "../shopQueue.js";
 import { ageText, formatKobo } from "../format.js";
+import AiDetails from "../AiDetails.jsx";
 import { Button, Card, ErrorState, IconCircle, Pill, ScreenHeader, SectionTitle, Skeleton, cx, rise, useLoad } from "../ui.jsx";
 
 // Check a payment alert before handing over goods: pick or take a photo, wait
@@ -227,11 +228,11 @@ export default function AlertCheckScreen({ shop }) {
 
       {phase === "idle" && (
         <Card {...rise(0, "mb-4 grid gap-3")}>
-          <div data-part="photo-buttons" className="grid min-w-0 grid-cols-2 gap-3 max-[479px]:grid-cols-1">
-            <Button size="lg" data-part="take-photo" className="min-w-0 text-center" onClick={() => fileRef.current?.click()}>
+          <div data-part="photo-buttons" className="grid min-w-0 grid-cols-2 gap-3">
+            <Button size="lg" data-part="take-photo" className="min-w-0 text-center max-[479px]:flex-col max-[479px]:gap-1 max-[479px]:px-2 max-[479px]:text-base" onClick={() => fileRef.current?.click()}>
               <Camera aria-hidden="true" /> Take a photo
             </Button>
-            <Button size="lg" variant="secondary" data-part="pick-photo" className="min-w-0 text-center" onClick={() => galleryRef.current?.click()}>
+            <Button size="lg" variant="secondary" data-part="pick-photo" className="min-w-0 text-center max-[479px]:flex-col max-[479px]:gap-1 max-[479px]:px-2 max-[479px]:text-base" onClick={() => galleryRef.current?.click()}>
               <ImagePlus aria-hidden="true" /> Choose from gallery
             </Button>
           </div>
@@ -259,7 +260,10 @@ export default function AlertCheckScreen({ shop }) {
       )}
 
       {card && phase === "result" && (
-        <ResultCard card={card} busy={busy} headingRef={headingRef} onSeen={() => save(true)} onSave={() => save(false)} onReject={reject} onAgain={again} />
+        <>
+          <ResultCard card={card} busy={busy} headingRef={headingRef} onSeen={() => save(true)} onSave={() => save(false)} onReject={reject} onAgain={again} />
+          <AiDetails proposal={proposal} photo className="mb-4" />
+        </>
       )}
 
       {phase === "done" && done && (

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, test } from "node:test";
 const { ApiError, getUnconfirmed, markSeenInBank, proposePhoto, setShop } = await import("../src/api.js");
 const { onDataChanged } = await import("../src/refresh.js");
 const A = await import("../src/alertCheck.js");
+const { aiRows } = await import("../src/aiDetails.js");
 const { WaitError, canRetry, waitForProposal } = await import("../src/recordWait.js");
 
 const realFetch = globalThis.fetch;
@@ -297,10 +298,49 @@ describe("two ways to add the photo", () => {
     assert.match(tag("photo-gallery"), /onChange=\{onPick\}/);
   });
 
-  test("buttons 'Take a photo' and 'Choose from gallery': side by side, stacked on narrow phones, 44px or more", () => {
+  test("buttons 'Take a photo' and 'Choose from gallery': always side by side (320, 360, 390px), 44px or more", () => {
     assert.match(screen, /Take a photo/);
     assert.match(screen, /Choose from gallery/);
-    assert.match(screen, /data-part="photo-buttons" className="grid min-w-0 grid-cols-2 gap-3 max-\[479px\]:grid-cols-1"/);
+    assert.match(screen, /data-part="photo-buttons" className="grid min-w-0 grid-cols-2 gap-3"/);
+    assert.doesNotMatch(screen, /photo-buttons[^>]*grid-cols-1/);
+    // on narrow phones the icon sits above the label so each half stays inside its column
+    assert.match(screen, /data-part="pick-photo" className="min-w-0 text-center max-\[479px\]:flex-col/);
     assert.match(screen, /data-part="take-photo" className="min-w-0 /);
+  });
+});
+
+describe("How the AI did this on the photo result card", () => {
+  const screen = readFileSync(new URL("../src/screens/AlertCheckScreen.jsx", import.meta.url), "utf8");
+  const photoAi = (extra = {}) => ({ ai: { heard: { model: null, ms: 0 }, understood: { model: "vision-1", ms: 3400 }, secondOpinion: { model: null, ms: 0, result: "off" }, ...extra } });
+
+  test("shows 'Read the photo: <model> (<seconds>)' and hides the second opinion when it is off", () => {
+    const rows = aiRows(photoAi(), { photo: true });
+    assert.deepEqual(rows.map((r) => `${r.label}: ${r.text}`), ["Read the photo: vision-1 (3.4 s)"]);
+  });
+
+  test("a second opinion that ran still shows; a difference is flagged", () => {
+    const rows = aiRows(photoAi({ secondOpinion: { model: "gemma-3", ms: 800, result: "differs" } }), { photo: true });
+    assert.equal(rows.at(-1).text, "gemma-3 (differs, please check)");
+    assert.equal(rows.at(-1).warn, true);
+  });
+
+  test("never shows photo contents or any text from it", () => {
+    const rows = aiRows({ photoCheck: { senderName: "Ada Obi", amountKobo: 1 }, text: "GTBank alert 5000", ai: photoAi().ai }, { photo: true });
+    assert.doesNotMatch(JSON.stringify(rows), /Ada|GTBank|5000/);
+  });
+
+  test("the panel sits under the result card, and Save as unconfirmed and the bank button are unchanged", () => {
+    assert.match(screen, /<ResultCard [^]*?onAgain=\{again\} \/>\s*<AiDetails proposal=\{proposal\} photo className="mb-4" \/>/);
+    assert.match(screen, /I saw it in my bank/);
+    assert.match(screen, /Save as unconfirmed/);
+    assert.match(screen, /onSave=\{\(\) => save\(false\)\}/);
+  });
+
+  test("the panel is open by default and fits 320px", () => {
+    const panel = readFileSync(new URL("../src/AiDetails.jsx", import.meta.url), "utf8");
+    assert.match(panel, /<details data-part="ai-details" open /);
+    assert.match(panel, /min-w-0/);
+    assert.match(panel, /summary className="flex min-h-11/);
+    assert.match(panel, /[overflow-wrap:anywhere]/);
   });
 });

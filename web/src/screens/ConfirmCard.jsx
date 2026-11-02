@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ArrowDownLeft, CalendarClock, Check, HandCoins, Info, PackagePlus, Pencil, Receipt, ShoppingBag, TriangleAlert, X } from "lucide-react";
 import { confirmProposal, fixProposal, friendlyError, rejectProposal } from "../api.js";
 import { formatDueDay, formatKobo, itemText } from "../format.js";
+import AiDetails from "../AiDetails.jsx";
 import { amountChoice, choiceFix, debtLines, partPaidRows } from "../debtView.js";
 import { canSave as isSaveable, describeEntry, hintLine, problemsOf } from "../entryWords.js";
 import { Button, Card, IconCircle, cx, figure, inputClass } from "../ui.jsx";
@@ -258,6 +259,8 @@ export default function ConfirmCard({ proposal, shopId, onRerun, onUpdate, onFin
           </p>
         </Card>
       )}
+
+      <AiDetails proposal={proposal} />
 
       {error && (
         <div role="alert" className="grid gap-2 rounded-2xl bg-slate px-4 py-3">
