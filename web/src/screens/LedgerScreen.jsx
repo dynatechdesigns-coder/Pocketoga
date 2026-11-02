@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ArrowDownLeft, Check, Filter, PackagePlus, Pencil, RotateCcw, ScrollText, ShieldAlert, ShieldCheck, ShoppingBag } from "lucide-react";
 import { getLedger, proposeEntryCorrection } from "../api.js";
 import { connection, isOffline } from "../connection.js";
-import { CORRECTION_KIND, QUEUED_EDIT_MESSAGE, canEdit, correctionError, currentEntries, editChanges, editStart, wasNowLine } from "../entryCorrection.js";
+import { CORRECTION_KIND, QUEUED_EDIT_MESSAGE, canEdit, correctionError, currentEntries, editChanges, editStart, wasKobo, wasNowLine } from "../entryCorrection.js";
 import { dayLabel, formatKobo, itemText, lagosToday, plural, timeLabel, typeLabel } from "../format.js";
 import { supersededById } from "../ledger.js";
 import { newMeta } from "../offlineQueue.js";
@@ -181,6 +181,8 @@ function LedgerBody({ entries, all, verify, only, onShowAll, added, queued, onFi
                 const what = itemText(e);
                 const replaced = supersededById(e, all) != null;
                 const fixes = e.corrects_id != null ? all.find((x) => x.id === e.corrects_id) : null;
+                const was = wasKobo(e, all);
+                const was = wasKobo(e, all);
                 return (
                   <li key={e.id} data-part="entry-row" data-kind={e.type} data-corrected={replaced} className="grid gap-0.5 py-2.5">
                     <div className="flex min-h-12 items-center gap-3">
@@ -193,7 +195,7 @@ function LedgerBody({ entries, all, verify, only, onShowAll, added, queued, onFi
                         </span>
                       </span>
                       <span className="grid justify-items-end">
-                        <span className={cx("font-extrabold whitespace-nowrap tabular-nums", e.type === "payment" && "text-blue-ink", replaced && "text-muted line-through")}>
+                        <span data-part="entry-amount" className={cx("text-lg font-extrabold whitespace-nowrap tabular-nums", e.type === "payment" && "text-blue-ink", replaced && "text-muted")}>
                           {e.type === "payment" ? "+" : ""}
                           {formatKobo(e.amount_kobo)}
                         </span>
@@ -203,7 +205,7 @@ function LedgerBody({ entries, all, verify, only, onShowAll, added, queued, onFi
                       </span>
                     </div>
                     <div className="flex min-h-12 items-center justify-between gap-2 pl-14">
-                      <span className="min-w-0 text-[0.8125rem] font-semibold text-muted">
+                      <span className="flex min-w-0 flex-wrap items-center gap-x-2 text-[0.8125rem] font-semibold text-muted">
                         {fixes ? (
                           <button
                             type="button"
@@ -218,6 +220,11 @@ function LedgerBody({ entries, all, verify, only, onShowAll, added, queued, onFi
                           <Pill tone="slate">Corrected</Pill>
                         ) : (
                           ""
+                        )}
+                        {was != null && (
+                          <span data-part="was-amount" className="whitespace-nowrap tabular-nums">
+                            was {formatKobo(was)}
+                          </span>
                         )}
                       </span>
                       {canEdit(e) && (

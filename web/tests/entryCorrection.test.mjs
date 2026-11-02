@@ -218,3 +218,55 @@ describe("offline: the edit is queued and shown in Waiting to send", () => {
     assert.match(ledger, /data-part="edit-queued"/);
   });
 });
+
+describe("a corrected entry shows its current amount", () => {
+  const original = row({ id: 1, seq: 1, amount_kobo: 4500000, canCorrect: false, wasCorrected: true, currentVersionId: 2, correctedById: 2 });
+  const fixed = row({ id: 2, seq: 2, type: "correction", corrects_id: 1, amount_kobo: 4600000, canCorrect: true, wasCorrected: false, currentVersionId: 2, correctedById: null });
+  const other = row({ id: 3, seq: 3, amount_kobo: 100000 });
+  const all = [original, fixed, other];
+
+  test("the current amount counts, and 'was' is the amount before", () => {
+    assert.equal(E.currentOf(original, all).amount_kobo, 4600000);
+    assert.equal(E.wasKobo(fixed, all), 4500000);
+    assert.equal(E.wasKobo(other, all), null);
+    assert.equal(E.wasKobo(row({ id: 4, corrects_id: 1, amount_kobo: 4500000 }), all), null); // amount did not change
+  });
+
+  test("a chain of corrections ends at the last one", () => {
+    const third = row({ id: 5, seq: 4, type: "correction", corrects_id: 2, amount_kobo: 4700000, currentVersionId: 5 });
+    const chain = [{ ...original, currentVersionId: 5 }, { ...fixed, canCorrect: false, wasCorrected: true, currentVersionId: 5, correctedById: 5 }, third];
+    assert.equal(E.currentOf(chain[0], chain).amount_kobo, 4700000);
+    assert.deepEqual(E.currentEntries(chain).map((e) => e.id), [5]);
+  });
+
+  test("lists keep one row per entry at its current version, so rows match the totals", () => {
+    const rows = E.currentRows(all, (e) => e.type === "sale");
+    assert.deepEqual(rows.map((r) => [r.entry.id, r.entry.amount_kobo, r.wasKobo, r.corrected, r.entry.type]), [[2, 4600000, 4500000, true, "sale"], [3, 100000, null, false, "sale"]]);
+    assert.equal(rows.reduce((sum, r) => sum + r.entry.amount_kobo, 0), 4700000); // what the server's effective total counts
+  });
+
+  test("an older server (no canCorrect) still shows only the current row", () => {
+    const old1 = { id: 1, seq: 1, type: "sale", amount_kobo: 4500000, corrects_id: null, correctedById: 2 };
+    const old2 = { id: 2, seq: 2, type: "correction", amount_kobo: 4600000, corrects_id: 1, correctedById: null };
+    assert.deepEqual(E.currentEntries([old1, old2]).map((e) => e.id), [2]);
+    assert.equal(E.currentRows([old1, old2], (e) => e.type === "sale")[0].entry.amount_kobo, 4600000);
+  });
+
+  const salesScreen = src("SalesScreen.jsx".replace(/^/, "screens/"));
+  test("Money-style lists: current amount large, 'was ₦45,000' small, the Corrected tag, never a crossed-out old amount", () => {
+    for (const [name, text] of [["Ledger", ledger], ["Sales", salesScreen]]) {
+      assert.doesNotMatch(text, /line-through/, name);
+      assert.match(text, /data-part="was-amount"/, name);
+      assert.match(text, /was \{formatKobo\(was\)\}/, name);
+      assert.match(text, /text-lg font-extrabold/, name);
+    }
+    assert.match(salesScreen, /Pill tone="slate">Corrected</);
+    assert.match(salesScreen, /currentRows\(ledger\.data\.entries/);
+    assert.match(ledger, /Pill tone="slate">Corrected</);
+  });
+
+  test("the 'was' line wraps inside the row on a 320px phone", () => {
+    assert.match(ledger, /flex min-w-0 flex-wrap items-center gap-x-2/);
+    assert.match(salesScreen, /grid justify-items-end gap-0\.5/);
+  });
+});

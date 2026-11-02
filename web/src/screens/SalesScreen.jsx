@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { ShoppingBag } from "lucide-react";
 import { getLedger, getProfit } from "../api.js";
+import { currentRows } from "../entryCorrection.js";
 import { PERIODS, dayLabel, formatKobo, itemText, lagosDay, periodStartDay, plural, timeLabel } from "../format.js";
 import { Card, EmptyState, ErrorState, IconCircle, PeriodTabs, Pill, RecordShortcut, ScreenHeader, Skeleton, cx, figure, rise, useLoad } from "../ui.jsx";
 
@@ -17,12 +18,16 @@ export default function SalesScreen({ shop, onGo }) {
   else if (ledger.error) body = <ErrorState message={ledger.error} onRetry={ledger.reload} />;
   else {
     const from = periodStartDay(period);
-    const sales = ledger.data.entries.filter((e) => e.type === "sale" && lagosDay(e.created_at) >= from).reverse();
+    // One row per sale, at the version that counts now (a corrected sale shows
+    // its current amount), so the rows match the server's total.
+    const sales = currentRows(ledger.data.entries, (e) => e.type === "sale")
+      .filter((r) => lagosDay(r.entry.created_at) >= from)
+      .reverse();
     const days = [];
-    for (const e of sales) {
-      const label = dayLabel(e.created_at);
+    for (const r of sales) {
+      const label = dayLabel(r.entry.created_at);
       if (days.at(-1)?.label !== label) days.push({ label, rows: [] });
-      days.at(-1).rows.push(e);
+      days.at(-1).rows.push(r);
     }
     body = (
       <div className="grid gap-4">
@@ -51,8 +56,7 @@ export default function SalesScreen({ shop, onGo }) {
             <section key={d.label} {...rise(i + 1)}>
               <h2 className="mx-1.5 my-2 text-[0.8125rem] font-bold tracking-[0.06em] text-muted uppercase">{d.label}</h2>
               <Card as="ul" className="divide-y divide-line px-[18px] py-1">
-                {d.rows.map((e) => {
-                  const corrected = e.correctedById != null;
+                {d.rows.map(({ entry: e, wasKobo: was, corrected }) => {
                   return (
                     <li key={e.id} data-part="sale-row" className="flex min-h-[68px] items-center gap-3 py-2.5">
                       <IconCircle icon={ShoppingBag} tone="lavender" />
@@ -61,8 +65,19 @@ export default function SalesScreen({ shop, onGo }) {
                         <span className="text-[0.8125rem] text-muted">{itemText(e) || "Sale"}</span>
                       </span>
                       <span className="grid justify-items-end gap-0.5">
-                        <span className={cx("font-extrabold whitespace-nowrap tabular-nums", corrected && "text-muted line-through")}>{formatKobo(e.amount_kobo)}</span>
-                        {corrected ? <Pill tone="slate">Corrected</Pill> : <span className="text-[0.8125rem] text-muted tabular-nums">{timeLabel(e.created_at)}</span>}
+                        <span data-part="sale-amount" className="text-lg font-extrabold whitespace-nowrap tabular-nums">{formatKobo(e.amount_kobo)}</span>
+                        {corrected ? (
+                          <>
+                            {was != null && (
+                              <span data-part="was-amount" className="text-[0.8125rem] whitespace-nowrap text-muted tabular-nums">
+                                was {formatKobo(was)}
+                              </span>
+                            )}
+                            <Pill tone="slate">Corrected</Pill>
+                          </>
+                        ) : (
+                          <span className="text-[0.8125rem] text-muted tabular-nums">{timeLabel(e.created_at)}</span>
+                        )}
                       </span>
                     </li>
                   );

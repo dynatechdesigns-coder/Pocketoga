@@ -29,9 +29,48 @@ export function buildCorrectionRequest(entryId, changes, meta = {}) {
 export const canEdit = (entry) => entry?.canCorrect === true;
 
 // Newest version only: an entry that a later correction replaced is not listed.
-// An older server sends no fields, and then every row stays.
+// A server that sends canCorrect/wasCorrected says it directly; an older one is
+// read from correctedById or the corrects_id links.
 export function currentEntries(entries) {
-  return (entries ?? []).filter((e) => !(e.wasCorrected === true && e.canCorrect === false));
+  const all = entries ?? [];
+  return all.filter((e) => {
+    if (e.wasCorrected === true && e.canCorrect === false) return false;
+    if (e.canCorrect === undefined && (e.correctedById ?? all.find((x) => x.corrects_id === e.id)?.id) != null) return false;
+    return true;
+  });
+}
+
+// The version that counts now, for an entry that may have been corrected once or
+// many times. Follows currentVersionId, else correctedById, else the links.
+export function currentOf(entry, all) {
+  const list = all ?? [];
+  let cur = entry;
+  const seen = new Set([entry.id]);
+  for (;;) {
+    const nextId = cur.currentVersionId !== undefined && cur.currentVersionId !== cur.id ? cur.currentVersionId : cur.correctedById ?? list.find((x) => x.corrects_id === cur.id)?.id ?? null;
+    const next = nextId == null || seen.has(nextId) ? null : list.find((x) => x.id === nextId) ?? null;
+    if (!next) return cur;
+    seen.add(next.id);
+    cur = next;
+  }
+}
+
+// The amount the entry had before it was corrected, when it changed; else null.
+export function wasKobo(entry, all) {
+  const was = earlierVersion(entry, all);
+  return was && was.amount_kobo !== entry.amount_kobo ? was.amount_kobo : null;
+}
+
+// Rows for a list of one kind of entry (for example sales): one row per original
+// entry, each at its current version, so the amount shown is the amount that
+// counts and the rows match the totals. -> [{ entry, wasKobo, corrected }]
+export function currentRows(all, keep) {
+  return (all ?? [])
+    .filter((e) => e.corrects_id == null && keep(e))
+    .map((original) => {
+      const entry = currentOf(original, all);
+      return { entry: { ...entry, type: original.type }, wasKobo: wasKobo(entry, all), corrected: entry.id !== original.id };
+    });
 }
 
 // The row an entry corrects, when it is itself a correction.

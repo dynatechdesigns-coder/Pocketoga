@@ -298,14 +298,55 @@ describe("two ways to add the photo", () => {
     assert.match(tag("photo-gallery"), /onChange=\{onPick\}/);
   });
 
-  test("buttons 'Take a photo' and 'Choose from gallery': always side by side (320, 360, 390px), 44px or more", () => {
-    assert.match(screen, /Take a photo/);
-    assert.match(screen, /Choose from gallery/);
-    assert.match(screen, /data-part="photo-buttons" className="grid min-w-0 grid-cols-2 gap-3"/);
-    assert.doesNotMatch(screen, /photo-buttons[^>]*grid-cols-1/);
-    // on narrow phones the icon sits above the label so each half stays inside its column
-    assert.match(screen, /data-part="pick-photo" className="min-w-0 text-center max-\[479px\]:flex-col/);
-    assert.match(screen, /data-part="take-photo" className="min-w-0 /);
+  describe("the two photo buttons", () => {
+    const buttonClass = () => screen.match(/const PHOTO_BUTTON = "([^"]*)"/)[1];
+
+    test("'Take a photo' and a gallery button, both inside one grid", () => {
+      assert.match(screen, /Take a photo/);
+      assert.match(screen, /Choose from gallery/);
+      assert.match(screen, /data-part="take-photo" className=\{PHOTO_BUTTON\}/);
+      assert.match(screen, /data-part="pick-photo" className=\{PHOTO_BUTTON\}/);
+    });
+
+    test("equal: both use the same class, size and variant, so the same height", () => {
+      const take = screen.match(/<Button ([^>]*)data-part="take-photo"/)[1] + screen.match(/data-part="take-photo"([^>]*)>/)[1];
+      const pick = screen.match(/<Button ([^>]*)data-part="pick-photo"/)[1] + screen.match(/data-part="pick-photo"([^>]*)>/)[1];
+      assert.match(take, /size="lg"/);
+      assert.match(pick, /size="lg"/);
+      assert.doesNotMatch(take + pick, /variant=/);
+      assert.match(buttonClass(), /\bmin-h-24\b/); // 96px, well over 48px
+    });
+
+    test("rounded rectangles, not ovals", () => {
+      assert.match(buttonClass(), /\brounded-2xl!/);
+      assert.doesNotMatch(buttonClass(), /rounded-full/);
+    });
+
+    test("icon above the label, label on one line", () => {
+      assert.match(buttonClass(), /\bflex-col\b/);
+      assert.match(buttonClass(), /\bwhitespace-nowrap\b/);
+      assert.match(screen, /<Camera aria-hidden="true" \/> <span>Take a photo<\/span>/);
+      assert.match(screen, /<ImagePlus aria-hidden="true" \/>/);
+    });
+
+    test("two columns from 340px, stacked below; the short word 'Gallery' on 340 to 399px phones", () => {
+      assert.match(screen, /data-part="photo-buttons" className="grid min-w-0 grid-cols-1 gap-3 min-\[340px\]:grid-cols-2"/);
+      assert.match(screen, /<span className="min-\[340px\]:max-\[399px\]:hidden">Choose from gallery<\/span>/);
+      assert.match(screen, /<span className="hidden min-\[340px\]:max-\[399px\]:inline">Gallery<\/span>/);
+    });
+
+    test("fits 320, 360 and 390px: the widest label fits its column at every width", () => {
+      // Card padding is 2 x 20px inside 2 x 20px of page margin; the label is about 8.5px per character at 16px bold.
+      const column = (w, cols) => (w - 80 - (cols - 1) * 12) / cols - 16;
+      const label = (chars) => chars * 8.5;
+      assert.ok(label("Choose from gallery".length) <= column(320, 1)); // stacked under 340
+      assert.ok(label("Take a photo".length) <= column(360, 2));
+      assert.ok(label("Gallery".length) <= column(360, 2));
+      assert.ok(label("Take a photo".length) <= column(390, 2));
+      assert.ok(label("Gallery".length) <= column(390, 2));
+      assert.doesNotMatch(buttonClass(), /\bw-\[\d+|\bmin-w-\[\d+/);
+      assert.match(buttonClass(), /\bmin-w-0\b/);
+    });
   });
 });
 

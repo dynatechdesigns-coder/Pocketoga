@@ -13,6 +13,9 @@ import { Button, Card, ErrorState, IconCircle, Pill, ScreenHeader, SectionTitle,
 // calmly, then a card of warning signs. The photo is shrunk in the browser,
 // sent once, and dropped: only the small thumbnail during the check is kept,
 // and it is released the moment the result shows.
+// Two equal buttons: same height, rounded rectangles, icon above a one-line label.
+const PHOTO_BUTTON = "min-h-24 min-w-0 flex-col gap-2 rounded-2xl! px-2 py-3 text-center text-base whitespace-nowrap [&_svg]:size-7";
+
 export default function AlertCheckScreen({ shop }) {
   const [phase, setPhase] = useState("idle"); // idle | waiting | result | done
   const [stage, setStage] = useState("");
@@ -228,12 +231,15 @@ export default function AlertCheckScreen({ shop }) {
 
       {phase === "idle" && (
         <Card {...rise(0, "mb-4 grid gap-3")}>
-          <div data-part="photo-buttons" className="grid min-w-0 grid-cols-2 gap-3">
-            <Button size="lg" data-part="take-photo" className="min-w-0 text-center max-[479px]:flex-col max-[479px]:gap-1 max-[479px]:px-2 max-[479px]:text-base" onClick={() => fileRef.current?.click()}>
-              <Camera aria-hidden="true" /> Take a photo
+          <div data-part="photo-buttons" className="grid min-w-0 grid-cols-1 gap-3 min-[340px]:grid-cols-2">
+            <Button size="lg" data-part="take-photo" className={PHOTO_BUTTON} onClick={() => fileRef.current?.click()}>
+              <Camera aria-hidden="true" /> <span>Take a photo</span>
             </Button>
-            <Button size="lg" variant="secondary" data-part="pick-photo" className="min-w-0 text-center max-[479px]:flex-col max-[479px]:gap-1 max-[479px]:px-2 max-[479px]:text-base" onClick={() => galleryRef.current?.click()}>
-              <ImagePlus aria-hidden="true" /> Choose from gallery
+            <Button size="lg" data-part="pick-photo" className={PHOTO_BUTTON} onClick={() => galleryRef.current?.click()}>
+              <ImagePlus aria-hidden="true" />
+              {/* One line, always: the short word fits two columns on 340 to 399px phones. */}
+              <span className="min-[340px]:max-[399px]:hidden">Choose from gallery</span>
+              <span className="hidden min-[340px]:max-[399px]:inline">Gallery</span>
             </Button>
           </div>
           <p className="text-center text-sm text-muted">A bank SMS or a transfer screenshot. JPEG, PNG or WebP. The photo is not kept.</p>
