@@ -182,7 +182,6 @@ function LedgerBody({ entries, all, verify, only, onShowAll, added, queued, onFi
                 const replaced = supersededById(e, all) != null;
                 const fixes = e.corrects_id != null ? all.find((x) => x.id === e.corrects_id) : null;
                 const was = wasKobo(e, all);
-                const was = wasKobo(e, all);
                 return (
                   <li key={e.id} data-part="entry-row" data-kind={e.type} data-corrected={replaced} className="grid gap-0.5 py-2.5">
                     <div className="flex min-h-12 items-center gap-3">
