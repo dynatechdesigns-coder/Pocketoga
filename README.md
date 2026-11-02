@@ -44,3 +44,12 @@ Demo judges use the web app; WhatsApp runs on a Meta test number, so the WhatsAp
 - Icons: Lucide (lucide-react), ISC licence.
 - Font: Plus Jakarta Sans, SIL Open Font License, loaded from Google Fonts.
 - Demo audio and all sample data: recorded or written by the author. No outside datasets.
+## Disclosure: what existed before the event
+
+Before the event I had ProfitPocket, a simple bookkeeping and inventory web app for small traders (https://profit-pocket-tviz.vercel.app). You type in your entries, and it calculates profit and loss for a week, a month and a year. It has no voice input and does not use Meta models.
+
+PocketOga was built during the event week as a new project. No code was copied from ProfitPocket; only the idea carried over.
+
+Everything else you see here was built this week: voice and text understanding, WhatsApp, the confirm step, the ledger, offline mode, corrections, reports and the spreadsheet export.
+
+PocketOga was built with Muse Code and Claude Code as coding assistants. I set the design and rules, reviewed the results and tested them.
