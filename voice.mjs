@@ -2323,6 +2323,9 @@ export function confirmProposal(proposalId, shopId, { proposals, ledger, promise
           item: e.item,
           quantity: e.quantity,
           unit: e.unit,
+          // Set only by flows that backdate on purpose (demo seed);
+          // every other entry carries nothing and keeps wall-clock now.
+          createdAt: e.createdAt ?? null,
         })
       );
     }

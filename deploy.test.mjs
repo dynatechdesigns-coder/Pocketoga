@@ -31,6 +31,7 @@ import {
   setLogSink,
 } from "./log.mjs";
 import { seedDemoShop } from "./demo-seed.mjs";
+import { lagosDay, addDays } from "./debts.mjs";
 import { backupNow, newestBackup, pruneBackups, restoreIfMissing, BACKUP_KEEP } from "./backup.mjs";
 import { Ledger } from "./ledger.mjs";
 import { DEMO_SHOP_ID } from "./auth.mjs";
@@ -151,18 +152,144 @@ describe("deploy /health (fake env)", () => {
 });
 
 describe("deploy demo reseed (fake data)", () => {
-  it("seeds 15entries and 3 promises once, then leaves the shop alone", () => {
+  // Fixed Tuesday afternoon: 2026-11-03 15:30 Lagos (14:30Z).
+  const FIXED_NOW = Date.UTC(2026, 10, 3, 14, 30, 0);
+
+  function seededDeps(now = FIXED_NOW) {
+    const deps = buildDeps(FAKE_ENV);
+    const out = seedDemoShop(deps, { now });
+    assert.equal(out.seeded, true);
+    return deps;
+  }
+
+  it("seeds 27 entries and 3 promises once, then leaves the shop alone", () => {
     const deps = buildDeps(FAKE_ENV);
     try {
       const first = seedDemoShop(deps);
       assert.equal(first.seeded, true);
-      assert.equal(first.entries, 15);
+      assert.equal(first.entries, 27);
       assert.equal(deps.ledger.verify(DEMO_SHOP_ID).ok, true);
-      assert.equal(deps.ledger.verify(DEMO_SHOP_ID).count, 15);
+      assert.equal(deps.ledger.verify(DEMO_SHOP_ID).count, 27);
       assert.equal(deps.promises.listByShop(DEMO_SHOP_ID).length, 3);
       const second = seedDemoShop(deps);
       assert.equal(second.seeded, false);
-      assert.equal(deps.ledger.verify(DEMO_SHOP_ID).count, 15);
+      assert.equal(deps.ledger.verify(DEMO_SHOP_ID).count, 27);
+    } finally {
+      deps.db.close();
+    }
+  });
+
+  it("spreads today 08:00 to now and backfills the previous 6 days", () => {
+    const deps = seededDeps();
+    try {
+      const rows = deps.ledger.list(DEMO_SHOP_ID);
+      assert.equal(rows.length, 27);
+      // Seq order is chronological: never out of order, never future.
+      const times = rows.map((r) => Date.parse(r.created_at));
+      for (let i = 1; i < times.length; i++) assert.ok(times[i] >= times[i - 1], `row ${i} out of order`);
+      for (const t of times) assert.ok(t <= FIXED_NOW, "seeded entry in the future");
+      // Every entry sits inside its own Lagos day at/after opening time.
+      for (const r of rows) {
+        const day = lagosDay(Date.parse(r.created_at));
+        const minutes = (Date.parse(r.created_at) + 3600000) % 86400000 / 60000;
+        assert.ok(minutes >= 8 * 60, `${r.created_at} before opening`);
+        assert.ok(day <= lagosDay(FIXED_NOW), `${r.created_at} after today`);
+      }
+      const byDay = new Map();
+      for (const r of rows) {
+        const day = lagosDay(Date.parse(r.created_at));
+        byDay.set(day, (byDay.get(day) ?? 0) + 1);
+      }
+      const today = lagosDay(FIXED_NOW);
+      assert.equal(byDay.get(today), 15);
+      for (let d = 1; d <= 6; d++) assert.equal(byDay.get(addDays(today, -d)), 2);
+      // Today's window really spans the day: first call at 08:00, last at now.
+      const todayRows = rows.filter((r) => lagosDay(Date.parse(r.created_at)) === today);
+      assert.equal(todayRows[0].created_at, "2026-11-03T07:00:00.000Z");
+      assert.equal(Date.parse(todayRows[todayRows.length - 1].created_at), FIXED_NOW);
+    } finally {
+      deps.db.close();
+    }
+  });
+
+  it("keeps the same customers, amounts, today totals and debt examples", () => {
+    const deps = seededDeps();
+    try {
+      const rows = deps.ledger.list(DEMO_SHOP_ID);
+      const today = lagosDay(FIXED_NOW);
+      const todayRows = rows.filter((r) => lagosDay(Date.parse(r.created_at)) === today);
+      assert.deepEqual(
+        todayRows.map((r) => [r.type, r.amount_kobo, r.customer]),
+        [
+          ["restock", 52000000, "demo"], ["restock", 30000000, "demo"], ["restock", 1800000, "demo"],
+          ["sale", 11800000, "Mama Bisi"], ["payment", 10000000, "Mama Bisi"],
+          ["sale", 2700000, "Chinedu"], ["payment", 2700000, "Chinedu"],
+          ["sale", 6500000, "Aunty Ngozi"], ["payment", 1500000, "Aunty Ngozi"],
+          ["sale", 12000000, "Ada"], ["payment", 5000000, "Ada"],
+          ["payment", 2000000, "Ada"],
+          ["sale", 4500000, "Tunde"],
+          ["sale", 9000000, "Alhaji Musa"], ["payment", 4000000, "Alhaji Musa"],
+        ]
+      );
+      const sales = todayRows.filter((r) => r.type === "sale").reduce((t, r) => t + r.amount_kobo, 0);
+      const paid = todayRows.filter((r) => r.type === "payment").reduce((t, r) => t + r.amount_kobo, 0);
+      assert.equal(sales, 46500000);
+      assert.equal(paid, 25200000);
+      // No correction rows anywhere: the seed writes history, never fixes.
+      assert.ok(rows.every((r) => r.type !== "correction" && r.corrects_id === null));
+    } finally {
+      deps.db.close();
+    }
+  });
+
+  it("is deterministic in order for a fixed now", () => {
+    const a = seededDeps();
+    const b = seededDeps();
+    try {
+      assert.deepEqual(
+        a.ledger.list(DEMO_SHOP_ID).map((r) => r.created_at),
+        b.ledger.list(DEMO_SHOP_ID).map((r) => r.created_at)
+      );
+    } finally {
+      a.db.close();
+      b.db.close();
+    }
+  });
+
+  it("a pre-08:00 boot clamps today to now, never the future", () => {
+    // 06:30 Lagos: today's 08:00 window cannot exist yet.
+    const deps = seededDeps(Date.UTC(2026, 10, 3, 5, 30, 0));
+    try {
+      const rows = deps.ledger.list(DEMO_SHOP_ID);
+      assert.equal(rows.length, 27);
+      for (const r of rows) assert.ok(Date.parse(r.created_at) <= Date.UTC(2026, 10, 3, 5, 30, 0));
+      assert.equal(deps.ledger.verify(DEMO_SHOP_ID).ok, true);
+    } finally {
+      deps.db.close();
+    }
+  });
+
+  it("reseed clears stale visitor drafts and promises without new triggers", () => {
+    const deps = buildDeps(FAKE_ENV);
+    try {
+      // Leftover visitor state on an empty ledger: a pending correction
+      // draft (its target id would be recycled by the reseed) plus a stats
+      // row and a visitor promise.
+      const draft = deps.proposals.create({
+        shopId: DEMO_SHOP_ID,
+        envelope: { version: 1, entries: [], totals: null, flags: [], notes: [], correctionOf: 3, correctionReason: "visitor", assumptions: [] },
+        heard: "visitor fix",
+        question: null,
+      });
+      deps.secondOpinions.record({ proposalId: draft.id, agreed: "no", differingFields: ["amount"], latencyMs: 1 });
+      deps.promises.create({ shopId: DEMO_SHOP_ID, customer: "Visitor", amountKobo: 100, dueDate: lagosDay(FIXED_NOW) });
+      const out = seedDemoShop(deps, { now: FIXED_NOW });
+      assert.equal(out.seeded, true);
+      assert.equal(out.entries, 27);
+      assert.equal(deps.proposals.listByShop(DEMO_SHOP_ID).filter((p) => p.status === "pending").length, 0);
+      assert.equal(deps.promises.listByShop(DEMO_SHOP_ID).length, 3);
+      assert.equal(deps.secondOpinions.listByProposal(draft.id).length, 0);
+      assert.ok(deps.ledger.list(DEMO_SHOP_ID).every((r) => r.corrects_id === null));
     } finally {
       deps.db.close();
     }

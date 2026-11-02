@@ -267,9 +267,9 @@ describe("judge boot with only the main key (fake data)", () => {
     try {
       const seed = seedDemoShop(deps);
       assert.equal(seed.seeded, true);
-      assert.equal(seed.entries, 15);
-      assert.equal(deps.ledger.list("demo").length, 15);
-      assert.deepEqual(deps.ledger.verify("demo"), { ok: true, count: 15, shopId: "demo" });
+      assert.equal(seed.entries, 27);
+      assert.equal(deps.ledger.list("demo").length, 27);
+      assert.deepEqual(deps.ledger.verify("demo"), { ok: true, count: 27, shopId: "demo" });
     } finally {
       deps.db.close();
     }
