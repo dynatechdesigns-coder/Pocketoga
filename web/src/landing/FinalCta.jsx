@@ -1,4 +1,5 @@
 import { Button } from "../ui.jsx";
+import { DEMO_PRIVACY } from "../privacyNotes.js";
 import { hasImage } from "./images.js";
 import { Reveal } from "./motion.jsx";
 import { Container, Photo } from "./parts.jsx";
@@ -43,6 +44,9 @@ export default function FinalCta({ onDemo, onLogin }) {
                 Open my shop
               </Button>
             </div>
+            <p data-part="demo-privacy" className="max-w-[44ch] text-sm leading-relaxed text-white/90 [overflow-wrap:anywhere]">
+              {DEMO_PRIVACY}
+            </p>
           </div>
         </Reveal>
       </Container>

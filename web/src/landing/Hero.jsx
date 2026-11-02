@@ -3,6 +3,7 @@ import { Button, cx, rise } from "../ui.jsx";
 import { hasImage } from "./images.js";
 import { Container, IconTile, Photo, Pill } from "./parts.jsx";
 import { PhoneScreen, WebMoney } from "./WhatsAppWeb.jsx";
+import { DEMO_PRIVACY } from "../privacyNotes.js";
 import { CONTACT_LINE, CONTACT_LINK_TEXT, DEMO_BUTTON, EARLY_ACCESS_PILL, LOGIN_BUTTON, contactHref } from "./heroCopy.js";
 
 const TICKS = ["Works with voice notes", "Pidgin and English", "Nothing saved without your OK"];
@@ -46,6 +47,9 @@ export default function Hero({ onDemo, onLogin }) {
             <Button data-part="hero-login" variant="outline" size="lg" className="hover:-translate-y-0.5" onClick={onLogin}>
               {LOGIN_BUTTON}
             </Button>
+            <p data-part="demo-privacy" className="text-sm leading-relaxed text-muted [overflow-wrap:anywhere]">
+              {DEMO_PRIVACY}
+            </p>
             <p data-part="hero-contact" className="text-sm leading-relaxed text-muted [overflow-wrap:anywhere]">
               {CONTACT_LINE}{" "}
               {contact ? (

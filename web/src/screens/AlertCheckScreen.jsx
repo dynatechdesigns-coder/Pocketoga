@@ -7,6 +7,7 @@ import { canRetry, toWaitError, waitForProposal } from "../recordWait.js";
 import { READY_EVENT, getShopQueue, popReady } from "../shopQueue.js";
 import { ageText, formatKobo } from "../format.js";
 import AiDetails from "../AiDetails.jsx";
+import LimitNotice from "../LimitNotice.jsx";
 import { Button, Card, ErrorState, IconCircle, Pill, ScreenHeader, SectionTitle, Skeleton, cx, rise, useLoad } from "../ui.jsx";
 
 // Check a payment alert before handing over goods: pick or take a photo, wait
@@ -124,7 +125,7 @@ export default function AlertCheckScreen({ shop }) {
       if (controller.signal.aborted) return;
       const e = toWaitError(err);
       if (e.kind === "network") return queuePhoto(true);
-      setProblem({ message: e.message, retry: canRetry(e) });
+      setProblem({ message: e.message, retry: canRetry(e), limit: e.kind === "limit" });
       setPhase("idle");
     }
   }
@@ -177,7 +178,8 @@ export default function AlertCheckScreen({ shop }) {
       setProposal(null);
       setPhase("done");
     } catch (err) {
-      setProblem({ message: toWaitError(err).message });
+      const e = toWaitError(err);
+      setProblem({ message: e.message, limit: e.kind === "limit" });
     } finally {
       setBusy(null);
     }
@@ -252,7 +254,9 @@ export default function AlertCheckScreen({ shop }) {
         </p>
       )}
 
-      {problem && (
+      {problem?.limit && <LimitNotice message={problem.message} onOk={() => setProblem(null)} className="mb-4" />}
+
+      {problem && !problem.limit && (
         <Card data-part="alert-problem" edge="border-coral" className="mb-4 grid gap-3" role="alert">
           <p className="flex items-start gap-2 font-semibold">
             <AlertTriangle aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-coral-ink" /> {problem.message}

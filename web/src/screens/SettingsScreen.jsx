@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { KeyRound, LogOut } from "lucide-react";
 import FeedbackSection from "../FeedbackSection.jsx";
 import InstallRow, { InstallSteps } from "../InstallRow.jsx";
+import { DEMO_PRIVACY } from "../privacyNotes.js";
 import { shopInfo } from "../settings.js";
 import { Avatar, Button, Card, IconCircle, PeriodTabs, Pill, ScreenHeader, SectionTitle, setTheme, useDark } from "../ui.jsx";
 
@@ -59,6 +60,11 @@ export default function SettingsScreen({ shop, intent, onExit, onLogin }) {
             </div>
           </div>
           <p className="text-sm text-muted [overflow-wrap:anywhere]">{info.line}</p>
+          {info.kind === "demo" && (
+            <p data-part="demo-privacy" className="text-sm text-muted [overflow-wrap:anywhere]">
+              {DEMO_PRIVACY}
+            </p>
+          )}
         </Card>
 
         {info.openReal && (

@@ -39,7 +39,7 @@ export const canRetry = (err) => err instanceof WaitError && (err.kind === "time
 // Turns anything thrown while waiting into a WaitError.
 export function toWaitError(err) {
   if (err instanceof WaitError) return err;
-  if (err instanceof ApiError) return new WaitError(err.status === 0 ? "network" : "api", friendlyError(err));
+  if (err instanceof ApiError) return new WaitError(err.status === 0 ? "network" : err.status === 429 ? "limit" : "api", friendlyError(err));
   return new WaitError("unreadable");
 }
 

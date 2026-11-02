@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import LimitNotice from "../LimitNotice.jsx";
 import { ArrowLeft, Check, CloudOff, PenLine, Keyboard, Mic, RotateCcw, ScanSearch, Send, Square, X } from "lucide-react";
 import { getProposal, proposeAudio, proposeText } from "../api.js";
 import { OFFLINE_MESSAGE, SAVED_MESSAGE, newMeta } from "../offlineQueue.js";
@@ -307,7 +308,7 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
         await offline(true);
         return;
       }
-      setError({ message: e.message, retry: canRetry(e) });
+      setError({ message: e.message, retry: canRetry(e), limit: e.kind === "limit" });
     } finally {
       if (run.isCurrent()) {
         runs.current.end(run);
@@ -507,7 +508,9 @@ export default function RecordScreen({ shop, intent, origin, onBack, onSaved, on
         </Card>
       )}
 
-      {error && (
+      {error?.limit && <LimitNotice message={error.message} onOk={() => setError(null)} className="mb-4" />}
+
+      {error && !error.limit && (
         <Card data-part="record-error" className="mb-4 grid gap-3" role="alert">
           <p>{error.message}</p>
           {error.retry && retryRef.current && (

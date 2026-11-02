@@ -6,6 +6,7 @@
 // is plain JavaScript the web tests run under node.
 import { ApiError, friendlyError } from "./api.js";
 import { correctionError } from "./entryCorrection.js";
+import { LIMIT_RETRY_MS } from "./limits.js";
 
 export const MAX_TRIES = 5;
 export const SAVED_MESSAGE = "Saved. It will send when you are back online.";
@@ -103,6 +104,12 @@ export function createQueue({ store, send, onResult, isOnline = () => globalThis
       onResult?.(item, proposal);
     } catch (err) {
       if (!items.some((x) => x.id === item.id)) return; // cancelled meanwhile
+      // A limit (429) is not the entry's fault and not a failed try: it stays in
+      // Waiting to send with a plain line and is sent again later.
+      if (err instanceof ApiError && err.status === 429) {
+        await save({ ...item, status: "waiting", limit: true, error: null, nextAt: now() + LIMIT_RETRY_MS });
+        return;
+      }
       const tries = item.tries + 1;
       const network = isNetworkError(err) || err?.name === "AbortError";
       // A reply from the server is never hidden: a 4xx stops the item at once

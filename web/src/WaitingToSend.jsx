@@ -52,6 +52,11 @@ export default function WaitingToSend({ shopId }) {
                   {row.detail && <span className="text-sm [overflow-wrap:anywhere]">{row.detail}</span>}
                   <span className="text-sm text-muted">{row.recorded}</span>
                   <span className={row.stuck ? "text-sm font-bold text-coral-ink" : "text-sm font-semibold text-muted"}>{row.status}</span>
+                  {row.notice && (
+                    <span data-part="queued-limit" className="text-sm font-semibold [overflow-wrap:anywhere]">
+                      {row.notice}
+                    </span>
+                  )}
                 </div>
                 <button
                   type="button"

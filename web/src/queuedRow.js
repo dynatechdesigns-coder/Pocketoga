@@ -1,6 +1,7 @@
 // What one row of "Waiting to send" says, on separate lines: the item's name,
 // when it was recorded, and its status. Plain JavaScript so it is tested.
 import { correctionSummary } from "./entryCorrection.js";
+import { LIMIT_QUEUED_MESSAGE } from "./limits.js";
 import { manualSummary } from "./manualEntry.js";
 
 const NAMES = { text: "Typed note", audio: "Voice note", photo: "Alert photo", manual: "Entered by hand", correction: "Edit to an entry" };
@@ -16,6 +17,8 @@ export function queuedRow(item, timeLabel) {
     status: stuck ? "Needs you" : "Waiting",
     stuck,
     error: stuck ? item.error : null,
+    // Sent back by a limit: still waiting, with one calm line.
+    notice: !stuck && item.limit ? LIMIT_QUEUED_MESSAGE : null,
     cancelLabel: "Cancel this item",
     cancelHint: `${name} recorded ${timeLabel(item.spokenAt)}`,
   };

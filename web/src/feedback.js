@@ -2,13 +2,15 @@
 // Plain JavaScript so the web tests can run it under node. Feedback never goes
 // through the offline queue: offline, or on any error, the trader keeps what
 // they typed and sends it again by hand.
+import { FEEDBACK_LIMIT_MESSAGE, limitText } from "./limits.js";
+import { FEEDBACK_PRIVACY } from "./privacyNotes.js";
 import { FEEDBACK_AUDIO_MAX_SECONDS, FEEDBACK_TEXT_MAX, buildFeedbackRequest, parseFeedbackReply } from "./feedbackFormat.js";
 
 export { FEEDBACK_AUDIO_MAX_SECONDS, FEEDBACK_TEXT_MAX };
 
-export const PRIVACY_NOTE = "Please don't include phone numbers or real customer names. Voice is turned into text and the recording is deleted.";
+export const PRIVACY_NOTE = FEEDBACK_PRIVACY;
 export const OFFLINE_MESSAGE = "You are offline. Your feedback is still here. Send it when you are back online.";
-export const TOO_MANY_MESSAGE = "Too many sent. Try again later.";
+export const TOO_MANY_MESSAGE = FEEDBACK_LIMIT_MESSAGE; // when the server sends no sentence of its own
 export const NETWORK_MESSAGE = "Could not reach PocketOga. Your feedback is still here. Try again in a moment.";
 export const FAILED_MESSAGE = "Something went wrong and your feedback was not sent. It is still here. Try again in a moment.";
 export const THANKS = "Thank you";
@@ -28,7 +30,7 @@ export const clampText = (text) => String(text ?? "").slice(0, FEEDBACK_TEXT_MAX
 
 // --- State -------------------------------------------------------------------
 
-export const emptyFeedback = () => ({ rating: null, text: "", audio: null, switched: null, status: "idle", error: null, heard: null });
+export const emptyFeedback = () => ({ rating: null, text: "", audio: null, switched: null, status: "idle", error: null, limit: false, heard: null });
 
 // Exactly one of a typed message and a voice message is ever held. Adding one
 // drops the other and `switched` says which one will be sent ("voice" or
@@ -53,7 +55,9 @@ export function feedbackReducer(state, action) {
     case "sent":
       return { ...emptyFeedback(), status: "sent", heard: action.heard ?? null };
     case "failed":
-      return { ...state, status: "idle", error: action.message };
+      return { ...state, status: "idle", error: action.message, limit: !!action.limit };
+    case "dismiss":
+      return { ...state, error: null, limit: false };
     case "error":
       return { ...state, error: action.message };
     case "reset":
@@ -104,7 +108,7 @@ export const isPlainMessage = (m) => !!m && !TECHNICAL_WORDS.test(m) && !CODE_NA
 // a server fault say so in plain words.
 export function feedbackError(err) {
   const status = err?.status;
-  if (status === 429) return TOO_MANY_MESSAGE;
+  if (status === 429) return limitText(err, TOO_MANY_MESSAGE);
   if (status === 0) return NETWORK_MESSAGE;
   if (status >= 400 && status < 500) {
     const m = typeof err.message === "string" ? err.message.trim() : "";
@@ -135,6 +139,6 @@ export async function runSubmit(state, { online, toWav, send }) {
     const reply = await send(buildFeedbackRequest(input));
     return { type: "sent", heard: parseFeedbackReply(reply).heard };
   } catch (err) {
-    return { type: "failed", message: feedbackError(err) };
+    return { type: "failed", message: feedbackError(err), ...(err?.status === 429 ? { limit: true } : {}) };
   }
 }

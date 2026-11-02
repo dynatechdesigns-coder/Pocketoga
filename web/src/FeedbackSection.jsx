@@ -3,6 +3,7 @@ import { Check, ChevronDown, CloudOff, Mic, Send, Square, Star, Trash2, X } from
 import { sendFeedback } from "./api.js";
 import { CANCELLED_MESSAGE, CANCELLED_MS, createRunTracker } from "./cancelRun.js";
 import { connection, isOffline } from "./connection.js";
+import LimitNotice from "./LimitNotice.jsx";
 import { COLLAPSE_AFTER_MS, FEEDBACK_AUDIO_MAX_SECONDS, FEEDBACK_TEXT_MAX, MIC_BLOCKED_MESSAGE, MIC_EMPTY_MESSAGE, PRIVACY_NOTE, THANKS, counterText, emptyFeedback, feedbackReducer, messageState, runSubmit, validateFeedback } from "./feedback.js";
 import { createRecordTimer } from "./recordLimits.js";
 import { isEmptyRecording } from "./recordWait.js";
@@ -307,7 +308,9 @@ function FeedbackForm({ onDone, open }) {
         {PRIVACY_NOTE}
       </p>
 
-      {form.error && (
+      {form.error && form.limit && <LimitNotice message={form.error} onOk={() => dispatch({ type: "dismiss" })} />}
+
+      {form.error && !form.limit && (
         <p data-part="feedback-error" role="alert" className="rounded-2xl bg-slate px-4 py-3 font-bold [overflow-wrap:anywhere]">
           {form.error}
         </p>

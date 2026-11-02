@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ArrowLeft, MessageCircle } from "lucide-react";
 import { ApiError, login } from "../api.js";
 import { WHATSAPP_LINK } from "../config.js";
+import { EARLY_ACCESS_PRIVACY } from "../privacyNotes.js";
 import { loadLastShop, saveLastShop } from "../shop.js";
 import { Button, Card, Field, ThemeToggle, inputClass, rise } from "../ui.jsx";
 import { Container, Pill } from "../landing/parts.jsx";
@@ -125,6 +126,9 @@ export default function LoginScreen({ notice, onLoggedIn, onBack }) {
             <Button type="submit" variant="gradient" size="lg" disabled={!ready} calm>
               {busy ? "Checking…" : "Open my shop"}
             </Button>
+            <p data-part="early-access-privacy" className="text-sm text-muted [overflow-wrap:anywhere]">
+              {EARLY_ACCESS_PRIVACY}
+            </p>
           </Card>
 
           <Button as="a" variant="outline" size="lg" href={WHATSAPP_LINK} target="_blank" rel="noopener noreferrer">

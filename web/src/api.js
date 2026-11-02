@@ -14,6 +14,7 @@ export const DEMO_SHOP_ID = "demo";
 import { connection } from "./connection.js";
 import { buildManualRequest } from "./manualFormat.js";
 import { buildCorrectionRequest } from "./entryCorrection.js";
+import { limitText } from "./limits.js";
 import { csvPath } from "./monthlyCsv.js";
 import { notifyDataChanged } from "./refresh.js";
 
@@ -402,6 +403,8 @@ export function friendlyError(err) {
       return "This note is more than 30 minutes old. Please record it again.";
     case 413:
       return "That recording is too long. Keep it under 2 minutes.";
+    case 429:
+      return limitText(err);
     case 500:
     case 502:
     case 503:

@@ -207,9 +207,16 @@ describe("sending", () => {
     assert.deepEqual(calls[0].body, { audioBase64: "BASE64", audioFormat: "wav" });
   });
 
-  test("a 429 says exactly: Too many sent. Try again later.", async () => {
+  test("a 429 shows the server's own sentence, as a limit notice", async () => {
     const out = await F.runSubmit(form(), { online, toWav: null, send: fail(429, "slow down, 5 per hour") });
-    assert.deepEqual(out, { type: "failed", message: "Too many sent. Try again later." });
+    assert.deepEqual(out, { type: "failed", message: "Slow down, 5 per hour", limit: true });
+  });
+
+  test("a 429 with no usable sentence says: You've sent a few messages already. Please try again in an hour.", async () => {
+    for (const message of ["server error 429", "too_many_requests", ""]) {
+      const out = await F.runSubmit(form(), { online, toWav: null, send: fail(429, message) });
+      assert.deepEqual(out, { type: "failed", message: "You've sent a few messages already. Please try again in an hour.", limit: true });
+    }
   });
 
   test("a 400 shows the server's message when it is plain words", async () => {
@@ -300,10 +307,13 @@ describe("over the wire", () => {
     assert.deepEqual(JSON.parse(seen.init.body), { rating: 5, text: "Great" });
   });
 
-  test("a 429 reply reaches the form as the fixed sentence", async () => {
+  test("a 429 reply reaches the form as the server's sentence, or ours when it sends none", async () => {
     globalThis.fetch = async () => ({ ok: false, status: 429, json: async () => ({ error: "too many" }) });
-    const out = await F.runSubmit(form(), { online: () => true, toWav: null, send: (req) => sendFeedback(req) });
-    assert.deepEqual(out, { type: "failed", message: "Too many sent. Try again later." });
+    let out = await F.runSubmit(form(), { online: () => true, toWav: null, send: (req) => sendFeedback(req) });
+    assert.deepEqual(out, { type: "failed", message: "Too many", limit: true });
+    globalThis.fetch = async () => ({ ok: false, status: 429, json: async () => ({}) });
+    out = await F.runSubmit(form(), { online: () => true, toWav: null, send: (req) => sendFeedback(req) });
+    assert.deepEqual(out, { type: "failed", message: "You've sent a few messages already. Please try again in an hour.", limit: true });
   });
 
   test("no network reaches the form as a plain message", async () => {
@@ -367,7 +377,7 @@ describe("the compact card", () => {
   });
 
   test("the privacy line is always in the expanded form, word for word", () => {
-    assert.equal(F.PRIVACY_NOTE, "Please don't include phone numbers or real customer names. Voice is turned into text and the recording is deleted.");
+    assert.equal(F.PRIVACY_NOTE, "Please don't include real customer names, phone numbers or bank details. A voice message is turned into text and then deleted.");
     assert.doesNotMatch(section, /PRIVACY_NOTE\s*&&|\?\s*PRIVACY_NOTE/);
   });
 
