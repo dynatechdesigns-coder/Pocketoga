@@ -162,3 +162,15 @@ describe("renaming a label", () => {
     assert.match(debts, /data-part="rename-form"[^>]*className="grid min-w-0 gap-4"/);
   });
 });
+
+describe("debt line while a payment amount is missing", () => {
+  test("shows the waiting line instead of a final figure, and the figure again once fixed", async () => {
+    const { debtLines, DEBT_WAITING } = await import("../src/debtView.js");
+    const debts = [{ customer: "Ada", amountKobo: 500000, direction: "customer_owes" }];
+    const missing = { debts, entries: [{ type: "payment", customer: "Ada", amountKobo: null }] };
+    assert.equal(DEBT_WAITING, "Debt: waiting for the payment amount");
+    assert.deepEqual(debtLines(missing).map((d) => d.text), [DEBT_WAITING]);
+    const fixed = { debts, entries: [{ type: "payment", customer: "Ada", amountKobo: 200000 }] };
+    assert.match(debtLines(fixed)[0].text, /^Debt: Ada owes /);
+  });
+});

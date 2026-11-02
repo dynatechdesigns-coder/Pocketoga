@@ -222,7 +222,7 @@ export default function ConfirmCard({ proposal, shopId, onRerun, onUpdate, onFin
 
       {debts.map((d) => (
         <p
-          key={`${d.customer}-${d.amountKobo}`}
+          key={`${d.customer}-${d.amountKobo ?? "waiting"}`}
           data-part="debt-line"
           className="flex min-h-11 items-center gap-3 rounded-2xl border border-amber bg-amber-soft px-4 py-3 font-extrabold text-amber-ink [overflow-wrap:anywhere] [&_svg]:size-6 [&_svg]:shrink-0"
         >

@@ -9,10 +9,22 @@ export const UNNAMED_WAITING = "Customer";
 
 // proposal.debts[]: { customer, amountKobo, direction: "customer_owes" | "trader_owes" }
 // -> [{ customer, amountKobo, text }] with text "Debt: Customer 1 owes ₦20,000".
+export const DEBT_WAITING = "Debt: waiting for the payment amount";
+
+// Payment rows with no amount yet: the debt left is not a final figure until it is fixed.
+function paymentsMissingAmount(proposal) {
+  return (Array.isArray(proposal?.entries) ? proposal.entries : []).filter((e) => e?.type === "payment" && !Number.isInteger(e.amountKobo));
+}
+
 export function debtLines(proposal) {
   const out = [];
+  const missing = paymentsMissingAmount(proposal);
   for (const d of Array.isArray(proposal?.debts) ? proposal.debts : []) {
     if (!d || typeof d.customer !== "string" || !Number.isInteger(d.amountKobo) || d.amountKobo <= 0) continue;
+    if (missing.some((e) => typeof e.customer !== "string" || e.customer === d.customer)) {
+      if (!out.some((o) => o.text === DEBT_WAITING)) out.push({ customer: d.customer, amountKobo: null, text: DEBT_WAITING });
+      continue;
+    }
     const amount = formatKobo(d.amountKobo);
     const text = d.direction === "trader_owes" ? `Debt: you owe ${d.customer} ${amount}` : `Debt: ${d.customer} owes ${amount}`;
     out.push({ customer: d.customer, amountKobo: d.amountKobo, text });
