@@ -364,9 +364,10 @@ function correctionLine(proposal) {
     : `Fixes entry #${proposal.correctionOf}`;
 }
 
-// Stock movements and cost unknowns from the proposal's code-computed
-// effects ("Rice stock 10 → 8 bags", "Rice: cost unknown."). Display only:
-// a negative landing warns but never blocks — the trader decides.
+// Stock movements, cost unknowns and below-cost sales from the proposal's
+// code-computed effects ("Rice stock 10 → 8 bags", "Rice: cost unknown.",
+// "Sold below cost: ..."). Display only: a negative landing or a loss warns
+// but never blocks — the trader decides.
 function effectLines(proposal) {
   const out = [];
   for (const fx of proposal.effects ?? []) {
@@ -384,6 +385,14 @@ function effectLines(proposal) {
     }
     if (fx.costUnknown && typeof fx.stockItem === "string" && fx.stockItem) {
       out.push(`${escapeMd(fx.stockItem)}: cost unknown.`);
+    }
+    if (
+      fx.belowCost &&
+      Number.isInteger(fx.belowCost.costKobo) &&
+      Number.isInteger(fx.belowCost.priceKobo)
+    ) {
+      const diff = fx.belowCost.costKobo - fx.belowCost.priceKobo;
+      out.push(`Sold below cost: you bought this at ${formatKobo(fx.belowCost.costKobo)} and sold at ${formatKobo(fx.belowCost.priceKobo)}, a loss of ${formatKobo(diff)} each.`);
     }
   }
   return out;

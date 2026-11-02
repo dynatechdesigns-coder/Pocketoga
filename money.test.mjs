@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseNaira, nairaToKobo, decimalNairaToKobo, formatKobo, extractNairaAmounts } from "./money.mjs";
+import { parseNaira, nairaToKobo, decimalNairaToKobo, formatKobo, extractNairaAmounts, mergeSeparatedDigits } from "./money.mjs";
 
 describe("parseNaira (deterministic money parser)", () => {
   it("parses the required cases", () => {
@@ -73,6 +73,22 @@ describe("parseNaira (deterministic money parser)", () => {
     assert.deepEqual(extractNairaAmounts("forty-five hundred and 15k"), [4500, 15000]);
     assert.deepEqual(extractNairaAmounts("2 crates egg, 8 thousand 5 hundred each"), [2, 8500]);
     assert.deepEqual(extractNairaAmounts("no numbers here"), []);
+  });
+
+  it("mergeSeparatedDigits joins spaced digits only", () => {
+    assert.equal(mergeSeparatedDigits("6 3"), "63");
+    assert.equal(mergeSeparatedDigits("6 300"), "6300");
+    assert.equal(mergeSeparatedDigits("1 5"), "15");
+    assert.equal(mergeSeparatedDigits("15 000"), "15000");
+    assert.equal(mergeSeparatedDigits("Somebody buy rice 6 3 he never pay"), "Somebody buy rice 63 he never pay");
+    assert.equal(mergeSeparatedDigits("4000 2 bags"), "4000 2 bags");
+    assert.equal(mergeSeparatedDigits("rice 4000 3 crates"), "rice 4000 3 crates");
+    assert.equal(mergeSeparatedDigits("2 bags of rice"), "2 bags of rice");
+    assert.equal(mergeSeparatedDigits("15k"), "15k");
+    assert.equal(mergeSeparatedDigits("6,300"), "6,300");
+    assert.equal(mergeSeparatedDigits("0803 123 4567"), "0803 123 4567");
+    assert.equal(mergeSeparatedDigits(null), null);
+    assert.equal(mergeSeparatedDigits(undefined), undefined);
   });
 
   it("formatKobo prints naira for questions", () => {

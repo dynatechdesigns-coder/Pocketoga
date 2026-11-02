@@ -162,6 +162,7 @@ describe("example notes (mock model)", () => {
         stockUnit: "bag",
         negativeStock: false,
         costUnknown: false,
+        belowCost: null,
       });
       const card = renderProposalCard(p, { existing: ctx.ledger.list(SHOP), shopId: SHOP });
       assert.match(card.text, /10 bags of rice × ₦45,000 = \*₦450,000\* → Products/);
@@ -726,6 +727,82 @@ describe("products, cost and stock effects", () => {
       const out = await dispatch(ctx.deps, { url: "/products", headers: { "x-shop-id": SHOP } });
       assert.equal(out.json.products[0].stockOnHand, -3);
       assert.equal(out.json.products[0].lowStock, true);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("selling below a known cost warns but never blocks saving", async () => {
+    const ctx = setup();
+    try {
+      ctx.ledger.append({ shopId: SHOP, type: "restock", amountKobo: 9000000, customer: SHOP, item: "rice", quantity: 2, unit: "bag" });
+      const p = await proposeNote(
+        ctx,
+        "I sold 2 bags of rice to Ada, 80k",
+        reading("I sold 2 bags of rice to Ada, 80k", [saleEntry({ quantity: 2, amountNaira: 80000, amountPhrase: "80k" })])
+      );
+      assert.deepEqual(p.flags, []);
+      assert.deepEqual(p.effects[0].belowCost, { costKobo: 4500000, priceKobo: 4000000 });
+      const card = renderProposalCard(p, { existing: ctx.ledger.list(SHOP), shopId: SHOP });
+      assert.ok(card.text.includes("Sold below cost: you bought this at ₦45,000 and sold at ₦40,000, a loss of ₦5,000 each."), card.text);
+      assert.ok(card.buttons.some((b) => b.reply.title === "Save"), "Save stays enabled");
+      confirm(ctx, p.id);
+      assert.equal(ctx.ledger.verify(SHOP).ok, true);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("selling at cost warns nothing", async () => {
+    const ctx = setup();
+    try {
+      ctx.ledger.append({ shopId: SHOP, type: "restock", amountKobo: 9000000, customer: SHOP, item: "rice", quantity: 2, unit: "bag" });
+      const p = await proposeNote(
+        ctx,
+        "I sold 2 bags of rice to Ada, 90k",
+        reading("I sold 2 bags of rice to Ada, 90k", [saleEntry({ quantity: 2, amountNaira: 90000, amountPhrase: "90k" })])
+      );
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.effects[0].belowCost, null);
+      const card = renderProposalCard(p, { existing: ctx.ledger.list(SHOP), shopId: SHOP });
+      assert.ok(!card.text.includes("Sold below cost"), card.text);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("selling above cost warns nothing", async () => {
+    const ctx = setup();
+    try {
+      ctx.ledger.append({ shopId: SHOP, type: "restock", amountKobo: 9000000, customer: SHOP, item: "rice", quantity: 2, unit: "bag" });
+      const p = await proposeNote(
+        ctx,
+        "I sold 2 bags of rice to Ada, 100k",
+        reading("I sold 2 bags of rice to Ada, 100k", [saleEntry({ quantity: 2, amountNaira: 100000, amountPhrase: "100k" })])
+      );
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.effects[0].belowCost, null);
+      const card = renderProposalCard(p, { existing: ctx.ledger.list(SHOP), shopId: SHOP });
+      assert.ok(!card.text.includes("Sold below cost"), card.text);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("unknown cost keeps the existing message and never claims below cost", async () => {
+    const ctx = setup();
+    try {
+      const p = await proposeNote(
+        ctx,
+        "I sold 2 bags of rice to Ada, 80k",
+        reading("I sold 2 bags of rice to Ada, 80k", [saleEntry({ quantity: 2, amountNaira: 80000, amountPhrase: "80k" })])
+      );
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.effects[0].costUnknown, true);
+      assert.equal(p.effects[0].belowCost, null);
+      const card = renderProposalCard(p, { existing: [], shopId: SHOP });
+      assert.match(card.text, /rice: cost unknown\./);
+      assert.ok(!card.text.includes("Sold below cost"), card.text);
     } finally {
       teardown(ctx);
     }

@@ -11,6 +11,7 @@ import { ProductStore } from "./products.mjs";
 import { CustomerStore } from "./customers.mjs";
 import { AuthStore, DEMO_SHOP_ID } from "./auth.mjs";
 import { createMockModelClient } from "./model.mjs";
+import { SecondOpinionStore } from "./secondopinion.mjs";
 import {
   propose,
   confirmProposal,
@@ -319,6 +320,170 @@ describe("shorthand amounts", () => {
       assert.equal(fixed2.entries[0].amountKobo, 630000);
       confirm(ctx, SHOP_A, fixed2.id);
       assert.equal(ctx.ledger.list(SHOP_A)[1].amount_kobo, 630000);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("'6 3' joins into 63 and gives the same two-amount choice", async () => {
+    const ctx = setup();
+    try {
+      const mk = (heard, phrase) => createMockModelClient(async () => reading(heard, [{ type: "sale", customer: "Ada", item: "rice", quantity: null, unit: null, amountNaira: 63, amountPhrase: phrase, priceBasis: "total" }]));
+      const spaced = await propose(SHOP_A, "Somebody buy rice 6 3 he never pay", { ...voiceDeps(ctx), model: mk("Somebody buy rice 6 3 he never pay", "6 3") });
+      const plain = await propose(SHOP_A, "Somebody buy rice 63 he never pay", { ...voiceDeps(ctx), model: mk("Somebody buy rice 63 he never pay", "63") });
+      assert.deepEqual(spaced.entries[0].amountOptions, [6300, 630000]);
+      assert.equal(spaced.question, plain.question);
+      assert.match(spaced.question, /Reply 1 for .*₦63.*2 for .*₦6,300/);
+      assert.equal(spaced.heard, "Somebody buy rice 63 he never pay");
+      assert.throws(() => confirm(ctx, SHOP_A, spaced.id), /cannot confirm/);
+      assert.equal(ctx.ledger.list(SHOP_A).length, 0);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("'2 bags of rice' keeps its 2: no merge, no block", async () => {
+    const ctx = setup();
+    try {
+      const p = await propose(SHOP_A, "Somebody buy 2 bags of rice for 9k", {
+        ...voiceDeps(ctx),
+        model: createMockModelClient(async () => reading("Somebody buy 2 bags of rice for 9k", [{ type: "sale", customer: "Ada", item: "rice", quantity: 2, unit: "bag", amountNaira: 9000, amountPhrase: "9k", priceBasis: "total" }])),
+      });
+      assert.equal(p.heard, "Somebody buy 2 bags of rice for 9k");
+      assert.ok(!p.heard.includes("23"));
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.question, null);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("'15k' and '6,300' pass through unchanged", async () => {
+    const ctx = setup();
+    try {
+      const k = await propose(SHOP_A, "sold rice 15k", {
+        ...voiceDeps(ctx),
+        model: createMockModelClient(async () => reading("sold rice 15k", [{ type: "sale", customer: "Ada", item: "rice", quantity: null, unit: null, amountNaira: 15000, amountPhrase: "15k", priceBasis: "total" }])),
+      });
+      assert.equal(k.entries[0].amountOptions, null);
+      assert.deepEqual(k.flags, []);
+      assert.equal(k.question, null);
+      assert.equal(k.heard, "sold rice 15k");
+
+      const grouped = await propose(SHOP_A, "sold rice 6,300", {
+        ...voiceDeps(ctx),
+        model: createMockModelClient(async () => reading("sold rice 6,300", [{ type: "sale", customer: "Ada", item: "rice", quantity: null, unit: null, amountNaira: 6300, amountPhrase: "6,300", priceBasis: "total" }])),
+      });
+      assert.equal(grouped.entries[0].amountOptions, null);
+      assert.deepEqual(grouped.flags, []);
+      assert.equal(grouped.question, null);
+      assert.equal(grouped.heard, "sold rice 6,300");
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("the second-opinion re-read sees the joined digits too", async () => {
+    const ctx = setup();
+    try {
+      const seen = [];
+      const secondFetch = async (url, opts) => {
+        seen.push(JSON.parse(opts.body).messages[1].content);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ choices: [{ message: { content: JSON.stringify({ heard: "Somebody buy rice 63 he never pay", entries: [{ type: "sale", customer: "Ada", item: "rice", quantity: null, unit: null, amountNaira: 63, amountPhrase: "63", priceBasis: "total" }], totals: null, promise: null, question: null }) } }] }),
+          text: async () => "",
+        };
+      };
+      await propose(SHOP_A, "Somebody buy rice 6 3 he never pay", {
+        ...voiceDeps(ctx),
+        model: createMockModelClient(async () => reading("Somebody buy rice 6 3 he never pay", [{ type: "sale", customer: "Ada", item: "rice", quantity: null, unit: null, amountNaira: 63, amountPhrase: "6 3", priceBasis: "total" }])),
+        secondOpinions: new SecondOpinionStore(ctx.db),
+        secondOpinionFetch: secondFetch,
+        secondOpinionEnv: { BASETEN_API_KEY: "fake", BASETEN_MODEL: "fake-model" },
+      });
+      assert.ok(seen.length > 0);
+      assert.ok(seen[0].includes("63") && !seen[0].includes("6 3"), seen[0]);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("a spoken known name survives a blank model customer", async () => {
+    const ctx = setup();
+    try {
+      ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 2000000, customer: "John", item: "rice" });
+      const p = await propose(SHOP_A, "John paid 15k", {
+        ...voiceDeps(ctx),
+        model: createMockModelClient(async () => reading("John paid 15k", [{ type: "payment", customer: null, item: null, quantity: null, unit: null, amountNaira: 15000, amountPhrase: "15k", priceBasis: "total" }])),
+      });
+      assert.equal(p.entries[0].customer, "John");
+      assert.deepEqual(p.flags, []);
+      assert.ok(!p.assumptions.some((a) => a.includes("New customer")), p.assumptions.join("; "));
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("a spoken new name the second reading caught is adopted, not labelled", async () => {
+    const ctx = setup();
+    try {
+      const seen = [];
+      const secondFetch = async (url, opts) => {
+        seen.push(JSON.parse(opts.body).messages[1].content);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ choices: [{ message: { content: JSON.stringify({ heard: "John paid 15k", entries: [{ type: "payment", customer: "John", item: null, quantity: null, unit: null, amountNaira: 15000, amountPhrase: "15k", priceBasis: "total" }], totals: null, promise: null, question: null }) } }] }),
+          text: async () => "",
+        };
+      };
+      const p = await propose(SHOP_A, "John paid 15k", {
+        ...voiceDeps(ctx),
+        model: createMockModelClient(async () => reading("John paid 15k", [{ type: "payment", customer: null, item: null, quantity: null, unit: null, amountNaira: 15000, amountPhrase: "15k", priceBasis: "total" }])),
+        secondOpinions: new SecondOpinionStore(ctx.db),
+        secondOpinionFetch: secondFetch,
+        secondOpinionEnv: { BASETEN_API_KEY: "fake", BASETEN_MODEL: "fake-model" },
+      });
+      assert.ok(seen.length > 0);
+      assert.equal(p.entries[0].customer, "John");
+      assert.ok(p.assumptions.includes("New customer: John."), p.assumptions.join("; "));
+      assert.ok(!p.assumptions.some((a) => a.includes("Two readings differ: customer")), p.assumptions.join("; "));
+      assert.deepEqual(p.flags, []);
+      assert.equal(p.ai.secondOpinion.result, "differs");
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("two spoken names stay ambiguous and keep the automatic label", async () => {
+    const ctx = setup();
+    try {
+      ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 2000000, customer: "John", item: "rice" });
+      ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 1000000, customer: "Musa", item: "beans" });
+      const p = await propose(SHOP_A, "John paid 5k for Musa", {
+        ...voiceDeps(ctx),
+        model: createMockModelClient(async () => reading("John paid 5k for Musa", [{ type: "payment", customer: null, item: null, quantity: null, unit: null, amountNaira: 5000, amountPhrase: "5k", priceBasis: "total" }])),
+      });
+      assert.equal(p.entries[0].customer, "Customer 1");
+      assert.deepEqual(p.flags, []);
+      assert.ok(!p.assumptions.some((a) => a.includes("taken as")), p.assumptions.join("; "));
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("a voice transcript name survives a blank model customer", async () => {
+    const ctx = setup();
+    try {
+      ctx.ledger.append({ shopId: SHOP_A, type: "sale", amountKobo: 2000000, customer: "John", item: "rice" });
+      const p = await propose(SHOP_A, { audioBase64: "RkFLRS1BVURJTw==", audioFormat: "wav" }, {
+        ...voiceDeps(ctx),
+        model: createMockModelClient(async () => reading("John paid 15k", [{ type: "payment", customer: null, item: null, quantity: null, unit: null, amountNaira: 15000, amountPhrase: "15k", priceBasis: "total" }])),
+      });
+      assert.equal(p.entries[0].customer, "John");
+      assert.deepEqual(p.flags, []);
     } finally {
       teardown(ctx);
     }

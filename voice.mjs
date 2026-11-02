@@ -3,8 +3,8 @@
 // ledger. Uses fake data in tests; never touches real trader data.
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
-import { parseNaira, formatKobo, extractNairaAmounts, decimalNairaToKobo, SHORTHAND_THRESHOLD_NAIRA } from "./money.mjs";
-import { nextAutoCustomerLabel } from "./customers.mjs";
+import { parseNaira, formatKobo, extractNairaAmounts, decimalNairaToKobo, mergeSeparatedDigits, SHORTHAND_THRESHOLD_NAIRA } from "./money.mjs";
+import { nextAutoCustomerLabel, isAutoCustomerLabel } from "./customers.mjs";
 import { escapeMd, customerOwedKobo, MISMATCH_PREFIX, BAD_AUDIO_JSON, TEXT_FAILED, MODEL_RETRY_FAILED, AUDIO_EMPTY_RETRY } from "./messages.mjs";
 import { resolvePromiseDate } from "./promises.mjs";
 import { fetchSecondReading, compareReadings, SECOND_OPINION_TIMEOUT_MS, resolveSecondOpinionWaitMs, SECOND_CHECK_UNAVAILABLE, SECOND_CHECK_CREDIT, NORMALISED_AMOUNT } from "./secondopinion.mjs";
@@ -135,7 +135,9 @@ function pickExpenseCategory(raw) {
 // question). A model/phrase mismatch is soft: the model's figure records with
 // a "Tap Fix" assumption, never a block.
 function checkLeg(naira, phrase, label, flags, notes, required = false, assumptions = null) {
-  const cleanPhrase = cleanText(phrase);
+  // Separated spoken digits ("6 3") join into the single number meant ("63")
+  // before the phrase is cross-checked or matched by the shorthand choice.
+  const cleanPhrase = mergeSeparatedDigits(cleanText(phrase));
   if (naira === null || naira === undefined) {
     return { naira: null, kobo: null, phrase: cleanPhrase };
   }
@@ -600,6 +602,41 @@ function matchCustomerName(heardRaw, mc, flags, questioned, assumptions) {
   return { action: "ask", name: heard };
 }
 
+// Distinct known customers mentioned in the heard text (whole words,
+// case-insensitive). Automatic labels are code-assigned, never spoken, so
+// they never count; a name inside a generic "woman in <Name>" description
+// does not count either.
+function mentionedCustomers(heard, names) {
+  const found = new Map();
+  const text = String(heard ?? "");
+  for (const raw of names ?? []) {
+    if (typeof raw !== "string" || !raw.trim() || isAutoCustomerLabel(raw)) continue;
+    const re = new RegExp(`\\b${raw.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi");
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      if (/(woman|man|girl|boy|lady|guy|person|people|customer|trader)\s+in\s+$/i.test(text.slice(0, m.index))) continue;
+      const key = normalizeName(raw);
+      if (key && !found.has(key)) found.set(key, raw.trim());
+      if (m.index === re.lastIndex) re.lastIndex++;
+    }
+  }
+  return [...found.values()];
+}
+
+// A name the trader said but the model left blank ("John paid 15k" read
+// with no customer): one distinct known customer mentioned in the note
+// takes every nameless sale/payment entry, silently — nothing was assumed.
+// Two or more mentioned stays ambiguous and keeps the automatic label; a
+// guess would be worse than "Customer N".
+function recoverCustomerFromHeard(entries, heard, candidates) {
+  const mentions = mentionedCustomers(heard, candidates);
+  if (mentions.length !== 1) return;
+  for (const e of entries) {
+    if ((e.type !== "sale" && e.type !== "payment") || e.customer) continue;
+    e.customer = mentions[0];
+  }
+}
+
 // Customer matching for sale/payment entries: rewrites each customer to the
 // matched stored spelling and records soft assumption lines. Restock
 // suppliers and expense payees are not debt customers and pass untouched.
@@ -666,9 +703,10 @@ export const ENTRY_DESTINATIONS = { sale: "Sales", payment: "Debts", restock: "P
 
 // Per-entry effects, computed by code from the shop's own rows and catalog:
 // the destination view, the stock movement (running across entries, so two
-// lines for one product chain correctly), and whether a sale's cost is
-// unknown (no trader price and no purchase history). Empty without rows,
-// so callers without a ledger simply show no effect lines.
+// lines for one product chain correctly), whether a sale's cost is unknown
+// (no trader price and no purchase history), and whether a sale's unit price
+// sits below its known unit cost. Empty without rows, so callers without a
+// ledger simply show no effect lines.
 export function computeEffects(entries, { rows = null, catalog = null } = {}) {
   if (!Array.isArray(entries) || entries.length === 0 || !rows) return [];
   const levels = new Map(stockLevels(rows));
@@ -686,6 +724,7 @@ export function computeEffects(entries, { rows = null, catalog = null } = {}) {
       stockUnit: null,
       negativeStock: false,
       costUnknown: false,
+      belowCost: null,
     };
     if ((e.type !== "sale" && e.type !== "restock") || !e.item || !Number.isInteger(e.quantity)) return effect;
     const before = levels.get(productKey(e.item, e.unit)) ?? 0;
@@ -698,7 +737,20 @@ export function computeEffects(entries, { rows = null, catalog = null } = {}) {
     effect.negativeStock = after < 0;
     if (e.type === "sale") {
       const b = basis.get(costBasisKey(e.item, e.unit));
-      effect.costUnknown = traderCosts.get(costBasisKey(e.item, e.unit)) == null && (!b || b.qty <= 0);
+      const traderCost = traderCosts.get(costBasisKey(e.item, e.unit));
+      effect.costUnknown = traderCost == null && (!b || b.qty <= 0);
+      // Known unit cost vs unit selling price, whole kobo throughout: warn
+      // when the sale loses money, never block. Uneven per-unit splits
+      // compare exact totals and round only for display.
+      const unitCost = traderCost ?? (b && b.qty > 0 ? Math.round(b.kobo / b.qty) : null);
+      if (
+        unitCost !== null &&
+        Number.isInteger(e.amountKobo) &&
+        e.quantity > 0 &&
+        e.amountKobo < unitCost * e.quantity
+      ) {
+        effect.belowCost = { costKobo: unitCost, priceKobo: Math.round(e.amountKobo / e.quantity) };
+      }
     }
     return effect;
   });
@@ -1273,6 +1325,13 @@ export function checkModelOutput(
   resolveUnclearBasis(entries, catalog, assumptions);
   entries = dedupeEntries(entries, assumptions);
   if (allocateLabels) {
+    // A spoken name the model left blank belongs on the entry: recover it
+    // from the note before any automatic label goes on.
+    const known = [...(existingCustomers ?? [])];
+    for (const r of ledgerRows ?? []) {
+      if (typeof r?.customer === "string" && r.customer.trim()) known.push(r.customer);
+    }
+    recoverCustomerFromHeard(entries, heard, known);
     assignAutoCustomerLabels(entries, shopId, { db, ledgerRows, assumptions });
   }
   const promise = checkPromise(raw?.promise, notes, now);
@@ -1493,7 +1552,8 @@ export async function propose(
   // per attempt plus one network retry; failed is soft, late is silent.
   let secondFetchPromise = null;
   if (!secondOff && norm.kind === "text" && norm.text.trim()) {
-    secondFetchPromise = fetchSecondReading(norm.text, {
+    // Same joined digits the main path uses, so both models read one number.
+    secondFetchPromise = fetchSecondReading(mergeSeparatedDigits(norm.text), {
       apiKey: secondApiKey,
       model: secondModel,
       fetchFn: secondOpinionFetch,
@@ -1531,6 +1591,9 @@ export async function propose(
   }
   firstModelMs = Date.now() - tModel;
   if (timings) timings[modelKey] = firstModelMs;
+  // Spoken digits transcribed apart ("6 3") are one number ("63") for every
+  // check below and for the second-opinion re-read, which sees this text.
+  if (raw && typeof raw.heard === "string") raw.heard = mergeSeparatedDigits(raw.heard);
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     const c = confusedEnvelope(fallbackHeard, source, modelTruncated);
     c.envelope.ai = aiNow();
@@ -1575,6 +1638,7 @@ export async function propose(
       retryModelMs = Date.now() - tRetry;
       if (raw2 && typeof raw2 === "object" && !Array.isArray(raw2)) {
         raw = raw2;
+        if (typeof raw.heard === "string") raw.heard = mergeSeparatedDigits(raw.heard);
         secondFetchPromise = null;
         ({ heard, question, questionedNames, ...envelope } = checkModelOutput(raw, shopId, {
           existingCustomers: customersOf(ledgerRows),
@@ -1669,6 +1733,29 @@ export async function propose(
         second = { agreed: "yes", differingFields: compared.differingFields, latencyMs };
       } else {
         second = { agreed: "no", differingFields: compared.differingFields, latencyMs };
+        // A blank primary customer the second reading caught: adopt the
+        // spoken name (verified against the heard text, unambiguous in the
+        // note) instead of an automatic label. Stats keep the disagreement;
+        // the stale customer line is dropped because nothing is left to ask.
+        let adoptedCustomer = false;
+        const secondEntries = Array.isArray(reading.entries) ? reading.entries : [];
+        const knownNames = [...customersOf(ledgerRows ?? [])];
+        for (let i = 0; i < envelope.entries.length; i++) {
+          const e = envelope.entries[i];
+          const s = secondEntries[i];
+          if (!e || !s || e.type !== s.type) continue;
+          if (!isAutoCustomerLabel(e.customer)) continue;
+          if (typeof s.customer !== "string" || !s.customer.trim() || isAutoCustomerLabel(s.customer)) continue;
+          const mentions = mentionedCustomers(heard, [...knownNames, s.customer]);
+          if (mentions.length !== 1 || normalizeName(mentions[0]) !== normalizeName(s.customer)) continue;
+          const stored = knownNames.find((k) => typeof k === "string" && normalizeName(k) === normalizeName(s.customer));
+          e.customer = stored && stored.trim() ? stored.trim() : s.customer.trim();
+          if (!stored) {
+            const line = `New customer: ${e.customer}.`;
+            if (!envelope.assumptions.includes(line)) envelope.assumptions.push(line);
+          }
+          adoptedCustomer = true;
+        }
         if (compared.line) {
           if (compared.shownField === "amount") {
             if (!finalQuestion) {
@@ -1684,6 +1771,8 @@ export async function propose(
                 : envelope.flags.map((f, j) => (j === i ? merged : f));
               finalQuestion = merged;
             }
+          } else if (compared.shownField === "customer" && adoptedCustomer) {
+            // Filled from the reading itself: nothing left to ask.
           } else if (!envelope.assumptions.includes(compared.line)) {
             envelope.assumptions.push(compared.line);
           }

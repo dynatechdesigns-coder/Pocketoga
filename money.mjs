@@ -190,6 +190,24 @@ export function extractNairaAmounts(text) {
 // number is spoken ("sixty-three naira", "6,300").
 export const SHORTHAND_THRESHOLD_NAIRA = 200;
 
+// Spoken digits transcribed with spaces ("6 3", "6 300", "1 5", "15 000")
+// are the single number they sound like (63, 6300, 15, 15000). Join a digit
+// run only when the first group is a single digit or every later group is
+// exactly 3 digits; a left number with 3+ digits is already complete, so
+// "4000 2 bags" and "rice 4000 3 crates" stay untouched. Merging runs before
+// any amount check, so the magnitude check, the shorthand choice and the
+// second-opinion re-read all see one number. Digit-word boundaries never
+// merge ("2 bags of rice" keeps its "2"), and "15k" / "6,300" have no
+// separated digits to join. Null-safe.
+export function mergeSeparatedDigits(text) {
+  if (text === null || text === undefined) return text;
+  return String(text).replace(/\d+(?: +\d+)+/g, (run) => {
+    const groups = run.split(/ +/);
+    if (groups[0].length !== 1 && !groups.slice(1).every((g) => g.length === 3)) return run;
+    return groups.join("");
+  });
+}
+
 // Whole naira from the model to integer kobo. Rejects anything else.
 export function nairaToKobo(n) {
   if (typeof n !== "number" || !Number.isInteger(n)) {
