@@ -21,17 +21,29 @@ describe("the three rows", () => {
     assert.deepEqual(rows.map((r) => `${r.label}: ${r.text}`), [
       "Heard: whisper-large (1.2 s)",
       "Understood: llama-4 (2.1 s)",
-      "Second opinion: gemma-3 (agreed)",
+      "Second opinion: agreed",
     ]);
+    assert.equal(rows.at(-1).sub, "gemma-3"); // the model name goes on a smaller second line
     assert.ok(rows.every((r) => !r.warn));
   });
 
+  test("one row 'Heard and understood' when the same model did both; the times are added", () => {
+    const same = { ai: { heard: { model: "muse-spark-1.2", ms: 700 }, understood: { model: "muse-spark-1.2", ms: 1000 }, secondOpinion: { model: null, ms: 0, result: "off" } } };
+    const rows = A.aiRows(same);
+    assert.deepEqual(rows.map((r) => `${r.label}: ${r.text}`), ["Heard and understood: muse-spark-1.2 (1.7 s)"]);
+  });
+
+  test("two rows only when the models differ", () => {
+    assert.deepEqual(A.aiRows(full()).filter((r) => r.key !== "second").map((r) => r.key), ["heard", "understood"]);
+  });
+
   test("the second opinion result in plain words", () => {
-    const words = (result) => A.aiRows(full(result)).at(-1).text;
-    assert.equal(words("agreed"), "gemma-3 (agreed)");
-    assert.equal(words("differs"), "gemma-3 (differs, please check)");
-    assert.equal(words("not ready"), "gemma-3 (not ready)");
-    assert.equal(words("off"), "gemma-3 (off)");
+    const second = (result) => A.aiRows(full(result)).find((r) => r.key === "second");
+    assert.equal(second("agreed").text, "agreed");
+    assert.equal(second("differs").text, "differs, please check");
+    assert.equal(second("not ready").text, "didn't answer in time (nothing was blocked)");
+    assert.equal(second("off"), undefined); // off: the row is hidden
+    for (const r of ["agreed", "differs", "not ready"]) assert.equal(second(r).sub, "gemma-3");
   });
 
   test("seconds come from whole milliseconds", () => {
@@ -46,8 +58,8 @@ describe("the three rows", () => {
 describe("a missing field hides its row", () => {
   test("a typed note has no Heard row; no model means no row", () => {
     const ai = { heard: { model: null, ms: 0 }, understood: { model: "llama-4", ms: 2000 }, secondOpinion: { model: null, ms: 0, result: "off" } };
-    assert.deepEqual(A.aiRows({ ai }).map((r) => r.key), ["understood", "second"]);
-    assert.equal(A.aiRows({ ai }).at(-1).text, "off");
+    assert.deepEqual(A.aiRows({ ai }).map((r) => r.key), ["understood"]);
+    assert.equal(A.aiRows({ ai }).at(-1).key, "understood"); // a second opinion that is off is not shown
   });
 
   test("no ai block, or nothing usable in it, means no section", () => {
@@ -92,5 +104,12 @@ describe("the card", () => {
     assert.match(panel, /<details [^>]*min-w-0/);
     assert.match(panel, /summary className="flex min-h-11/);
     assert.match(panel, /flex min-w-0 flex-wrap gap-x-1\.5[^"]*\[overflow-wrap:anywhere\]/);
+  });
+});
+
+describe("the smaller model line", () => {
+  test("the panel prints the second line smaller and wrapped, inside the row", () => {
+    assert.match(panel, /data-part=\{`ai-\$\{r\.key\}-model`\}/);
+    assert.match(panel, /basis-full text-xs/);
   });
 });

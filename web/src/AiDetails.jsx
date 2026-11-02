@@ -21,6 +21,11 @@ export default function AiDetails({ proposal, photo = false, className }) {
           >
             <dt className={r.warn ? "" : "text-muted"}>{r.label}:</dt>
             <dd className="min-w-0">{r.text}</dd>
+            {r.sub && (
+              <dd data-part={`ai-${r.key}-model`} className={cx("basis-full text-xs", r.warn ? "font-semibold" : "text-muted")}>
+                {r.sub}
+              </dd>
+            )}
           </div>
         ))}
       </dl>

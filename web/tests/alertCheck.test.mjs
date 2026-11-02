@@ -361,7 +361,8 @@ describe("How the AI did this on the photo result card", () => {
 
   test("a second opinion that ran still shows; a difference is flagged", () => {
     const rows = aiRows(photoAi({ secondOpinion: { model: "gemma-3", ms: 800, result: "differs" } }), { photo: true });
-    assert.equal(rows.at(-1).text, "gemma-3 (differs, please check)");
+    assert.equal(rows.at(-1).text, "differs, please check");
+    assert.equal(rows.at(-1).sub, "gemma-3");
     assert.equal(rows.at(-1).warn, true);
   });
 

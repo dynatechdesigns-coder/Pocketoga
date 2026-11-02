@@ -6,11 +6,11 @@
 
 export const AI_TITLE = "How the AI did this";
 
+// The second opinion in plain words. "off" has no words: the row is hidden.
 const RESULT_WORDS = {
   agreed: "agreed",
   differs: "differs, please check",
-  "not ready": "not ready",
-  off: "off",
+  "not ready": "didn't answer in time (nothing was blocked)",
 };
 
 // 1234 -> "1.2 s", 40 -> "0.0 s"... whole tenths from integer maths.
@@ -32,27 +32,30 @@ const withTime = (model, ms) => {
   return secs ? `${model} (${secs})` : model;
 };
 
-// -> [{ key, label, text, warn }] in the order Heard, Understood, Second opinion.
+// -> [{ key, label, text, sub, warn }] in the order Heard, Understood, Second
+// opinion. `sub` is a smaller second line (the second opinion's model name).
+// When the same model heard and understood a voice note it is ONE row, with the
+// two times added together.
 export function aiRows(proposal, { photo = false } = {}) {
   const ai = proposal?.ai;
   if (!ai || typeof ai !== "object") return [];
   const rows = [];
-  // A photo has no spoken part: its reading is the "understood" step.
-  const steps = photo ? [["understood", "Read the photo"]] : [["heard", "Heard"], ["understood", "Understood"]];
-  for (const [key, label] of steps) {
-    const model = modelName(ai[key]?.model);
-    if (model) rows.push({ key, label, text: withTime(model, ai[key].ms), warn: false });
+  const heard = modelName(ai.heard?.model);
+  const understood = modelName(ai.understood?.model);
+  if (photo) {
+    // A photo has no spoken part: its reading is the "understood" step.
+    if (understood) rows.push({ key: "understood", label: "Read the photo", text: withTime(understood, ai.understood.ms), sub: null, warn: false });
+  } else if (heard && heard === understood) {
+    const ms = [ai.heard.ms, ai.understood.ms].every(Number.isInteger) ? ai.heard.ms + ai.understood.ms : undefined;
+    rows.push({ key: "heard", label: "Heard and understood", text: withTime(heard, ms), sub: null, warn: false });
+  } else {
+    if (heard) rows.push({ key: "heard", label: "Heard", text: withTime(heard, ai.heard.ms), sub: null, warn: false });
+    if (understood) rows.push({ key: "understood", label: "Understood", text: withTime(understood, ai.understood.ms), sub: null, warn: false });
   }
   const second = ai.secondOpinion;
   const result = RESULT_WORDS[second?.result];
-  if (result && !(photo && second.result === "off")) {
-    const model = modelName(second.model);
-    rows.push({
-      key: "second",
-      label: "Second opinion",
-      text: model ? `${model} (${result})` : result,
-      warn: second.result === "differs",
-    });
+  if (result) {
+    rows.push({ key: "second", label: "Second opinion", text: result, sub: modelName(second.model), warn: second.result === "differs" });
   }
   return rows;
 }
