@@ -576,10 +576,28 @@ describe("safe logging (fake data, silenced sink)", () => {
   it("startup env lines name variables, never values", () => {
     const fakeEnv = { META_API_KEY: "", BASETEN_API_KEY: "baseten-secret", BASETEN_MODEL: "" };
     const out = startupEnvLines(fakeEnv).join("\n");
-    assert.ok(out.includes("META_API_KEY"), out);
-    assert.ok(out.includes("BASETEN_API_KEY/BASETEN_MODEL"), out);
+    assert.ok(out.includes("model reads: off (no META_API_KEY)"), out);
+    assert.ok(out.includes("second opinion: off (no BASETEN_MODEL)"), out);
+    assert.ok(out.includes("whatsapp: off (no WHATSAPP_ALLOWED_NUMBERS)"), out);
+    assert.ok(out.includes("feedback forward: off (no FEEDBACK_WEBHOOK_URL)"), out);
+    assert.ok(out.includes("daily caps: on (demo 40, shop 200, service 1500)"), out);
     assert.ok(!out.includes("baseten-secret"), out);
-    assert.deepEqual(startupEnvLines({ META_API_KEY: "k", BASETEN_API_KEY: "b", BASETEN_MODEL: "m" }), []);
+    const fullEnv = {
+      META_API_KEY: "meta-secret-key-999",
+      BASETEN_API_KEY: "baseten-secret-key-999",
+      BASETEN_MODEL: "m",
+      WHATSAPP_ALLOWED_NUMBERS: "2348012345678",
+      WHATSAPP_TOKEN: "wa-token-secret-999",
+      FEEDBACK_WEBHOOK_URL: "https://owner.example/hook",
+    };
+    const full = startupEnvLines(fullEnv);
+    assert.ok(full.some((l) => l.startsWith("model reads: on")), full.join("\n"));
+    assert.ok(full.some((l) => l === "second opinion: on (Baseten m)"), full.join("\n"));
+    assert.ok(full.some((l) => l === "whatsapp: on"), full.join("\n"));
+    assert.ok(full.some((l) => l === "feedback forward: on"), full.join("\n"));
+    for (const secret of ["meta-secret-key-999", "baseten-secret-key-999", "2348012345678", "wa-token-secret-999", "owner.example"]) {
+      assert.ok(!full.join("\n").includes(secret), full.join("\n"));
+    }
     assert.equal(typeof ffmpegAvailable(), "boolean");
   });
 

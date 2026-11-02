@@ -57,6 +57,14 @@ export function formatRequestLog({ method, path, status, ms, shop = null, rid = 
   return line;
 }
 
+// One finished model call, always logged (host logs, not just dev): which
+// kind, which model id, the outcome, how long it took, and the request id.
+// Metadata only — never message text, transcripts, audio, phone numbers or
+// keys. Status is one of ok, failed, timeout, skipped.
+export function formatModelCallLog({ kind, model, status, ms, rid }) {
+  return `model-call kind=${kind} model=${model ?? "none"} status=${status} ms=${ms} rid=${rid}`;
+}
+
 // One failed model call: which kind, which provider, the provider HTTP
 // status, and the classified reason. Logged always, not just in dev, so a
 // dead voice/photo path is visible in host logs.
@@ -67,14 +75,26 @@ export function formatModelLog({ kind, provider, status = null, reason, attempts
   return line;
 }
 
-// Start-up lines naming variables, never values. META_API_KEY is required;
-// the Baseten pair is optional and only gets a note when incomplete.
+// Start-up feature lines: which paid features are on or off and why.
+// Names only, never values — model ids and cap budgets are not secrets.
+// The Meta key is the only required variable; everything else degrades.
 export function startupEnvLines(env = process.env) {
+  const e = env ?? {};
   const lines = [];
-  if (!env.META_API_KEY) lines.push("warning: META_API_KEY is not set; text, audio and photo reads will fail");
-  if (!env.BASETEN_API_KEY || !env.BASETEN_MODEL) {
-    lines.push("note: BASETEN_API_KEY/BASETEN_MODEL not set; second opinion disabled");
-  }
+  if (e.META_API_KEY) lines.push("model reads: on (muse-spark-1.3 text, muse-spark-1.2 audio)");
+  else lines.push("model reads: off (no META_API_KEY)");
+  if (e.BASETEN_API_KEY && e.BASETEN_MODEL) lines.push(`second opinion: on (Baseten ${e.BASETEN_MODEL})`);
+  else if (!e.BASETEN_API_KEY) lines.push("second opinion: off (no BASETEN_API_KEY)");
+  else lines.push("second opinion: off (no BASETEN_MODEL)");
+  if (e.WHATSAPP_ALLOWED_NUMBERS) lines.push("whatsapp: on");
+  else lines.push("whatsapp: off (no WHATSAPP_ALLOWED_NUMBERS)");
+  if (e.FEEDBACK_WEBHOOK_URL) lines.push("feedback forward: on");
+  else lines.push("feedback forward: off (no FEEDBACK_WEBHOOK_URL)");
+  const num = (value, fallback) => {
+    const n = Number(value);
+    return Number.isInteger(n) && n > 0 ? n : fallback;
+  };
+  lines.push(`daily caps: on (demo ${num(e.DAILY_CAP_DEMO, 40)}, shop ${num(e.DAILY_CAP_SHOP, 200)}, service ${num(e.DAILY_CAP_SERVICE, 1500)})`);
   return lines;
 }
 

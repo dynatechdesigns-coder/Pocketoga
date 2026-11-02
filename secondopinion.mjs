@@ -17,8 +17,9 @@
 // Both sides only touch the import inside function bodies, after both
 // modules initialize, so the cycle is safe.
 import { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
 import { parseModelJson, fetchWithRetry, MODEL_TEMPERATURE, MODEL_SEED } from "./model.mjs";
-import { formatModelLog, failureReason, logLine } from "./log.mjs";
+import { formatModelLog, formatModelCallLog, failureReason, logLine } from "./log.mjs";
 import { formatKobo } from "./money.mjs";
 import { resolvePromiseDate } from "./promises.mjs";
 import { checkModelOutput } from "./voice.mjs";
@@ -149,10 +150,14 @@ function logSecondAttempt({ status, finish, empty, reasoning, output, fail, atte
 // Exported so propose() can start the fetch in parallel with classification.
 export async function fetchSecondReading(heardText, { apiKey, model, fetchFn, timeoutMs = SECOND_OPINION_TIMEOUT_MS }) {
   const start = Date.now();
+  // Request id for the host-log line below. Random hex only, never content.
+  const rid = randomUUID().replace(/-/g, "").slice(0, 8);
+  const callLine = (status) => logLine(formatModelCallLog({ kind: "second-opinion", model, status, ms: Date.now() - start, rid }));
   const info = { status: "error", finish: "none", empty: true, reasoning: "n/a", output: "n/a", fail: "none", attempts: "n/a" };
   const failed = () => {
     info.attempts = fetchCalls;
     logSecondAttempt({ ...info, ms: Date.now() - start });
+    callLine(info.fail === "timeout" ? "timeout" : "failed");
     // Always on (not just POCKETOGA_TIMING): the failure kind is what the
     // host logs need. info.fail keeps its stats values; the log classifies
     // separately so the stats contract never changes.
@@ -211,6 +216,7 @@ export async function fetchSecondReading(heardText, { apiKey, model, fetchFn, ti
     if (!reading || typeof reading !== "object" || Array.isArray(reading)) return failed();
     info.attempts = fetchCalls;
     logSecondAttempt({ ...info, ms: Date.now() - start });
+    callLine("ok");
     return { reading, latencyMs: Date.now() - start, failure: null };
   } catch (err) {
     info.fail = err?.name === "TimeoutError" ? "timeout" : "error";
@@ -398,7 +404,12 @@ export async function runSecondOpinion({
   const quiet = { agreed: "no_second_opinion", differingFields: [], latencyMs: 0, line: null, shownField: null };
   const apiKey = env?.BASETEN_API_KEY;
   const model = env?.BASETEN_MODEL;
-  if (!apiKey || !model) return quiet;
+  // No keys means no call was even attempted: one skipped line in the host
+  // logs (model id when the name is set, never the key), then quiet.
+  if (!apiKey || !model) {
+    logLine(formatModelCallLog({ kind: "second-opinion", model: model ?? null, status: "skipped", ms: 0, rid: "none" }));
+    return quiet;
+  }
   if (typeof heardText !== "string" || !heardText.trim() || heardText.trim() === "(no transcript)") return quiet;
   const { reading, latencyMs } = await fetchSecondReading(heardText, { apiKey, model, fetchFn, timeoutMs });
   if (!reading) return { ...quiet, latencyMs };

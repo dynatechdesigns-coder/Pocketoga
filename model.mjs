@@ -21,7 +21,8 @@
 // Images use the OpenAI-compatible image_url part on the 1.3 checkpoint
 // (dev.meta.ai/docs/image-understanding):
 //   { type: "image_url", image_url: { url: "data:image/jpeg;base64,..." } }
-import { formatModelLog, failureReason, logLine } from "./log.mjs";
+import { randomUUID } from "node:crypto";
+import { formatModelLog, formatModelCallLog, failureReason, logLine } from "./log.mjs";
 
 export const META_BASE_URL = "https://api.meta.ai/v1";
 export const TEXT_MODEL = "muse-spark-1.3";
@@ -171,6 +172,10 @@ export function parseModelJson(content) {
 // carrying the finish reason so the caller can retry length cutoffs.
 async function callOnce({ baseUrl, model, fetchFn, timeoutMs, userContent, kind, apiKey, prompt, maxTokens, retry }) {
   const t0 = Date.now();
+  // One id per call for correlating the log line below. Random hex only —
+  // never a key, token or message fragment.
+  const rid = randomUUID().replace(/-/g, "").slice(0, 8);
+  const callLine = (status) => logLine(formatModelCallLog({ kind, model, status, ms: Date.now() - t0, rid }));
   let res;
   try {
     res = await fetchWithRetry(
@@ -196,8 +201,9 @@ async function callOnce({ baseUrl, model, fetchFn, timeoutMs, userContent, kind,
     );
   } catch (err) {
     logModelCall({ kind, retry, attempts: "n/a", status: "error", finish: "none", input: "n/a", output: "n/a", reasoning: "n/a", contentChars: 0, ok: false, ms: Date.now() - t0 });
-    // Always on (not just POCKETOGA_TIMING): a dead voice/photo path must be
-    // visible in host logs. Numbers and labels only, never bodies or keys.
+    // Always on (not just POCKETOGA_TIMING): every call lands one metadata
+    // line in the host logs. Labels and numbers only, never bodies or keys.
+    callLine(err?.name === "TimeoutError" ? "timeout" : "failed");
     logLine(formatModelLog({ kind, provider: "Meta", reason: failureReason({ err }), ms: Date.now() - t0 }));
     throw apiError(`model API request failed: ${err.message}`);
   }
@@ -205,6 +211,7 @@ async function callOnce({ baseUrl, model, fetchFn, timeoutMs, userContent, kind,
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     logModelCall({ kind, retry, attempts, status: res.status, finish: "none", input: "n/a", output: "n/a", reasoning: "n/a", contentChars: 0, ok: false, ms: Date.now() - t0 });
+    callLine("failed");
     logLine(formatModelLog({ kind, provider: "Meta", status: res.status, reason: failureReason({ status: res.status }), attempts, ms: Date.now() - t0 }));
     throw apiError(`model API error ${res.status}: ${body.slice(0, 300)}`);
   }
@@ -227,11 +234,13 @@ async function callOnce({ baseUrl, model, fetchFn, timeoutMs, userContent, kind,
   try {
     const out = parseModelJson(content);
     logModelCall({ ...info, ok: true });
+    callLine("ok");
     return out;
   } catch (err) {
     logModelCall({ ...info, ok: false });
     // Unparseable output degrades to a confused card downstream; log the
     // failure here while the provider status is still at hand.
+    callLine("failed");
     logLine(formatModelLog({ kind, provider: "Meta", status: res.status, reason: failureReason({ status: res.status }), attempts, ms: Date.now() - t0 }));
     throw Object.assign(err, { finish: choice.finish_reason ?? null });
   }

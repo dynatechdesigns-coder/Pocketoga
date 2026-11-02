@@ -6,6 +6,24 @@ Backend: Node built-ins only (`node:http`, `node:sqlite`, `node:crypto`, `node:t
 
 Run locally: `node server.mjs` (backend on `PORT`, default 3000); `cd web && npm run dev` for the app (`/api` proxies to the backend). Tests: `npm test`.
 
+## Run it yourself (judges)
+
+Use your own Meta API key. The server starts and the demo shop works with only that key set — Baseten, WhatsApp and feedback settings are optional and never crash the boot. Daily call caps (demo 40, per-shop 200, service 1500 a day) protect your key against runaway use.
+
+1. Clone and install:
+   `git clone <this-repo-url> pocketoga`
+   `cd pocketoga`
+2. Build the web app (needs Node 22+):
+   `cd web && npm install && npm run build && cd ..`
+3. Copy the settings file and add your key:
+   `cp .env.example .env.local` (Windows: `copy .env.example .env.local`; if the example file is missing, create `.env.local` yourself with one line: `META_API_KEY=your-key-here`)
+   Open `.env.local` in a text editor and set `META_API_KEY` to your key. The model names already have defaults (`muse-spark-1.3` for text and photos, `muse-spark-1.2` for voice) — you do not need to set them.
+   Optional, all safe to leave blank: `BASETEN_API_KEY` + `BASETEN_MODEL` (second-opinion re-read), `WHATSAPP_*` (WhatsApp bot), `FEEDBACK_WEBHOOK_URL` + `FEEDBACK_WEBHOOK_SECRET` (owner inbox), `DAILY_CAP_DEMO` / `DAILY_CAP_SHOP` / `DAILY_CAP_SERVICE` (cap budgets).
+4. Start the server (it reads `.env.local` automatically):
+   `node server.mjs`
+   The start-up lines list which features are on, for example `second opinion: off (no BASETEN_API_KEY)`. Key values are never printed.
+5. Open `http://localhost:3000` and tap "Try the demo shop". No login needed; the demo reseeds itself with fake entries.
+
 ## Deploy
 
 One Docker web service on the Render free plan serves the API, the WhatsApp webhook and the built web app on a single origin — no CORS, one public URL.

@@ -11,6 +11,8 @@ import { fetchSecondReading, compareReadings, SECOND_OPINION_TIMEOUT_MS, SECOND_
 import { stockLevels, productKey } from "./products.mjs";
 import { allocatedSales } from "./debts.mjs";
 import { costBasisByProduct, costBasisKey } from "./profit.mjs";
+import { TEXT_MODEL, AUDIO_MODEL } from "./model.mjs";
+import { formatModelCallLog, logLine } from "./log.mjs";
 
 export const PROPOSAL_TTL_MS = 30 * 60 * 1000;
 // Deprecated gate: the second opinion used to run only for flagged notes
@@ -102,6 +104,7 @@ export function toProposal(row) {
     correctionOf: env.correctionOf ?? null,
     correctionReason: env.correctionReason ?? null,
     correctionScope: env.correctionScope ?? null,
+    ai: env.ai ?? null,
     photoCheck: env.photoCheck ?? null,
     effects: env.effects ?? [],
     source: row.source ?? null,
@@ -1395,6 +1398,27 @@ function confusedEnvelope(heard, kind, modelFailed = false, message = null) {
   return { envelope: { version: 1, entries: [], totals: null, flags: [msg], notes: [], assumptions: [] }, heard, question: msg };
 }
 
+// The "ai" run block every proposal carries (metadata only, never text):
+// which model transcribed (voice notes only), which model understood, and
+// the second opinion's model, time and outcome. No-model paths (form,
+// manual, explicit corrections) and legacy rows carry the off-shape.
+function aiOff() {
+  return {
+    heard: { model: null, ms: 0 },
+    understood: { model: null, ms: 0 },
+    secondOpinion: { model: null, ms: 0, result: "off" },
+  };
+}
+
+// Second-opinion outcome for the ai block: agreed (readings match), differs
+// (a shown or stats-only difference), not ready (late, failed or dropped),
+// off (no store or no keys, so no check ran).
+function secondAiResult(secondOff, secondModel, second) {
+  if (secondOff) return { model: null, ms: 0, result: "off" };
+  const result = second.agreed === "yes" ? "agreed" : second.agreed === "no" ? "differs" : "not ready";
+  return { model: secondModel ?? null, ms: Number.isInteger(second.latencyMs) ? second.latencyMs : 0, result };
+}
+
 // --- Proposal operations ---------------------------------------------------
 
 // Customer names from already-read rows (same rule as shopCustomers,
@@ -1443,6 +1467,26 @@ export async function propose(
   const secondApiKey = secondOpinionEnv?.BASETEN_API_KEY;
   const secondModel = secondOpinionEnv?.BASETEN_MODEL;
   const secondOff = !secondOpinions || !secondApiKey || !secondModel;
+  // A skipped check still gets its host-log line (metadata only), so every
+  // run is accounted for in the server log.
+  if (secondOff) {
+    logLine(formatModelCallLog({ kind: "second-opinion", model: secondModel ?? null, status: "skipped", ms: 0, rid: "none" }));
+  }
+  // The ai block for this run, assembled from the timings below. Voice
+  // notes transcribe and understand in one audio-model call (plus one
+  // silent retry on empty); text notes only understand.
+  let firstModelMs = 0;
+  let retryModelMs = 0;
+  let second = { agreed: "no_second_opinion", differingFields: [], latencyMs: 0, outcome: null };
+  const aiNow = () => {
+    const heard =
+      norm.kind === "audio" ? { model: AUDIO_MODEL, ms: firstModelMs } : { model: null, ms: 0 };
+    const understood =
+      norm.kind === "audio"
+        ? { model: AUDIO_MODEL, ms: firstModelMs + retryModelMs }
+        : { model: TEXT_MODEL, ms: firstModelMs };
+    return { heard, understood, secondOpinion: secondAiResult(secondOff, secondModel, second) };
+  };
   // Text: start the second fetch NOW, in parallel with the main model call
   // below (same input text). Voice must wait for the transcript and starts
   // after the primary (see below), in parallel with checks. Hard 4 s cap,
@@ -1485,9 +1529,11 @@ export async function propose(
     else if (!isBadJson(err)) throw err; // transport/API errors propagate; nothing stored
     raw = null;
   }
-  if (timings) timings[modelKey] = Date.now() - tModel;
+  firstModelMs = Date.now() - tModel;
+  if (timings) timings[modelKey] = firstModelMs;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     const c = confusedEnvelope(fallbackHeard, source, modelTruncated);
+    c.envelope.ai = aiNow();
     const confused = proposals.create({ shopId, envelope: c.envelope, heard: c.heard, question: c.question, occurredAt: happenedAt, source });
     if (secondOpinions) {
       secondOpinions.record({ proposalId: confused.id, agreed: "no_second_opinion", differingFields: [], latencyMs: 0 });
@@ -1523,8 +1569,10 @@ export async function propose(
     // Empty audio result: one silent retry with the same input before
     // telling the trader. A stale second-opinion fetch (if any) is dropped
     // and restarted from the final transcript below. Text notes never retry.
+    const tRetry = Date.now();
     try {
       const raw2 = await model.complete({ audio: norm.audio, ...(cleanHint ? { hint: cleanHint } : null), ...contextArg });
+      retryModelMs = Date.now() - tRetry;
       if (raw2 && typeof raw2 === "object" && !Array.isArray(raw2)) {
         raw = raw2;
         secondFetchPromise = null;
@@ -1539,11 +1587,13 @@ export async function propose(
       }
     } catch {
       // Keep the first empty result.
+      retryModelMs = Date.now() - tRetry;
     }
   }
   if (norm.kind === "audio" && envelope.entries.length === 0) {
     const retryHeard = heard !== "(no transcript)" ? heard : fallbackHeard;
     const c = confusedEnvelope(retryHeard, source, false, AUDIO_EMPTY_RETRY);
+    c.envelope.ai = aiNow();
     const confused = proposals.create({ shopId, envelope: c.envelope, heard: c.heard, question: c.question, occurredAt: happenedAt, source });
     if (secondOpinions) {
       secondOpinions.record({ proposalId: confused.id, agreed: "no_second_opinion", differingFields: [], latencyMs: 0 });
@@ -1572,7 +1622,6 @@ export async function propose(
   // are never touched. Late or failed adds the soft "second check not
   // available" with Save enabled. Never throws.
   let finalQuestion = question;
-  let second = { agreed: "no_second_opinion", differingFields: [], latencyMs: 0, outcome: null };
   if (secondOpinions && secondFetchPromise) {
     // At most SECOND_OPINION_LATE_MS past the primary reading: a late
     // second opinion is recorded and dropped, never shown to the trader.
@@ -1641,6 +1690,7 @@ export async function propose(
       }
     }
   }
+  envelope.ai = aiNow();
   const row = proposals.create({
     shopId,
     envelope,
@@ -1790,6 +1840,7 @@ function storeCheckedProposal(shopId, { entries, heard, occurredAt, source }, { 
   if (timings) timings.checksMs = Date.now() - tChecks;
   envelope.hint = null;
   envelope.hintNote = null;
+  envelope.ai = aiOff();
   const row = proposals.create({
     shopId,
     envelope, heard: checkedHeard, question, occurredAt: happenedAt,
@@ -2041,6 +2092,9 @@ function correctionEnvelope(entry, target, reason, { flags = [], question = null
     correctionOf: target.id,
     correctionReason: reason,
     correctionScope: scope,
+    // Explicit-value corrections run no model call; the text path below
+    // overwrites understood with its measured run.
+    ai: aiOff(),
     assumptions: [],
   };
 }
@@ -2115,7 +2169,9 @@ export async function proposeCorrectionFromText(shopId, entryId, text, { proposa
   if (!shopId || typeof shopId !== "string") throw voiceError(400, "shopId is required");
   if (!text || typeof text !== "string" || !text.trim()) throw voiceError(400, "correction text is required");
   const target = resolveCorrectionTarget(ledger, shopId, entryId);
+  const tModel = Date.now();
   const raw = await model.complete({ text: text.trim() });
+  const modelMs = Date.now() - tModel;
   const checked = checkModelOutput(raw, shopId, { existingCustomers: shopCustomers(ledger, shopId), allocateLabels: false });
   if (checked.entries.length === 0) {
     throw voiceError(400, "I no hear any entry to correct — abeg talk am again.");
@@ -2139,9 +2195,11 @@ export async function proposeCorrectionFromText(shopId, entryId, text, { proposa
     eachKobo: null,
   };
   const cleanReason = checkCorrectionReason(reason ?? checked.heard);
+  const envelope = correctionEnvelope(entry, target, cleanReason, { flags: checked.flags, notes: checked.notes });
+  envelope.ai = { ...aiOff(), understood: { model: TEXT_MODEL, ms: modelMs } };
   const row = proposals.create({
     shopId,
-    envelope: correctionEnvelope(entry, target, cleanReason, { flags: checked.flags, notes: checked.notes }),
+    envelope,
     heard: checked.heard,
     question: checked.question,
     source: "text",
@@ -2405,6 +2463,7 @@ export function applyShorthandFix(proposalId, shopId, pick, { proposals, ledger 
       correctionOf: prior.correctionOf ?? null,
       correctionReason: prior.correctionReason ?? null,
       correctionScope: prior.correctionScope ?? null,
+      ai: prior.ai ?? null,
     },
     heard: checked.heard,
     question: checked.question,
@@ -2448,7 +2507,7 @@ export async function fixProposal(proposalId, shopId, correctionText, { proposal
   }
   if (timings) timings.classifyMs = Date.now() - tClassify;
   const stamp = new Date().toISOString();
-  const priorCorrection = { correctionOf: prior.correctionOf ?? null, correctionReason: prior.correctionReason ?? null, correctionScope: prior.correctionScope ?? null };
+  const priorCorrection = { correctionOf: prior.correctionOf ?? null, correctionReason: prior.correctionReason ?? null, correctionScope: prior.correctionScope ?? null, ai: prior.ai ?? null };
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     const msg = "I no understand the correction — abeg talk am again.";
     const envelope = {

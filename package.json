@@ -2,7 +2,7 @@
   "name": "pocketoga",
   "type": "module",
   "scripts": {
-    "test": "node --test ledger.test.mjs money.test.mjs voice.test.mjs whatsapp.test.mjs messages.test.mjs debts.test.mjs server.test.mjs products.test.mjs customers.test.mjs corrections.test.mjs secondopinion.test.mjs profit.test.mjs photos.test.mjs auth.test.mjs entries.test.mjs model.test.mjs summary.test.mjs deploy.test.mjs shelf-spike.test.mjs offline.test.mjs feedback.test.mjs modelcaps.test.mjs labels.test.mjs reports.test.mjs"
+    "test": "node --test ledger.test.mjs money.test.mjs voice.test.mjs whatsapp.test.mjs messages.test.mjs debts.test.mjs server.test.mjs products.test.mjs customers.test.mjs corrections.test.mjs secondopinion.test.mjs profit.test.mjs photos.test.mjs auth.test.mjs entries.test.mjs model.test.mjs summary.test.mjs deploy.test.mjs shelf-spike.test.mjs offline.test.mjs feedback.test.mjs modelcaps.test.mjs labels.test.mjs reports.test.mjs airuns.test.mjs"
   },
   "devDependencies": {
     "sharp": "^0.35.5"

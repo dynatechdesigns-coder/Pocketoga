@@ -39,6 +39,7 @@ import {
   runSummaryTick,
 } from "./whatsapp.mjs";
 import { seedDemoShop } from "./demo-seed.mjs";
+import { loadEnvFile } from "./envfile.mjs";
 import { backupNow, restoreIfMissing } from "./backup.mjs";
 import { formatRequestLog, startupEnvLines, ffmpegAvailable, logLine } from "./log.mjs";
 
@@ -1115,6 +1116,14 @@ export function buildDeps(env = process.env) {
 const invokedAsMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (invokedAsMain) {
   const env = process.env;
+  // Judges run from a checkout: .env.local (copied from .env.example) loads
+  // first, real environment values always win. Count only, never values.
+  try {
+    const loaded = loadEnvFile(".env.local", env);
+    logLine(loaded.loaded > 0 ? `env file: loaded .env.local (${loaded.loaded} vars)` : "env file: no .env.local found (using environment)");
+  } catch (err) {
+    logLine(`env file: unreadable .env.local (${err?.code ?? "error"}); using environment`);
+  }
   // Start-up checks first, so a missing key or binary is visible even when
   // boot later fails. Names only, never values.
   for (const line of startupEnvLines(env)) logLine(line);

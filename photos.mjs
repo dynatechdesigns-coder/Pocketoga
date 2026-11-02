@@ -10,6 +10,7 @@
 // ledger). Photo types today: payment_alert (screenshot or SMS), unknown.
 import { DatabaseSync } from "node:sqlite";
 import { voiceError, namesSimilar, toProposal, resolveOccurredAt } from "./voice.mjs";
+import { TEXT_MODEL } from "./model.mjs";
 import { parseNaira, formatKobo } from "./money.mjs";
 import { allocatedSales, customerDebts, lagosDay, daysBetween } from "./debts.mjs";
 
@@ -279,9 +280,19 @@ export async function proposePhotoCheck(shopId, input, { proposals, model, ledge
   const photo = checkPhotoInput(input);
   const happenedAt =
     resolveOccurredAt(occurredAt ?? input?.occurred_at, now) ?? new Date(now).toISOString();
+  // The ai block for a photo run: nothing is transcribed, the photo model
+  // understands, and no second opinion ever runs on photos.
+  const photoAi = (ms) => ({
+    heard: { model: null, ms: 0 },
+    understood: { model: TEXT_MODEL, ms },
+    secondOpinion: { model: null, ms: 0, result: "off" },
+  });
   let raw;
+  let modelMs = 0;
   try {
+    const tModel = Date.now();
     raw = await model.complete({ image: { data: photo.data, format: photo.mime }, system: PHOTO_SYSTEM_PROMPT });
+    modelMs = Date.now() - tModel;
   } catch (err) {
     if (!isBadJson(err)) throw err; // transport/API errors propagate; nothing stored
     raw = null;
@@ -297,6 +308,7 @@ export async function proposePhotoCheck(shopId, input, { proposals, model, ledge
         notes: [],
         promise: null,
         photoCheck: { photoType: "unknown", fields: null, warnings: [], matchedCustomer: null },
+        ai: photoAi(modelMs),
       },
       heard: "(photo)",
       question: CONFUSED_PHOTO_FLAG,
@@ -315,6 +327,7 @@ export async function proposePhotoCheck(shopId, input, { proposals, model, ledge
         notes: [],
         promise: null,
         photoCheck: { photoType: "unknown", fields: null, warnings: [], matchedCustomer: null },
+        ai: photoAi(modelMs),
       },
       heard: "(photo)",
       question: UNKNOWN_PHOTO_FLAG,
@@ -338,6 +351,7 @@ export async function proposePhotoCheck(shopId, input, { proposals, model, ledge
       notes: [],
       promise: null,
       photoCheck: { photoType: "payment_alert", fields, warnings, matchedCustomer },
+      ai: photoAi(modelMs),
     },
     heard: "(photo)",
     question: null,
