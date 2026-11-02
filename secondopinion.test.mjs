@@ -14,6 +14,7 @@ import { renderProposalCard } from "./messages.mjs";
 import {
   BASETEN_BASE_URL,
   SECOND_OPINION_TIMEOUT_MS,
+  SECOND_OPINION_LATE_MS,
   SECOND_OPINION_MAX_TOKENS,
   SECOND_OPINION_SYSTEM_PROMPT,
   SECOND_CHECK_UNAVAILABLE,
@@ -22,6 +23,7 @@ import {
   SecondOpinionStore,
   runSecondOpinion,
   fetchSecondReading,
+  resolveSecondOpinionWaitMs,
 } from "./secondopinion.mjs";
 
 const SHOP = "shop-a";
@@ -771,11 +773,11 @@ describe("second-opinion cap and parallel", () => {
     }
   });
 
-  it("a valid-but-slow second reading past 1 s is recorded late and never shown", async () => {
+  it("a valid second reading inside 3 s is compared and may flag", async () => {
     const ctx = setup();
     try {
-      // Disagreeing reading after 1500 ms: Baseten's own 4 s cap would
-      // allow it, but the voice path only waits 1 s past the primary.
+      // Disagreeing reading after 1500 ms: inside the 3 s wait, so the
+      // amount disagreement is compared and asked, entries untouched.
       const slow = async () => {
         await new Promise((r) => setTimeout(r, 1500));
         return basetenOk({
@@ -790,17 +792,85 @@ describe("second-opinion cap and parallel", () => {
       const t0 = Date.now();
       const { proposal } = await proposeWithSecond(ctx, PRIMARY, PRIMARY, { fetchFn: slow });
       const elapsed = Date.now() - t0;
-      assert.ok(elapsed >= 1000 && elapsed < 2500, `cut off near 1 s, took ${elapsed}ms`);
+      assert.ok(elapsed >= 1400 && elapsed < 3500, `waited for the reading, took ${elapsed}ms`);
+      assert.equal(proposal.flags.length, 1);
+      assert.ok(proposal.question.includes("Two readings differ"), proposal.question);
+      assert.deepEqual(proposal.entries, EXPECTED_ENTRIES);
+      assert.equal(proposal.ai.secondOpinion.result, "differs");
+      const row = statsRow(ctx, proposal.id);
+      assert.equal(row.agreed, "no");
+      assert.deepEqual(JSON.parse(row.differing_fields), ["amount"]);
+      assert.equal(row.outcome, null);
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("a valid second reading past 3 s is recorded late and never shown", async () => {
+    const ctx = setup();
+    try {
+      // Disagreeing reading after 3500 ms: inside Baseten's own 4 s cap,
+      // but past the 3 s wait, so it is dropped silently like before.
+      const slow = async () => {
+        await new Promise((r) => setTimeout(r, 3500));
+        return basetenOk({
+          heard: PRIMARY.heard,
+          entries: [
+            { type: "sale", customer: "Ada", item: "rice", unit: "bag", quantity: 2, amountNaira: 25000, amountPhrase: "25k", priceBasis: "total" },
+            PRIMARY.entries[1],
+          ],
+          totals: null, promise: null, question: null,
+        });
+      };
+      const t0 = Date.now();
+      const { proposal } = await proposeWithSecond(ctx, PRIMARY, PRIMARY, { fetchFn: slow });
+      const elapsed = Date.now() - t0;
+      assert.ok(elapsed >= 2900 && elapsed < 5000, `cut off near 3 s, took ${elapsed}ms`);
       assert.deepEqual(proposal.flags, []);
       assert.equal(proposal.question, null);
       assert.ok(!proposal.assumptions.some((a) => a.includes("Two readings differ")), proposal.assumptions.join("; "));
       assert.ok(!proposal.assumptions.includes(SECOND_CHECK_UNAVAILABLE), "late shows nothing");
       assert.deepEqual(proposal.entries, EXPECTED_ENTRIES);
+      assert.equal(proposal.ai.secondOpinion.result, "not ready");
       const card = renderProposalCard(proposal, { existing: [], shopId: SHOP });
       assert.ok(card.buttons.some((b) => b.reply.title === "Save"), "Save enabled when late");
       const row = statsRow(ctx, proposal.id);
       assert.equal(row.agreed, "no_second_opinion");
       assert.equal(row.outcome, "late");
+    } finally {
+      teardown(ctx);
+    }
+  });
+
+  it("SECOND_OPINION_WAIT_MS overrides the wait; bad values fall back to 3 s", async () => {
+    assert.equal(SECOND_OPINION_LATE_MS, 3000);
+    assert.equal(resolveSecondOpinionWaitMs({}), 3000);
+    assert.equal(resolveSecondOpinionWaitMs(undefined), 3000);
+    assert.equal(resolveSecondOpinionWaitMs({ SECOND_OPINION_WAIT_MS: "150" }), 150);
+    assert.equal(resolveSecondOpinionWaitMs({ SECOND_OPINION_WAIT_MS: "2500.9" }), 2500);
+    for (const bad of ["soon", "-5", "", "Infinity"]) {
+      assert.equal(resolveSecondOpinionWaitMs({ SECOND_OPINION_WAIT_MS: bad }), 3000, bad);
+    }
+    const ctx = setup();
+    try {
+      // A 50 ms wait drops even a fast reading: late, silent, main answer fine.
+      const slow = async () => {
+        await new Promise((r) => setTimeout(r, 1500));
+        return basetenOk(PRIMARY);
+      };
+      const t0 = Date.now();
+      const { proposal } = await proposeWithSecond(ctx, PRIMARY, PRIMARY, {
+        fetchFn: slow,
+        env: { ...FAKE_ENV, SECOND_OPINION_WAIT_MS: "50" },
+      });
+      assert.ok(Date.now() - t0 < 1000, "override shortened the wait");
+      assert.deepEqual(proposal.flags, []);
+      assert.equal(statsRow(ctx, proposal.id).outcome, "late");
+      // A bad value behaves like no value: the instant reading is compared.
+      const { proposal: compared } = await proposeWithSecond(ctx, PRIMARY, PRIMARY, {
+        env: { ...FAKE_ENV, SECOND_OPINION_WAIT_MS: "soon" },
+      });
+      assert.equal(statsRow(ctx, compared.id).agreed, "yes");
     } finally {
       teardown(ctx);
     }

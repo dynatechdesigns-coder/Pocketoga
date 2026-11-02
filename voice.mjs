@@ -7,7 +7,7 @@ import { parseNaira, formatKobo, extractNairaAmounts, decimalNairaToKobo, SHORTH
 import { nextAutoCustomerLabel } from "./customers.mjs";
 import { escapeMd, customerOwedKobo, MISMATCH_PREFIX, BAD_AUDIO_JSON, TEXT_FAILED, MODEL_RETRY_FAILED, AUDIO_EMPTY_RETRY } from "./messages.mjs";
 import { resolvePromiseDate } from "./promises.mjs";
-import { fetchSecondReading, compareReadings, SECOND_OPINION_TIMEOUT_MS, SECOND_OPINION_LATE_MS, SECOND_CHECK_UNAVAILABLE, SECOND_CHECK_CREDIT, NORMALISED_AMOUNT } from "./secondopinion.mjs";
+import { fetchSecondReading, compareReadings, SECOND_OPINION_TIMEOUT_MS, resolveSecondOpinionWaitMs, SECOND_CHECK_UNAVAILABLE, SECOND_CHECK_CREDIT, NORMALISED_AMOUNT } from "./secondopinion.mjs";
 import { stockLevels, productKey } from "./products.mjs";
 import { allocatedSales } from "./debts.mjs";
 import { costBasisByProduct, costBasisKey } from "./profit.mjs";
@@ -1623,14 +1623,16 @@ export async function propose(
   // available" with Save enabled. Never throws.
   let finalQuestion = question;
   if (secondOpinions && secondFetchPromise) {
-    // At most SECOND_OPINION_LATE_MS past the primary reading: a late
-    // second opinion is recorded and dropped, never shown to the trader.
-    // A finished check behaves exactly as before.
+    // At most the configured wait past the primary reading (3 s default,
+    // SECOND_OPINION_WAIT_MS overrides): a late second opinion is recorded
+    // and dropped, never shown to the trader, and the main answer never
+    // waits on it beyond that. A finished check behaves exactly as before.
+    const secondWaitMs = resolveSecondOpinionWaitMs(secondOpinionEnv);
     const tWait = Date.now();
     const settled = await Promise.race([
       secondFetchPromise.then((r) => ({ late: false, ...r })),
       new Promise((resolve) => {
-        const timer = setTimeout(() => resolve({ late: true }), SECOND_OPINION_LATE_MS);
+        const timer = setTimeout(() => resolve({ late: true }), secondWaitMs);
         if (typeof timer.unref === "function") timer.unref();
       }),
     ]);

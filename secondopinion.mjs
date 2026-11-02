@@ -8,7 +8,7 @@
 //
 // Runs off the critical path: propose() starts the fetch in parallel with
 // the main classification for text notes (same input text), with a hard
-// 4 s cap per attempt plus one network-only retry; the voice path still waits at most 1 s past the primary reading and drops the rest.
+// 4 s cap per attempt plus one network-only retry; the voice path still waits past the primary reading (SECOND_OPINION_LATE_MS) and drops the rest.
 // Voice notes must wait for the transcript, then run with the same cap.
 //
 // Import cycle with voice.mjs, by design: propose() calls runSecondOpinion,
@@ -27,14 +27,26 @@ import { isAutoCustomerLabel } from "./customers.mjs";
 
 export const BASETEN_BASE_URL = "https://inference.baseten.co/v1";
 export const SECOND_OPINION_TIMEOUT_MS = 4000;
-export const SECOND_OPINION_LATE_MS = 1000; // voice waits this long past the primary reading, then drops the check
+export const SECOND_OPINION_LATE_MS = 3000; // the main answer waits this long for the second reading, then drops it
+// One config place for the post-answer wait: 3 s default, SECOND_OPINION_WAIT_MS
+// overrides with a non-negative millisecond count. Anything else (missing,
+// negative, not a number) falls back to the default. The 4 s per-attempt
+// fetch cap is untouched: the race always resolves, so the main answer can
+// neither fail nor block on the second reading, whatever the wait is set to.
+export function resolveSecondOpinionWaitMs(env = process.env) {
+  const raw = env?.SECOND_OPINION_WAIT_MS;
+  if (raw === undefined || raw === null || String(raw).trim() === "") return SECOND_OPINION_LATE_MS;
+  const n = Number(raw);
+  if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+  return SECOND_OPINION_LATE_MS;
+}
 // Output cap: reasoning + visible JSON combined. 400 starved the short JSON
 // answer whenever the model reasoned first (2 usable answers in 11 notes);
 // 1000 leaves room for a short thought plus the JSON without slowing the
 // fast path — the 4 s cap still bounds every attempt.
 export const SECOND_OPINION_MAX_TOKENS = 1000;
 export const SECOND_OPINION_AGREED = ["yes", "no", "no_second_opinion"];
-// Why a check never completed, when it didn't: late (voice waited 1 s),
+// Why a check never completed, when it didn't: late (the wait ran out),
 // timeout (no response in time), error (an HTTP error or unparseable
 // output). Null means the comparison ran. Stored per row, never shown.
 export const SECOND_OPINION_OUTCOMES = ["late", "timeout", "error"];

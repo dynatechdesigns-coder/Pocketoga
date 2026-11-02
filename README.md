@@ -28,6 +28,13 @@ Run locally: `node server.mjs` (backend on `PORT`, default 3000); `cd web && npm
 
 Every confirm card has a "How the AI did this" panel showing which model ran and how long it took. The server log has one `model-call` line per call (kind, model, status, milliseconds), and never any message text.
 
+## Accuracy
+
+We ran 16 spoken notes (English, Pidgin and one Yoruba), 3 runs each, in a new shop and an established shop: 96 runs. 72 were fully correct. 24 were wrong but flagged for the trader to check. **0 were wrong without a warning.** Details are in `accuracy-results.md` and on the accuracy page in the app.
+It struggles with partial payments that don't mention the original sale, totals with "each", names that sound alike, and Yoruba (experimental). One speaker and a small sample, so treat the numbers as a guide.
+Real-world testing
+Beyond our own test run, over 15 people tried the live app and gave feedback. The reviews were mostly positive, and they pointed out a few things, which we fixed during the event week: it asked for customer names that traders often don't know (names are now optional), it couldn't read shorthand like "63" for ₦6,300 (it now asks which is meant), and only the newest entry could be edited (any entry can now be corrected). These testers are not part of the accuracy numbers above, which come from the scripted run only.
+
 ## Run it yourself (judges)
 
 Use your own Meta API key. The server starts and the demo shop works with only that key set — Baseten, WhatsApp and feedback settings are optional and never crash the boot. Daily call caps (demo 40, per-shop 200, service 1500 a day) protect your key against runaway use.
