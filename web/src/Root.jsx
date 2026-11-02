@@ -86,7 +86,7 @@ export default function Root() {
     };
   }, []);
 
-  // The accuracy page is planned; until it exists this path shows a placeholder.
+  // The public accuracy page: static, for everyone, signed in or not.
   if (location.pathname === "/accuracy") return <AccuracyPage />;
   // Nothing from a real shop renders without a live session.
   if (!hasSession(shop)) {

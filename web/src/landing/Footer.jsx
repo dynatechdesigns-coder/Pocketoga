@@ -1,3 +1,4 @@
+import { ACCURACY_LINK, ACCURACY_PATH } from "../accuracyData.js";
 import { Container } from "./parts.jsx";
 
 const LINK = "inline-flex min-h-12 items-center font-extrabold text-link underline-offset-4 hover:underline";
@@ -27,6 +28,9 @@ export default function Footer({ onDemo }) {
           <button type="button" onClick={onDemo} className={LINK}>
             Try the demo shop
           </button>
+          <a href={ACCURACY_PATH} data-part="accuracy-link" className={LINK}>
+            {ACCURACY_LINK}
+          </a>
           <a href="#privacy" className={LINK}>
             Privacy
           </a>

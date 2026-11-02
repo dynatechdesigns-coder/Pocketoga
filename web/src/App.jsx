@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { BarChart3, ScanSearch, Check, ChevronRight, Ellipsis, Mic, Package, Receipt, ScrollText, Settings, ShoppingBag, Users, UserRound, Wallet } from "lucide-react";
+import { ACCURACY_LINK, ACCURACY_PATH } from "./accuracyData.js";
+import { BadgeCheck, BarChart3, ScanSearch, Check, ChevronRight, Ellipsis, Mic, Package, Receipt, ScrollText, Settings, ShoppingBag, Users, UserRound, Wallet } from "lucide-react";
 import { getShopId, requestsRunning, setShop } from "./api.js";
 import DevBanner from "./DevBanner.jsx";
 import InstallRow, { InstallSteps } from "./InstallRow.jsx";
@@ -251,6 +252,20 @@ export default function App({ shop, onExit, onLogin }) {
               </button>
             </li>
           ))}
+          <li>
+            <a
+              data-part="more-accuracy"
+              href={ACCURACY_PATH}
+              className="flex min-h-16 w-full items-center gap-3.5 rounded-card border border-line bg-card px-4 py-2.5 text-left no-underline shadow-soft transition-transform duration-150 active:scale-[0.98]"
+            >
+              <IconCircle icon={BadgeCheck} tone="lavender" />
+              <span className="grid min-w-0 flex-1">
+                <span className="font-bold">{ACCURACY_LINK}</span>
+                <span className="text-sm text-muted">Test results, in plain words</span>
+              </span>
+              <ChevronRight aria-hidden="true" className="size-5 text-grey" />
+            </a>
+          </li>
           <InstallRow onClose={() => setMore(false)} onSteps={() => setInstallSteps(true)} />
         </ul>
       </Sheet>

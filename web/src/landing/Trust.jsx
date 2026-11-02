@@ -1,4 +1,5 @@
 import { Calculator, Lock, Sparkles } from "lucide-react";
+import { ACCURACY_LINK, ACCURACY_PATH } from "../accuracyData.js";
 import LedgerPeek from "./LedgerPeek.jsx";
 import { Reveal } from "./motion.jsx";
 import { Section } from "./parts.jsx";
@@ -37,7 +38,9 @@ export default function Trust() {
         </Reveal>
       </div>
       <Reveal as="p" data-part="accuracy-note" className="mt-12 border-t border-white/15 pt-6 text-[1.125rem] text-white/90">
-        Accuracy results will be published here.
+        <a href={ACCURACY_PATH} data-part="accuracy-link" className="inline-flex min-h-12 items-center font-extrabold text-white underline underline-offset-4">
+          {ACCURACY_LINK}
+        </a>
       </Reveal>
     </Section>
   );
