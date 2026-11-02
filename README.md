@@ -6,6 +6,28 @@ Backend: Node built-ins only (`node:http`, `node:sqlite`, `node:crypto`, `node:t
 
 Run locally: `node server.mjs` (backend on `PORT`, default 3000); `cd web && npm run dev` for the app (`/api` proxies to the backend). Tests: `npm test`.
 
+## What it does
+
+- **Record by voice or text.** Say or type "Sold 3 bags of rice for 45,000, Mama Chidi owes me 20,000." PocketOga writes it down, double-checks the numbers, and asks you to confirm before it saves anything.
+- **Debts and reminders.** Money owed shows on its own line, and one tap prepares a reminder. Customers without names get labels like "Customer 1".
+- **Check alert.** Photograph (or choose from your gallery) a bank transfer alert. A Meta model reads the photo and shows what it found. The entry stays **unconfirmed** until you check your own bank app and tap the bank button, so a fake alert can't be counted as paid.
+- **Corrections.** Any past entry can be corrected. The original always stays visible, marked as corrected.
+- **Works offline.** Entries wait on the phone and sync safely later, without doubling. It installs to the home screen.
+- **Reports and spreadsheet.** Profit and loss, debts, and a monthly spreadsheet download.
+- **WhatsApp.** The same flow works on WhatsApp, including voice notes and transfer-alert photos, on Meta's test number.
+
+## Where Meta's models are used
+
+| Part of the product | Model | What it does |
+| --- | --- | --- |
+| Voice notes | Muse Spark audio (`muse-spark-1.2`) | Listens to the voice note and works out the entry |
+| Typed notes | Muse Spark (`muse-spark-1.3`) | Turns text into a clean entry, in English and Pidgin |
+| Check alert photos | Muse Spark (`muse-spark-1.3`) | Reads a transfer-alert photo |
+| Second opinion | Meta open-weight Muse Spark (`meta-models/muse-spark-open-1026`) on Baseten | Reads each voice or text entry in parallel and flags any disagreement. It never blocks the main path and never decides alone. |
+| Landing page images | Muse Image | Generated the landing page pictures |
+
+Every confirm card has a "How the AI did this" panel showing which model ran and how long it took. The server log has one `model-call` line per call (kind, model, status, milliseconds), and never any message text.
+
 ## Run it yourself (judges)
 
 Use your own Meta API key. The server starts and the demo shop works with only that key set — Baseten, WhatsApp and feedback settings are optional and never crash the boot. Daily call caps (demo 40, per-shop 200, service 1500 a day) protect your key against runaway use.
