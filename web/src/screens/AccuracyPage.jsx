@@ -1,5 +1,5 @@
 import { ArrowLeft } from "lucide-react";
-import { ACCURACY_DATE, ACCURACY_TITLE, FIELDS, FLAGGED, LIMITS, RESULTS, SETUPS, SPEED, STRUGGLES, SUMMARY, TESTED } from "../accuracyData.js";
+import { ACCURACY_DATE, ACCURACY_TITLE, FIELDS, FLAGGED, LIMITS, REAL_WORLD, RESULTS, SETUPS, SPEED, STRUGGLES, SUMMARY, TESTED } from "../accuracyData.js";
 import { Button, Card, ThemeToggle, cx } from "../ui.jsx";
 
 // Swatch and bar colours per part. The same tokens as the rest of the app, so
@@ -122,6 +122,13 @@ export default function AccuracyPage() {
           {LIMITS.heading}
         </h2>
         <Bullets items={LIMITS.items} />
+      </section>
+
+      <section data-part="real-world" className="grid gap-2" aria-labelledby="real-world-title">
+        <h2 id="real-world-title" className="text-xl font-extrabold tracking-tight">
+          {REAL_WORLD.heading}
+        </h2>
+        <p className="[overflow-wrap:anywhere]">{REAL_WORLD.text}</p>
       </section>
 
       <Button as="a" href="/" variant="secondary" className="w-auto min-w-42 justify-self-start">

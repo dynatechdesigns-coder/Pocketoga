@@ -121,3 +121,19 @@ describe("where it is linked from", () => {
     assert.equal(D.ACCURACY_LINK, "How accurate is PocketOga?");
   });
 });
+
+describe("Real-world testing section", () => {
+  const EXACT =
+    "Beyond our own test run, over 15 people tried the live app and gave feedback. The reviews were mostly positive, and they pointed out a few things, which we fixed during the event week: it asked for customer names that traders often don't know (names are now optional), it couldn't read shorthand like \"63\" for ₦6,300 (it now asks which is meant), and only the newest entry could be edited (any entry can now be corrected). These testers are not part of the accuracy numbers above, which come from the scripted run only.";
+
+  test("has the heading and the exact text, unchanged", () => {
+    assert.equal(D.REAL_WORLD.heading, "Real-world testing");
+    assert.equal(D.REAL_WORLD.text, EXACT);
+  });
+
+  test("the page renders it as its last section, after Limits, and it wraps on narrow phones", () => {
+    assert.match(page, /data-part="real-world"[^]*?\{REAL_WORLD\.heading\}[^]*?\{REAL_WORLD\.text\}/);
+    assert.ok(page.indexOf("LIMITS.heading") < page.indexOf('data-part="real-world"'));
+    assert.match(page, /<p className="\[overflow-wrap:anywhere\]">\{REAL_WORLD\.text\}<\/p>/);
+  });
+});
