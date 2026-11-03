@@ -1,84 +1,126 @@
 # PocketOga
 
-Voice-first AI bookkeeping assistant for Nigerian market traders, on WhatsApp and the web. The trader speaks or types a note, the AI proposes ledger entries, plain code checks them, the trader taps confirm, entries land in a hash-chained ledger.
+## 1. What PocketOga is
 
-Backend: Node built-ins only (`node:http`, `node:sqlite`, `node:crypto`, `node:test`) — zero runtime dependencies. Web: React 18 + Vite 5 + Tailwind 4 PWA in `web/`.
+PocketOga is a voice-first bookkeeping assistant for Nigerian market traders. She speaks, it writes the sale, the payment and the debt, and nothing is saved until she confirms.
 
-Run locally: `node server.mjs` (backend on `PORT`, default 3000); `cd web && npm run dev` for the app (`/api` proxies to the backend). Tests: `npm test`.
+It understands English, Pidgin and money talk like "15k". Entries land in a per-shop ledger where each row is hash-chained to the one before it, so a past entry cannot be quietly changed.
 
-## What it does
+## 2. What existed before vs what I built this week
 
-- **Record by voice or text.** Say or type "Sold 3 bags of rice for 45,000, Mama Chidi owes me 20,000." PocketOga writes it down, double-checks the numbers, and asks you to confirm before it saves anything.
-- **Debts and reminders.** Money owed shows on its own line, and one tap prepares a reminder. Customers without names get labels like "Customer 1".
-- **Check alert.** Photograph (or choose from your gallery) a bank transfer alert. A Meta model reads the photo and shows what it found. The entry stays **unconfirmed** until you check your own bank app and tap the bank button, so a fake alert can't be counted as paid.
-- **Corrections.** Any past entry can be corrected. The original always stays visible, marked as corrected.
-- **Works offline.** Entries wait on the phone and sync safely later, without doubling. It installs to the home screen.
-- **Reports and spreadsheet.** Profit and loss, debts, and a monthly spreadsheet download.
-- **WhatsApp.** The same flow works on WhatsApp, including voice notes and transfer-alert photos, on Meta's test number.
+Before the Meta Global AI Developer Hackathon I had ProfitPocket, a simple bookkeeping app where entries are typed. PocketOga was built from scratch during the event: voice input, Muse Spark understanding, a second-opinion check, check-alert photos, offline sync, reports and the accuracy test. No ProfitPocket code is carried over.
 
-## Where Meta's models are used
+I used Muse Code and Claude Code as coding assistants. I set the design and rules, reviewed the results and tested them.
 
-| Part of the product | Model | What it does |
-| --- | --- | --- |
-| Voice notes | Muse Spark audio (`muse-spark-1.2`) | Listens to the voice note and works out the entry |
-| Typed notes | Muse Spark (`muse-spark-1.3`) | Turns text into a clean entry, in English and Pidgin |
-| Check alert photos | Muse Spark (`muse-spark-1.3`) | Reads a transfer-alert photo |
-| Second opinion | Meta open-weight Muse Spark (`meta-models/muse-spark-open-1026`) on Baseten | Reads each voice or text entry in parallel and flags any disagreement. It never blocks the main path and never decides alone. |
-| Landing page images | Muse Image | Generated the landing page pictures |
+## 3. Meta AI tooling used
 
-Every confirm card has a "How the AI did this" panel showing which model ran and how long it took. The server log has one `model-call` line per call (kind, model, status, milliseconds), and never any message text.
+- **Meta Model API, `muse-spark-1.2` (audio):** hears the voice note and works out the entries.
+- **Meta Model API, `muse-spark-1.3` (text and photos):** understands typed notes and reads the photo in Check alert.
+- **Open-weight second opinion, `meta-models/muse-spark-open-1026` on Baseten:** re-reads the same note in parallel. The main answer waits a short time for it, set by `SECOND_OPINION_WAIT_MS` (default 3000 ms). When the two readings differ on amount, customer, number of entries or promise date, the app stops and asks the trader instead of choosing.
+- **Muse Image (`muse-image-1.0`):** generated the landing page art.
+- **Proof of real calls:** the server log has one line per call, `model-call kind=audio|text|second-opinion status=ok|failed ms=... rid=...`. Photo calls log the same way. Status can also be `timeout` or `skipped` (for example, no Baseten key set). The lines never contain message text, audio, names or keys.
 
-## Accuracy
+## 4. Safety design
 
-We ran 16 spoken notes (English, Pidgin and one Yoruba), 3 runs each, in a new shop and an established shop: 96 runs. 72 were fully correct. 24 were wrong but flagged for the trader to check. **0 were wrong without a warning.** Details are in `accuracy-results.md` and on the accuracy page in the app.
-It struggles with partial payments that don't mention the original sale, totals with "each", names that sound alike, and Yoruba (experimental). One speaker and a small sample, so treat the numbers as a guide.
-Real-world testing
-Beyond our own test run, over 15 people tried the live app and gave feedback. The reviews were mostly positive, and they pointed out a few things, which we fixed during the event week: it asked for customer names that traders often don't know (names are now optional), it couldn't read shorthand like "63" for ₦6,300 (it now asks which is meant), and only the newest entry could be edited (any entry can now be corrected). These testers are not part of the accuracy numbers above, which come from the scripted run only.
+- The app shows what it heard, so the trader can see a misheard word.
+- The AI only proposes. Plain code double-checks every number and money is stored as whole kobo, never decimals.
+- Doubtful numbers are asked about, not guessed. "63" is asked as "₦63 or ₦6,300?".
+- Nothing is saved until the trader taps Save. Proposals expire after 30 minutes.
+- The ledger is append-only. Editing an entry adds a correction with a reason; the original amount stays on record and is shown as corrected.
+- A transfer alert photo stays unconfirmed until the trader checks their own bank and taps the bank button. It is never called "verified".
+- Raw photos are not stored, only the fields read from them.
+- Daily model-call caps protect the API key: `DAILY_CAP_DEMO` (default 40), `DAILY_CAP_SHOP` (default 200), `DAILY_CAP_SERVICE` (default 1500).
 
-## Run it yourself (judges)
+## 5. Accuracy
 
-Use your own Meta API key. The server starts and the demo shop works with only that key set — Baseten, WhatsApp and feedback settings are optional and never crash the boot. Daily call caps (demo 40, per-shop 200, service 1500 a day) protect your key against runaway use.
+16 spoken notes, 3 runs each, in a new shop and an established one: 96 runs. 72 fully correct, 24 wrong but flagged for the trader to check, 0 wrong without a warning.
 
-1. Clone and install:
-   `git clone <this-repo-url> pocketoga`
-   `cd pocketoga`
-2. Build the web app (needs Node 22+):
-   `cd web && npm install && npm run build && cd ..`
-3. Copy the settings file and add your key:
-   `cp .env.example .env.local` (Windows: `copy .env.example .env.local`; if the example file is missing, create `.env.local` yourself with one line: `META_API_KEY=your-key-here`)
-   Open `.env.local` in a text editor and set `META_API_KEY` to your key. The model names already have defaults (`muse-spark-1.3` for text and photos, `muse-spark-1.2` for voice) — you do not need to set them.
-   Optional, all safe to leave blank: `BASETEN_API_KEY` + `BASETEN_MODEL` (second-opinion re-read), `WHATSAPP_*` (WhatsApp bot), `FEEDBACK_WEBHOOK_URL` + `FEEDBACK_WEBHOOK_SECRET` (owner inbox), `DAILY_CAP_DEMO` / `DAILY_CAP_SHOP` / `DAILY_CAP_SERVICE` (cap budgets).
-4. Start the server (it reads `.env.local` automatically):
-   `node server.mjs`
-   The start-up lines list which features are on, for example `second opinion: off (no BASETEN_API_KEY)`. Key values are never printed.
-5. Open `http://localhost:3000` and tap "Try the demo shop". No login needed; the demo reseeds itself with fake entries.
+The notes are English, Pidgin and one Yoruba, all in the author's own voice. Weak spots: partial payments that do not mention the original sale, totals said with "each", names that sound alike, and Yoruba (experimental). One speaker and a small sample, so treat the numbers as a guide, not a guarantee.
 
-## Deploy
+- Accuracy page in the app: https://pocket-oga.onrender.com/accuracy
+- Per-note tables: [accuracy-results.md](accuracy-results.md)
 
-One Docker web service on the Render free plan serves the API, the WhatsApp webhook and the built web app on a single origin — no CORS, one public URL.
+The accuracy page also reports informal feedback from over 15 people who tried the live app. Those testers are not part of the numbers above, which come from the scripted run only.
 
-1. Push this repo to GitHub. In the Render dashboard: New → Web Service → this repo. Render picks up `render.yaml`: Runtime Docker (root `Dockerfile`), health check path `/health`, auto-deploy on push, free plan.
-2. Set environment variables in the Render dashboard (never committed; see `.env.example` for the full list by name): `META_API_KEY`, `BASETEN_API_KEY`, `BASETEN_MODEL`, `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_ALLOWED_NUMBERS`, `WHATSAPP_SUMMARY_TEMPLATE`. `DATA_DIR` is pre-set to `/app/data` by the Blueprint. Leave `WEBHOOK_PUBLIC_ONLY` unset — one URL serves the app and the webhook together, and every Render request carries a proxy header that the tunnel guard would mistake for tunnelled traffic.
-3. Meta webhook: in the Meta app dashboard, set the webhook callback URL to `https://APP-NAME.onrender.com/webhook` (verify token = `WHATSAPP_VERIFY_TOKEN`) and subscribe to messages. Signature checks run on the same single server; the webhook needs no separate port or tunnel.
-4. Free services sleep when idle: add an uptime pinger (e.g. UptimeRobot cron) hitting `https://APP-NAME.onrender.com/health` every 10 minutes. It returns 200 `{"ok":true}` and keeps the service awake.
-5. Smoke test after deploy: open `https://APP-NAME.onrender.com/` (the app loads, demo shop works with no login); `https://APP-NAME.onrender.com/health` returns `{"ok":true}`; `GET /ledger` with `x-shop-id: demo` lists the 15 seeded demo entries; logging in as a real shop without a token returns 401.
+## 6. WhatsApp (honest status)
 
-Storage: the free plan has temporary storage — the database resets on restart or redeploy, so the demo shop reseeds itself on every boot that finds it empty, and a 10-minute SQLite backup (`VACUUM INTO`, last 7 kept in `DATA_DIR/backups`) restores automatically when the main file is gone. Real shops work normally while the instance is alive. A paid deployment would mount a persistent disk at `DATA_DIR` so the ledger and backups survive restarts.
+WhatsApp is built (webhook at /webhook, voice notes, replies), but Meta restricted my test account during the event, so message delivery was blocked and I could not demonstrate it. The web app is the full demo. The reminder button uses the shop owner's own WhatsApp (share/contact picker).
 
-Demo judges use the web app; WhatsApp runs on a Meta test number, so the WhatsApp flow is shown in the demo video, not live.
+## 7. Run it yourself
+
+- **Live demo:** https://pocket-oga.onrender.com (free plan, first load may take a moment)
+- **All demo data is simulated. Please do not enter real names, numbers or bank details.**
+
+### Local setup from a fresh clone
+
+Prerequisites: Node 24. `package.json` does not pin a version; the Dockerfile uses Node 24 and the tests were run on 24. The backend needs `node:sqlite`, which older Node versions lack. There is no root `npm install` step: the backend has zero runtime dependencies.
+
+1. Clone and enter the repo:
+   ```
+   git clone <this-repo-url> pocketoga
+   cd pocketoga
+   ```
+2. Install and build the web app:
+   ```
+   cd web
+   npm install
+   npm run build
+   cd ..
+   ```
+3. Copy the settings file:
+   ```
+   cp .env.example .env.local
+   ```
+   (Windows cmd: `copy .env.example .env.local`.) Open `.env.local` and fill in your own values. `.env.local` is gitignored; never commit it. Only `META_API_KEY` is needed to try the demo; every other variable can stay blank.
+4. Start the server (it reads `.env.local` itself):
+   ```
+   node server.mjs
+   ```
+   The start-up lines say which features are on, for example that the second opinion is off without a Baseten key. Key values are never printed.
+5. Open http://localhost:3000 and tap "Try the demo shop". The demo shop needs no login and reseeds itself with fake entries.
+
+Tests: `npm test` (all suites use a mock model, no keys needed).
+
+### Environment variables
+
+Names only. Set values in `.env.local`.
+
+| Variable | Purpose |
+| --- | --- |
+| `META_API_KEY` | Meta Model API key for audio, text and photo reads. The only one needed for the demo. |
+| `BASETEN_API_KEY` | Key for the second-opinion model on Baseten. Blank turns the second opinion off. |
+| `BASETEN_MODEL` | Model id the second opinion calls on Baseten. |
+| `SECOND_OPINION_WAIT_MS` | How long the main answer waits for the second opinion, in ms (default 3000). |
+| `WHATSAPP_TOKEN` | Meta WhatsApp Cloud API access token, used to send replies. |
+| `WHATSAPP_PHONE_NUMBER_ID` | Id of the WhatsApp sender number. |
+| `WHATSAPP_APP_SECRET` | Secret used to check the signature on incoming webhook calls. |
+| `WHATSAPP_VERIFY_TOKEN` | Token for Meta's webhook handshake. |
+| `WHATSAPP_ALLOWED_NUMBERS` | Comma-separated list of numbers the WhatsApp bot will serve. |
+| `WHATSAPP_SUMMARY_TEMPLATE` | Name of the approved WhatsApp message template for the evening summary. |
+| `PORT` | Port the server listens on (default 3000). |
+| `WEBHOOK_PORT` | Separate webhook-only port, for a local tunnel. Leave unset otherwise. |
+| `WEBHOOK_PUBLIC_ONLY` | Set to 1 to hide non-webhook routes from tunnelled traffic. Leave unset on Render. |
+| `DATA_DIR` | Folder for the database and backups (default `./data`). |
+| `LEDGER_DB` | Optional path to use for the SQLite file instead of `DATA_DIR/pocketoga.db`. |
+| `SHELF_API_URL` | Endpoint for the shelf-counting experiment script only. |
+| `SHELF_API_KEY` | Key for that experiment script. |
+| `SHELF_MODEL` | Model name for that experiment script. |
+| `FEEDBACK_WEBHOOK_URL` | Optional URL that receives in-app feedback as JSON. |
+| `FEEDBACK_WEBHOOK_SECRET` | Shared secret sent with each feedback forward. |
+| `DAILY_CAP_DEMO` | Daily model-call budget for the demo shop (default 40). |
+| `DAILY_CAP_SHOP` | Daily model-call budget per real shop (default 200). |
+| `DAILY_CAP_SERVICE` | Daily model-call budget for the whole service (default 1500). |
+
+### Deploying
+
+The repo has a `Dockerfile` and `render.yaml` for one Docker web service on the Render free plan, which serves the API and the built web app from a single URL. Enter the variables above in the Render dashboard (`render.yaml` pre-sets only `DATA_DIR`). The free plan has temporary storage: the database resets on restart or redeploy, the demo shop reseeds itself, and a 10-minute SQLite backup is restored when the database file is missing.
+
+## 8. Tech stack
+
+Node http server, node:sqlite, React and Vite web app, deployed on Render.
 
 ## Credits
-- AI models: Meta Model API (muse-spark-1.3 text, muse-spark-1.2 audio); open-weight second opinion muse-spark-open-1026 served on Baseten.
-- Landing page images: generated with Muse Image.
+
 - Icons: Lucide (lucide-react), ISC licence.
 - Font: Plus Jakarta Sans, SIL Open Font License, loaded from Google Fonts.
 - Demo audio and all sample data: recorded or written by the author. No outside datasets.
-## Disclosure: what existed before the event
-
-Before the event I had ProfitPocket, a simple bookkeeping and inventory web app for small traders (https://profit-pocket-tviz.vercel.app). You type in your entries, and it calculates profit and loss for a week, a month and a year. It has no voice input and does not use Meta models.
-
-PocketOga was built during the event week as a new project. No code was copied from ProfitPocket; only the idea carried over.
-
-Everything else you see here was built this week: voice and text understanding, WhatsApp, the confirm step, the ledger, offline mode, corrections, reports and the spreadsheet export.
-
-PocketOga was built with Muse Code and Claude Code as coding assistants. I set the design and rules, reviewed the results and tested them.
