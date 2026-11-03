@@ -15,11 +15,11 @@ const { contactHref, CONTACT_LINK_TEXT } = await import("../src/landing/heroCopy
 
 const src = (p) => readFileSync(new URL(`../src/${p}`, import.meta.url), "utf8");
 
-describe("Ask to be added on WhatsApp", () => {
+describe("Message the builder", () => {
   test("one CONTACT_URL constant holds the number and the text", () => {
     assert.equal(CONTACT_URL, "https://wa.me/2348053801610?text=Hi%2C%20I%27d%20like%20early%20access%20to%20PocketOga");
     assert.equal(contactHref(), CONTACT_URL);
-    assert.equal(CONTACT_LINK_TEXT, "Ask to be added on WhatsApp");
+    assert.equal(CONTACT_LINK_TEXT, "Message the builder");
     assert.equal((src("config.js").match(/2348053801610/g) ?? []).length, 1);
   });
 

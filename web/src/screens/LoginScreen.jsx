@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ArrowLeft, MessageCircle } from "lucide-react";
 import { ApiError, login } from "../api.js";
-import { WHATSAPP_LINK } from "../config.js";
+import { CONTACT_URL } from "../config.js";
 import { EARLY_ACCESS_PRIVACY } from "../privacyNotes.js";
 import { loadLastShop, saveLastShop } from "../shop.js";
 import { Button, Card, Field, ThemeToggle, inputClass, rise } from "../ui.jsx";
@@ -13,11 +13,11 @@ function loginError(err) {
   if (err.status === 0) return "Cannot reach PocketOga. Check your connection and try again.";
   if (err.status === 429) return "Too many wrong tries. Wait an hour, then ask for a new code.";
   if (err.status === 401) {
-    if (/expired/i.test(err.message)) return "That code has expired. Send the word dashboard on WhatsApp for a new one.";
-    if (/already used/i.test(err.message)) return "That code was already used. Send the word dashboard on WhatsApp for a new one.";
+    if (/expired/i.test(err.message)) return "That code has expired. Ask for a new one.";
+    if (/already used/i.test(err.message)) return "That code was already used. Ask for a new one.";
     return "That code is not right. Check the 6 digits and try again.";
   }
-  if (err.status === 400) return "Enter the 6-digit code from WhatsApp.";
+  if (err.status === 400) return "Enter the 6-digit code.";
   if (err.status >= 500) return "PocketOga is not answering right now. Please try again in a moment.";
   return err.message.charAt(0).toUpperCase() + err.message.slice(1);
 }
@@ -32,7 +32,7 @@ function knownShop() {
   }
 }
 
-// Passwordless login: the trader sends "dashboard" on WhatsApp, gets a
+// Passwordless login: the trader gets a
 // one-time code back, and types it here.
 export default function LoginScreen({ notice, onLoggedIn, onBack }) {
   const [shop, setShop] = useState(knownShop);
@@ -84,7 +84,7 @@ export default function LoginScreen({ notice, onLoggedIn, onBack }) {
             <Pill {...rise(0)}>Open my shop</Pill>
             <h1 {...rise(1, "text-[2rem] leading-tight font-extrabold tracking-tight md:text-[2.5rem]")}>Log in with a code</h1>
             <p {...rise(2, "text-[1.0625rem] leading-relaxed text-muted")}>
-              Send the word <strong className="text-ink">dashboard</strong> to the PocketOga WhatsApp number, then enter the code here.
+              WhatsApp is built and waiting for Meta approval. If you already have a code, enter it here.
             </p>
           </div>
 
@@ -131,8 +131,8 @@ export default function LoginScreen({ notice, onLoggedIn, onBack }) {
             </p>
           </Card>
 
-          <Button as="a" variant="outline" size="lg" href={WHATSAPP_LINK} target="_blank" rel="noopener noreferrer">
-            <MessageCircle aria-hidden="true" /> Start on WhatsApp
+          <Button as="a" variant="outline" size="lg" href={CONTACT_URL} target="_blank" rel="noopener noreferrer">
+            <MessageCircle aria-hidden="true" /> Message the builder
           </Button>
         </div>
       </main>

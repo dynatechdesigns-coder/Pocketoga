@@ -5,7 +5,7 @@ import { Container } from "./parts.jsx";
 
 const LINKS = [
   ["#how", "How it works"],
-  ["#whatsapp", "WhatsApp"],
+  ["#whatsapp", "In the app"],
   ["#trust", "Trust"],
 ];
 

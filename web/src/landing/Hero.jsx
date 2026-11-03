@@ -38,7 +38,7 @@ export default function Hero({ onDemo, onLogin }) {
             dey go
           </h1>
           <p {...rise(2, "max-w-[52ch] text-[1.0625rem] leading-relaxed text-pretty text-muted md:text-lg")}>
-            Talk to it on WhatsApp like you talk to your customers. It writes your sales, debts and stock, and you confirm every entry.
+            Talk to it in the app like you talk to your customers. It writes your sales, debts and stock, and you confirm every entry.
           </p>
           <div {...rise(3, "grid w-full max-w-sm gap-3")}>
             <Button data-part="hero-demo" variant="gradient" size="lg" className="hover:-translate-y-0.5" onClick={onDemo}>

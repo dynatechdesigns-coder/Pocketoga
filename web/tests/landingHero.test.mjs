@@ -36,7 +36,7 @@ describe("buttons", () => {
 
 describe("early-access wording", () => {
   test("the line under the buttons, word for word", () => {
-    assert.equal(`${C.CONTACT_LINE} ${C.CONTACT_LINK_TEXT}`, "Using WhatsApp? Early access is invite-only while we test. Ask to be added on WhatsApp");
+    assert.equal(`${C.CONTACT_LINE} ${C.CONTACT_LINK_TEXT}`, "WhatsApp is built and waiting for Meta approval. Message the builder");
     assert.match(hero, /data-part="hero-contact" className="[^"]*text-sm[^"]*text-muted/); // smaller, quiet
   });
 
@@ -69,7 +69,7 @@ describe("contact link", () => {
   test("CONTACT_URL is the WhatsApp early-access link, and the hero link uses it", () => {
     assert.equal(config.CONTACT_URL, "https://wa.me/2348053801610?text=Hi%2C%20I%27d%20like%20early%20access%20to%20PocketOga");
     assert.equal(C.contactHref(), config.CONTACT_URL);
-    assert.equal(C.CONTACT_LINK_TEXT, "Ask to be added on WhatsApp");
+    assert.equal(C.CONTACT_LINK_TEXT, "Message the builder");
     assert.equal((read("src/config.js").match(/2348053801610/g) ?? []).length, 1); // one constant, one place
   });
 
@@ -101,5 +101,23 @@ describe("narrow screens and themes", () => {
   test("only theme tokens in the new markup, so light and dark both work", () => {
     const block = hero.slice(hero.indexOf('data-part="early-access"') - 200, hero.indexOf('data-part="ticks"'));
     assert.doesNotMatch(block, /#[0-9a-fA-F]{3,6}\b|bg-white|text-black|bg-black|text-white/);
+  });
+});
+
+describe("honest WhatsApp wording", () => {
+  const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
+  test("the promise is the app; WhatsApp is plainly waiting for Meta approval", () => {
+    const WAIT = "WhatsApp is built and waiting for Meta approval.";
+    assert.ok(read("src/landing/Hero.jsx").replace(/\s+/g, " ").includes("Talk to it in the app like you talk to your customers."));
+    for (const p of ["src/landing/heroCopy.js", "src/landing/WhatsAppWeb.jsx", "src/landing/Footer.jsx", "src/screens/LoginScreen.jsx", "src/settings.js"]) {
+      assert.ok(read(p).replace(/\s+/g, " ").includes(WAIT), p);
+    }
+    assert.doesNotMatch(read("index.html"), /on WhatsApp like you talk/);
+  });
+  test("no link sends a visitor to WhatsApp as if a reply is guaranteed", () => {
+    const login = read("src/screens/LoginScreen.jsx");
+    assert.doesNotMatch(login, /WHATSAPP_LINK|Start on WhatsApp|Send the word/);
+    assert.match(login, /Message the builder/);
+    assert.doesNotMatch(read("src/Root.jsx"), /Send dashboard on WhatsApp/);
   });
 });

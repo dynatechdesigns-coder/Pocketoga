@@ -104,7 +104,7 @@ describe("the demo shop", () => {
     assert.equal(info.badge, "Demo shop");
     assert.match(info.line, /demo shop/i);
     assert.equal(info.openReal.title, "Open your real shop");
-    assert.equal(info.openReal.line, "Real shops open with a code from WhatsApp. Send dashboard to PocketOga on WhatsApp, then enter the code here.");
+    assert.equal(info.openReal.line, "Real shops open with a code. WhatsApp is built and waiting for Meta approval. If you already have a code, enter it here.");
     assert.equal(info.openReal.button, "Log in to my shop");
   });
 

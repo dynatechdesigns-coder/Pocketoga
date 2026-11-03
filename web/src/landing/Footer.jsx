@@ -14,8 +14,8 @@ export default function Footer({ onDemo }) {
             PocketOga
           </a>
           <p className="max-w-[46ch] text-[1.0625rem] leading-relaxed text-muted">
-            PocketOga turns a trader's WhatsApp voice notes into records you confirm, so you always know who owes you and where your money
-            goes.
+            PocketOga turns a trader's voice notes into records you confirm, so you always know who owes you and where your money
+            goes. WhatsApp is built and waiting for Meta approval.
           </p>
           <p id="privacy" className="max-w-[60ch] text-sm leading-relaxed text-muted">
             <strong className="font-extrabold text-ink">Privacy.</strong> The demo shop uses fake data only. For a real shop, PocketOga

@@ -10,7 +10,7 @@ import AccuracyPage from "./screens/AccuracyPage.jsx";
 // page never downloads the screens.
 const App = lazy(() => import("./App.jsx"));
 
-const ENDED = "Your login ended. Send dashboard on WhatsApp for a new code.";
+const ENDED = "Your login ended. Log in again with a new code.";
 
 // A real shop is kept only while its session is live; the demo needs none.
 const loadLive = () => {

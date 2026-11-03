@@ -13,7 +13,7 @@ const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const imagePath = new URL("../public/og-image.png", import.meta.url);
 const SITE = "https://pocket-oga.onrender.com";
 const TITLE = "PocketOga: know where your shop money dey go";
-const DESCRIPTION = "Talk to it on WhatsApp like you talk to your customers. It writes your sales, debts and stock, and you confirm every entry.";
+const DESCRIPTION = "Talk to it in the app like you talk to your customers. It writes your sales, debts and stock, and you confirm every entry.";
 
 const meta = (attr, name) => html.match(new RegExp(String.raw`<meta\s+${attr}="${name}"\s+content="([^"]*)"`))?.[1];
 

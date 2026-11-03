@@ -67,8 +67,8 @@ export default function WhatsAppWeb() {
     <Section
       id="whatsapp"
       tone="cream"
-      title="Talk on WhatsApp. See it on the web."
-      intro="Send a voice note, tap Save, and the same record is on your web Money screen."
+      title="Talk to it in the app. See it on the web."
+      intro="WhatsApp is built and waiting for Meta approval. This is how it will look: send a voice note, tap Save, and the same record is on your web Money screen."
       className="[contain-intrinsic-size:auto_2050px] [content-visibility:auto] md:[contain-intrinsic-size:auto_1800px] lg:[contain-intrinsic-size:auto_1120px]"
     >
       <div

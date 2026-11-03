@@ -16,7 +16,7 @@ export function shopInfo(shop) {
       line: "This is a demo shop. It only has made-up data to look at.",
       openReal: {
         title: "Open your real shop",
-        line: "Real shops open with a code from WhatsApp. Send dashboard to PocketOga on WhatsApp, then enter the code here.",
+        line: "Real shops open with a code. WhatsApp is built and waiting for Meta approval. If you already have a code, enter it here.",
         button: "Log in to my shop",
       },
       leave: { label: "Leave the demo", variant: "quiet" },
