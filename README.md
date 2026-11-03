@@ -4,6 +4,8 @@
 
 PocketOga is a voice-first bookkeeping assistant for Nigerian market traders. She speaks, it writes the sale, the payment and the debt, and nothing is saved until she confirms.
 
+[![PocketOga demo video](https://img.youtube.com/vi/Ia1MkrWCX_0/hqdefault.jpg)](https://www.youtube.com/watch?v=Ia1MkrWCX_0)
+
 Demo video (2:52): https://www.youtube.com/watch?v=Ia1MkrWCX_0
 
 It understands English, Pidgin and money talk like "15k". Entries land in a per-shop ledger where each row is hash-chained to the one before it, so a past entry cannot be quietly changed.
