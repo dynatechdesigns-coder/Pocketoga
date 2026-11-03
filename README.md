@@ -8,7 +8,7 @@ It understands English, Pidgin and money talk like "15k". Entries land in a per-
 
 ## 2. What existed before vs what I built this week
 
-Before the Meta Global AI Developer Hackathon I had ProfitPocket, a simple bookkeeping app where entries are typed. PocketOga was built from scratch during the event: voice input, Muse Spark understanding, a second-opinion check, check-alert photos, offline sync, reports and the accuracy test. No ProfitPocket code is carried over.
+Before the Meta Global AI Developer Hackathon I had ProfitPocket, a simple bookkeeping app where entries are typed. PocketOga was built from scratch during the event: voice input, Muse Spark understanding, a second-opinion check, check-alert photos, offline sync, reports and the accuracy test. No ProfitPocket code is carried over. Over 15 people tested it live this week, and their feedback shaped optional names, shorthand amounts and editing any entry.
 
 I used Muse Code and Claude Code as coding assistants. I set the design and rules, reviewed the results and tested them.
 
