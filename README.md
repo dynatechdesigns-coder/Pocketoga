@@ -77,7 +77,7 @@ Prerequisites: Node 24. `package.json` does not pin a version; the Dockerfile us
    node server.mjs
    ```
    The start-up lines say which features are on, for example that the second opinion is off without a Baseten key. Key values are never printed.
-5. Open http://localhost:3000 and tap "Try the demo shop". The demo shop needs no login and reseeds itself with fake entries.
+5. Open http://localhost:8787 and tap "Try the demo shop". The demo shop needs no login and reseeds itself with fake entries.
 
 Tests: `npm test` (all suites use a mock model, no keys needed).
 
@@ -97,7 +97,7 @@ Names only. Set values in `.env.local`.
 | `WHATSAPP_VERIFY_TOKEN` | Token for Meta's webhook handshake. |
 | `WHATSAPP_ALLOWED_NUMBERS` | Comma-separated list of numbers the WhatsApp bot will serve. |
 | `WHATSAPP_SUMMARY_TEMPLATE` | Name of the approved WhatsApp message template for the evening summary. |
-| `PORT` | Port the server listens on (default 3000). |
+| `PORT` | Port the server listens on (default 8787). |
 | `WEBHOOK_PORT` | Separate webhook-only port, for a local tunnel. Leave unset otherwise. |
 | `WEBHOOK_PUBLIC_ONLY` | Set to 1 to hide non-webhook routes from tunnelled traffic. Leave unset on Render. |
 | `DATA_DIR` | Folder for the database and backups (default `./data`). |

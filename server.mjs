@@ -1158,8 +1158,10 @@ if (invokedAsMain) {
     }
   }, 10 * 60 * 1000);
   const server = createVoiceServer(deps);
-  const port = Number(env.PORT ?? 3000);
-  server.listen(port, "0.0.0.0", () => console.log(`pocketoga on :${port} (one origin: app + webhook)`));
+  // PORT unset or empty (a copied .env.example has "PORT=") falls back to
+  // 8787; a PORT that is set, including "0", is honoured as given.
+  const port = String(env.PORT ?? "").trim() === "" ? 8787 : Number(env.PORT);
+  server.listen(port, "0.0.0.0", () => console.log(`pocketoga on http://localhost:${server.address().port} (one origin: app + webhook)`));
   // Local tunnel setup only: a second listener serving just /webhook, kept
   // when WEBHOOK_PORT is explicitly set to something other than PORT.
   // Render sets only PORT, so one public URL serves everything there.
