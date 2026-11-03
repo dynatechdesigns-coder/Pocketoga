@@ -9,7 +9,7 @@ import { ProposalStore } from "./proposals.mjs";
 import { PromiseStore } from "./promises.mjs";
 import { ProductStore } from "./products.mjs";
 import { SecondOpinionStore } from "./secondopinion.mjs";
-import { WhatsAppStore, drainWhatsAppJobs, parseCommand } from "./whatsapp.mjs";
+import { WhatsAppStore, drainWhatsAppJobs, maskForLog, parseCommand } from "./whatsapp.mjs";
 import { PhotoCheckStore } from "./photos.mjs";
 import { createMockModelClient } from "./model.mjs";
 import { handleVoiceRequest, handleWebhookOnlyRequest, createWebhookServer } from "./server.mjs";
@@ -1463,6 +1463,15 @@ describe("photo alerts", () => {
 });
 
 describe("whatsapp-send log lines (fake data)", () => {
+  it("keeps the send id readable even when it is mostly digits, while masking other digit runs", () => {
+    assert.equal(maskForLog("whatsapp-send status=ok rid=e1234508"), "whatsapp-send status=ok rid=e1234508");
+    assert.equal(maskForLog("whatsapp-send status=ok rid=12345678"), "whatsapp-send status=ok rid=12345678");
+    assert.equal(
+      maskForLog("whatsapp-send status=400 code=1 message=to 2348030000011 failed rid=12345678"),
+      "whatsapp-send status=400 code=1 message=to ***11 failed rid=12345678"
+    );
+  });
+
   function sendLines(ctx) {
     return ctx.logs.filter((l) => l.startsWith("whatsapp-send "));
   }
