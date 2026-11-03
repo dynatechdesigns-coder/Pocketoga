@@ -168,7 +168,12 @@ export function maskForLog(text, config) {
   for (const secret of [config?.token, config?.appSecret, config?.verifyToken]) {
     if (secret) out = out.split(secret).join("[redacted]");
   }
-  return out.replace(/\d{7,}/g, (m) => `***${m.slice(-2)}`);
+  // The trailing send id is 8 random hex characters made here, never a number
+  // or token, so it stays readable for correlating a send with its log line.
+  const rid = out.match(/ rid=[0-9a-f]{8}$/);
+  if (rid) out = out.slice(0, rid.index);
+  out = out.replace(/\d{7,}/g, (m) => `***${m.slice(-2)}`);
+  return rid ? out + rid[0] : out;
 }
 
 export function verifyWhatsAppSignature(rawBody, signatureHeader, appSecret) {
