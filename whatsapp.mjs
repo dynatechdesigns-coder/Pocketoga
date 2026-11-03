@@ -4,7 +4,7 @@
 //
 // Fake data in tests. Never logs tokens, secrets, or full phone numbers:
 // every log line goes through maskForLog via the context logger.
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { execFile as cpExecFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -289,22 +289,53 @@ export function parseCommand(text) {
 
 // --- Sending ---------------------------------------------------------------
 
+// Meta error body to { code, message }: metadata only, one line, digit
+// runs masked — an error message must never smuggle a phone number into
+// the logs. Unparseable bodies keep the placeholders.
+async function graphErrorMeta(res) {
+  let code = "-";
+  let message = "-";
+  try {
+    const data = JSON.parse(await res.text());
+    const err = data && typeof data === "object" ? data.error : null;
+    if (err && typeof err === "object") {
+      if (err.code !== undefined && err.code !== null) code = String(err.code);
+      if (typeof err.message === "string" && err.message.trim()) message = err.message;
+    }
+  } catch {
+    // Not JSON: placeholders stand.
+  }
+  const clean = String(message).replace(/\s+/g, " ").trim().slice(0, 200) || "-";
+  return { code, message: clean.replace(/\d{7,}/g, (m) => `***${m.slice(-2)}`) };
+}
+
 async function graphSend(ctx, payload) {
   const { token, phoneNumberId } = ctx.config;
   if (!token || !phoneNumberId) {
     ctx.log("whatsapp sender not configured; skipping reply");
     return null;
   }
-  const res = await ctx.fetchFn(graphUrl(`${phoneNumberId}/messages`), {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ messaging_product: "whatsapp", ...payload }),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    ctx.log(`whatsapp send failed ${res.status}: ${body.slice(0, 200)}`);
+  // One id per send for correlating the log line below. Random hex only —
+  // never the token, the number, or the message text.
+  const rid = randomUUID().replace(/-/g, "").slice(0, 8);
+  let res;
+  try {
+    res = await ctx.fetchFn(graphUrl(`${phoneNumberId}/messages`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ messaging_product: "whatsapp", ...payload }),
+    });
+  } catch (err) {
+    const message = String(err?.message ?? err).replace(/\s+/g, " ").trim().slice(0, 200) || "-";
+    ctx.log(`whatsapp-send status=error code=- message=${message} rid=${rid}`);
     return null;
   }
+  if (!res.ok) {
+    const meta = await graphErrorMeta(res);
+    ctx.log(`whatsapp-send status=${res.status} code=${meta.code} message=${meta.message} rid=${rid}`);
+    return null;
+  }
+  ctx.log(`whatsapp-send status=ok rid=${rid}`);
   return res.json().catch(() => ({}));
 }
 

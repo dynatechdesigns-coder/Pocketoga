@@ -1461,3 +1461,93 @@ describe("photo alerts", () => {
     }
   });
 });
+
+describe("whatsapp-send log lines (fake data)", () => {
+  function sendLines(ctx) {
+    return ctx.logs.filter((l) => l.startsWith("whatsapp-send "));
+  }
+
+  function assertClean(lines) {
+    const joined = lines.join("\n");
+    assert.ok(!joined.includes(ENV.WHATSAPP_TOKEN), "token leaked");
+    assert.ok(!joined.includes(FROM_A), "phone number leaked");
+    assert.ok(!joined.includes(ENV.WHATSAPP_PHONE_NUMBER_ID), "sender id leaked");
+  }
+
+  it("logs one ok line per reply", async () => {
+    const ctx = setup();
+    try {
+      const out = await postWebhook(ctx, wrap([waText(FROM_A, mid(), "who owes")]));
+      assert.equal(out.status, 200);
+      const lines = sendLines(ctx);
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], /^whatsapp-send status=ok rid=[0-9a-f]{8}$/);
+      assert.ok(ctx.fetch.calls.some((c) => c.url.endsWith("/messages")), "reply attempted");
+      assertClean(lines);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("logs status, code and message on non-2xx and still answers 200", async () => {
+    const ctx = setup();
+    const realFetch = ctx.fetch;
+    ctx.deps.fetch = (url, opts) =>
+      url.endsWith("/messages")
+        ? {
+            ok: false,
+            status: 400,
+            json: async () => ({}),
+            text: async () => JSON.stringify({ error: { code: 131030, message: "Recipient phone number not in allowed list", type: "OAuthException" } }),
+          }
+        : realFetch(url, opts);
+    try {
+      const out = await postWebhook(ctx, wrap([waText(FROM_A, mid(), "who owes")]));
+      assert.equal(out.status, 200);
+      const lines = sendLines(ctx);
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], /^whatsapp-send status=400 code=131030 message=Recipient phone number not in allowed list rid=[0-9a-f]{8}$/);
+      assertClean(lines);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("logs placeholders for an unparseable error body", async () => {
+    const ctx = setup();
+    const realFetch = ctx.fetch;
+    ctx.deps.fetch = (url, opts) =>
+      url.endsWith("/messages")
+        ? { ok: false, status: 500, json: async () => ({}), text: async () => "<html>oops" }
+        : realFetch(url, opts);
+    try {
+      const out = await postWebhook(ctx, wrap([waText(FROM_A, mid(), "who owes")]));
+      assert.equal(out.status, 200);
+      const lines = sendLines(ctx);
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], /^whatsapp-send status=500 code=- message=- rid=[0-9a-f]{8}$/);
+      assertClean(lines);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it("logs a line when fetch throws and still answers 200", async () => {
+    const ctx = setup();
+    const realFetch = ctx.fetch;
+    ctx.deps.fetch = (url, opts) => {
+      if (url.endsWith("/messages")) throw new Error("socket hang up");
+      return realFetch(url, opts);
+    };
+    try {
+      const out = await postWebhook(ctx, wrap([waText(FROM_A, mid(), "who owes")]));
+      assert.equal(out.status, 200);
+      const lines = sendLines(ctx);
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], /^whatsapp-send status=error code=- message=socket hang up rid=[0-9a-f]{8}$/);
+      assertClean(lines);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+});
