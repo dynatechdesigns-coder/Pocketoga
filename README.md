@@ -40,6 +40,18 @@ I used Muse Code and Claude Code as coding assistants. I set the design and rule
 - **Muse Image (`muse-image-1.0`):** generated the landing page art.
 - **Proof of real calls:** the server log has one line per call, `model-call kind=audio|text|second-opinion status=ok|failed ms=... rid=...`. Photo calls log the same way. Status can also be `timeout` or `skipped` (for example, no Baseten key set). The lines never contain message text, audio, names or keys.
 
+### Meta models and where they run
+
+| Model | Used for | Where it runs | Runtime or build time |
+| --- | --- | --- | --- |
+| Muse Spark 1.2 (audio) | Hears the voice note | Meta Model API | Runtime |
+| Muse Spark 1.3 (text and vision) | Understands the entry and reads transfer-alert photos | Meta Model API | Runtime |
+| Open-weight Muse Spark (`meta-models/muse-spark-open-1026`) | Independent second opinion | Served on Baseten | Runtime, optional (needs `BASETEN_MODEL`) |
+| Muse Image | Landing page art | Meta Model API | Build time only, not used at runtime |
+| Muse Code | Coding assistant | Used while building | Build time only |
+
+Every model PocketOga calls at runtime is a Meta model.
+
 ## 4. Safety design
 
 - The app shows what it heard, so the trader can see a misheard word.
