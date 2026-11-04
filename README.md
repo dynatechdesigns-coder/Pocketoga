@@ -44,7 +44,15 @@ The notes are English, Pidgin and one Yoruba, all in the author's own voice. Wea
 - Accuracy page in the app: https://pocket-oga.onrender.com/accuracy
 - Per-note tables: [accuracy-results.md](accuracy-results.md)
 
-The accuracy page also reports informal feedback from over 15 people who tried the live app. Those testers are not part of the numbers above, which come from the scripted run only.
+Over 15 people tried the live app, and several left written feedback in the app. Those testers are not part of the numbers above, which come from the scripted run only.
+
+## What testers said
+
+- "The app is good, especially for those who have problem with keeping records. The voice record makes it more easier for them." (5 stars)
+- "This could actually help my business... it's user friendly. When would it be ready?" (4 stars)
+- A tester asked to record sales to unnamed buyers, so names are now optional.
+
+Feedback was collected through the in-app feedback form during the event.
 
 ## 6. WhatsApp (honest status)
 
@@ -123,6 +131,13 @@ The repo has a `Dockerfile` and `render.yaml` for one Docker web service on the 
 ## 8. Tech stack
 
 Node http server, node:sqlite, React and Vite web app, deployed on Render.
+
+## Limitations and next steps
+
+- The accuracy test is 16 scripted voice notes with simulated data, so it does not prove performance in a noisy real market.
+- The open-weight second opinion needs `BASETEN_MODEL` (and its key, `BASETEN_API_KEY`) to run. Without it, the app shows the first reading and still asks the trader to confirm.
+- WhatsApp is built but delivery was blocked by Meta on my test account, so the web app is the full demo.
+- Next: test with real traders, and show warnings in Pidgin, Yoruba, Hausa and Igbo.
 
 ## Credits
 
