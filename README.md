@@ -10,6 +10,22 @@ Demo video (2:52): https://www.youtube.com/watch?v=Ia1MkrWCX_0
 
 It understands English, Pidgin and money talk like "15k". Entries land in a per-shop ledger where each row is hash-chained to the one before it, so a past entry cannot be quietly changed.
 
+## The problem
+
+Many market traders in Nigeria keep their records in a notebook, in their head, or not at all. That is where money leaks:
+- A customer who "will pay tomorrow" is forgotten, so debts go uncollected.
+- A wrong figure (₦63 written for ₦6,300) goes unnoticed, so profit is guessed.
+- Typing entries is slow in a busy market, and some traders find writing hard. One tester said it plainly: not everyone can write.
+- With no clear records, a trader has nothing to show a bank or cooperative.
+
+## Who it is for
+
+A trader or small-shop owner who talks to customers all day, speaks English or Pidgin, and has a phone but no time to type.
+
+## What changes for her
+
+She says what happened, "Paul buy 2 bag of rice, 15k, he pay 10k, remain 5k", and PocketOga writes the sale, the payment and the debt. It shows what it heard and asks when it is unsure. It reminds her who owes her, and gives her a monthly spreadsheet she can show a bank.
+
 ## 2. What existed before vs what I built this week
 
 Before the Meta Global AI Developer Hackathon I had ProfitPocket, a simple bookkeeping app where entries are typed. PocketOga was built from scratch during the event: voice input, Muse Spark understanding, a second-opinion check, check-alert photos, offline sync, reports and the accuracy test. No ProfitPocket code is carried over. Over 15 people tested it live this week, and their feedback shaped optional names, shorthand amounts and editing any entry.
