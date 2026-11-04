@@ -72,7 +72,7 @@ Feedback was collected through the in-app feedback form during the event.
 
 ## 6. WhatsApp (honest status)
 
-WhatsApp is built (webhook at /webhook, voice notes, replies), but Meta restricted my test account during the event, so message delivery was blocked and I could not demonstrate it. The web app is the full demo. The reminder button uses the shop owner's own WhatsApp (share/contact picker).
+WhatsApp is built (webhook at /webhook, voice notes, replies), but message delivery is blocked on my test account while my Meta business verification is still in review, so the web app is the full demo. The reminder button uses the shop owner's own WhatsApp (share/contact picker).
 
 ## 7. Run it yourself
 
@@ -152,7 +152,7 @@ Node http server, node:sqlite, React and Vite web app, deployed on Render.
 
 - The accuracy test is 16 scripted voice notes with simulated data, so it does not prove performance in a noisy real market.
 - The open-weight second opinion needs `BASETEN_MODEL` (and its key, `BASETEN_API_KEY`) to run. Without it, the app shows the first reading and still asks the trader to confirm.
-- WhatsApp is built but delivery was blocked by Meta on my test account, so the web app is the full demo.
+- WhatsApp is built (webhook at /webhook, voice notes, replies), but message delivery is blocked on my test account while my Meta business verification is still in review, so the web app is the full demo.
 - Next: test with real traders, and show warnings in Pidgin, Yoruba, Hausa and Igbo.
 
 ## Credits
