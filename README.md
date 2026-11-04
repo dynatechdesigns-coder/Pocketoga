@@ -26,6 +26,19 @@ A trader or small-shop owner who talks to customers all day, speaks English or P
 
 She says what happened, "Paul buy 2 bag of rice, 15k, he pay 10k, remain 5k", and PocketOga writes the sale, the payment and the debt. It shows what it heard and asks when it is unsure. It reminds her who owes her, and gives her a monthly spreadsheet she can show a bank.
 
+## What it does
+
+- **Voice entries:** the trader sends a voice note in English or Pidgin, and PocketOga writes the sale, the payment and the debt.
+- **Asks, never guesses:** it shows exactly what it heard, asks "₦63 or ₦6,300?" when an amount could mean two things, and saves nothing until the trader confirms.
+- **Two-model check:** Muse Spark understands the note, and an open-weight Muse Spark model on Baseten reads it independently. If the two differ, PocketOga stops and asks.
+- **Check alert:** a photo of a transfer alert is read by Muse Spark and stays unconfirmed until the bank confirms it.
+- **Debts and reminders:** it tracks who owes what and writes a polite reminder to send.
+- **Corrections:** an edited entry keeps the old amount on record.
+- **Works offline:** on a phone or a laptop, entries are saved without a network and sync later.
+- **Reports:** a monthly spreadsheet (CSV) the trader can show a bank or cooperative.
+- **Runs the shop's books from any device:** sales, payments, debts, stock and reports in one place, on a phone or a laptop, so it can serve as a small shop's daily sales record, not only a notebook replacement. It keeps records; it is not a till and does not print receipts.
+- **Installs like an app:** add it to a phone's home screen or install it from a laptop browser, and it opens in its own window.
+
 ## 2. What existed before vs what I built this week
 
 Before the Meta Global AI Developer Hackathon I had ProfitPocket, a simple bookkeeping app where entries are typed. PocketOga was built from scratch during the event: voice input, Muse Spark understanding, a second-opinion check, check-alert photos, offline sync, reports and the accuracy test. No ProfitPocket code is carried over. Over 15 people tested it live this week, and their feedback shaped optional names, shorthand amounts and editing any entry.
