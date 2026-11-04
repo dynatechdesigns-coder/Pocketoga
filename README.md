@@ -173,12 +173,21 @@ The repo has a `Dockerfile` and `render.yaml` for one Docker web service on the 
 
 Node http server, node:sqlite, React and Vite web app, deployed on Render.
 
-## Limitations and next steps
+## Limitations
 
 - The accuracy test is 16 scripted voice notes with simulated data, so it does not prove performance in a noisy real market.
 - The open-weight second opinion needs `BASETEN_MODEL` (and its key, `BASETEN_API_KEY`) to run. Without it, the app shows the first reading and still asks the trader to confirm.
 - WhatsApp is built (webhook at /webhook, voice notes, replies), but message delivery is blocked on my test account while my Meta business verification is still in review, so the web app is the full demo.
-- Next: test with real traders, and show warnings in Pidgin, Yoruba, Hausa and Igbo.
+
+## What's next (planned, not built yet)
+
+1. **Test with real traders.** Run PocketOga with a small group of market traders for a few weeks, in real noise, and measure accuracy on their own voices, not only on scripted notes.
+2. **Warnings in the trader's own language.** Show the confirm and warning cards in Pidgin and Yoruba, then Hausa and Igbo.
+3. **WhatsApp.** Finish Meta's business verification so the WhatsApp version I built (webhook, voice notes, replies) can be tested end to end.
+4. **Stronger second opinion.** Run more tests on the open-weight second reader and use its disagreements to improve prompts.
+5. **Bank and cooperative sharing.** Turn the monthly spreadsheet into a shareable record a bank or cooperative can read.
+6. **Daily summary in the web app.** The WhatsApp version is built (a trader turns it on with "summary on", and it is built from the ledger with no model call), but it could not be tested end to end because delivery is blocked. A web version of the same end-of-day note (sales, money collected, who still owes) is not built yet.
+7. **Point-of-sale mode.** Extend PocketOga from a bookkeeper into a small shop's till: quick sale entry at the counter and receipts the customer can see, with the same confirm-first safety. Receipts and a counter-style till screen are not built yet. Stock tracking (stock goes down with each sale) and the confirm-first flow already exist.
 
 ## Credits
 
